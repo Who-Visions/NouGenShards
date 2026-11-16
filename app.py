@@ -2067,6 +2067,35 @@ def _search_queue_s() -> float:
     return max(0.0, _env_num("NOUGEN_SEARCH_QUEUE_S", 1.5))
 
 
+def _recall_guard_enter():
+    """None when the guard is off; else the SearchAdmission that was entered.
+    Raises core.SearchBusy when the hard cap is full."""
+    if not core.recall_memory_guard_enabled():
+        return None
+    gate = core.search_admission()
+    gate.enter()
+    return gate
+
+
+def _recall_busy_response(exc):
+    retry_after = exc.retry_after
+    retry_after_int = max(1, int(-(-retry_after // 1)))
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "search_busy",
+            "retry_after_s": retry_after,
+            "active": exc.active,
+            "waiting": exc.waiting,
+        },
+        headers={
+            "Retry-After": str(retry_after_int),
+            "X-NouGen-Busy": "hard",
+        },
+    )
+
+
 def _release_slot_when_done(lane_futs: list) -> None:
     """Free the admission slot once every lane future it admitted has finished.
 
@@ -2088,6 +2117,22 @@ def _release_slot_when_done(lane_futs: list) -> None:
 @app.post("/search")
 def search(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """POST /search. With NOUGEN_RECALL_MEMORY_GUARD=1 the request holds one hard admission
+    slot from here until its response is built, bounded SQL sweep included, so the cap and
+    the stall counters cover all of its database work. Past the cap it is refused at once
+    with 503 and Retry-After instead of stacking one more scan on a node that is full."""
+    try:
+        hard_gate = _recall_guard_enter()
+    except core.SearchBusy as busy:
+        return _recall_busy_response(busy)
+    try:
+        return _search_admitted(req, response)
+    finally:
+        if hard_gate is not None:
+            hard_gate.leave()
+
+
+def _search_admitted(req: SearchRequest, response: Response):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -2281,6 +2326,7 @@ async def local_health():
         "warm": warmup_status()["warm"],
         "warmup": warmup_status(),
         "listener": listener_selfcheck_status(),
+        "recall_memory": core.recall_memory_stats(),
     }
 
 

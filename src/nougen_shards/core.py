@@ -5,6 +5,7 @@ Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevanc
 """
 # pylint: disable=duplicate-code
 import bisect
+import contextlib
 import hashlib
 import json
 import logging
@@ -380,7 +381,7 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
     mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
     conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
-    cache_kb = get_scaled_sqlite_cache_size(64000)
+    cache_kb = get_scaled_sqlite_cache_size(ro_cache_kb())
     conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
     conn.execute("PRAGMA query_only=ON;")
     conn.row_factory = sqlite3.Row
@@ -2710,6 +2711,12 @@ _VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a
 #: let the builds run in parallel and let a waiter wait for one matrix, not
 #: the grid.
 _VECTOR_DB_LOCKS: dict = {}
+#: With NOUGEN_RECALL_MEMORY_GUARD on, one matrix build at a time across the grid, so nine
+#: ~70 MB builds do not sit in memory together. It is taken AFTER the per-DB lock and with the
+#: same wait budget, so a waiter still answers stale or keyword-only instead of queueing: the
+#: per-DB lock comment above is why this is not a plain grid-wide lock.
+_VECTOR_BUILD_GATE = _threading.Lock()
+_VECTOR_BUILDS_STARTED = 0
 _VECTOR_WAIT_WARNED: set = set()
 
 
@@ -3146,12 +3153,18 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         if entry is not None and entry["path"] == path:
             return entry
         return None
+    build_gate = _VECTOR_BUILD_GATE if recall_memory_guard_enabled() else None
+    if build_gate is not None and not build_gate.acquire(timeout=_vector_cache_wait_s()):
+        lock.release()
+        return entry if entry is not None and entry["path"] == path else None
     try:
         from .darwin_gate import demote_to_background_qos
         demote_to_background_qos()
         entry = _VECTOR_CACHE.get(i)
         if entry is not None and entry["sig"] == sig and entry["path"] == path:
             return entry
+        global _VECTOR_BUILDS_STARTED  # pylint: disable=global-statement
+        _VECTOR_BUILDS_STARTED += 1
         # The cache key is the DB index, but the index can point at a DIFFERENT
         # file mid-process (tests and tools repoint NOUGEN_VAULT_DIR - same
         # reason init_db keys its guard by vault dir). Appending one vault's
@@ -3226,6 +3239,8 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         _VECTOR_CACHE[i] = fresh
         save_now = since_id == 0 or len(fresh["ids"]) - fresh["saved_n"] >= _VECTOR_SIDECAR_RESAVE_ROWS
     finally:
+        if build_gate is not None:
+            build_gate.release()
         lock.release()
     # Outside the DB lock: a ~100 MB write must not make concurrent recalls of
     # this DB wait past NOUGEN_VECTOR_CACHE_WAIT_S and fall back to keyword-only.
@@ -3847,6 +3862,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
+    guard = recall_memory_guard_enabled()
+    if guard:
+        limit = bound_search_limit(limit)
+
     if FAST_LOCAL.get():
         # Same global-domain keyword sweep the app uses as its own fallback (app.py search()).
         return _keyword_retrieve(query, limit, None, domain_key or "*", include_research)[:limit]
@@ -3891,6 +3910,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     filtering = bool(scope or as_of or event_after or event_before)
     # Filters run after fusion, so over-fetch while they are on or they starve recall.
     candidate_limit = max(limit * 2, 20) * (5 if filtering else 1)
+    if guard:
+        candidate_limit = min(candidate_limit, bound_search_limit(10**9) * 4)
     use_distill = os.environ.get("NOUGEN_DISTILL_LANES", "1").strip().lower() not in ("0", "false", "no", "off")
 
     def run_parallel_retrieval(active_domain: str) -> list:
@@ -4622,3 +4643,245 @@ def compile_recall_packet_dual(result: dict) -> str:
             
     output.append("\nAnghkooey — NouGenShards remembers.")
     return "\n".join(output)
+
+
+# --------------------------------------------------------------------------- search admission
+# The node on :4444 grew from 169 MB to 2.36 GB and then listened without serving when every
+# lane recalled at once (2026-11-15/16). /search has a soft limit (overflow is served from the
+# fast local lane) but the overflow itself was unbounded and nothing reported the wedge.
+# Everything here is behind NOUGEN_RECALL_MEMORY_GUARD=1 (off by default: behaviour unchanged).
+# Knobs: NOUGEN_RECALL_MAX_INFLIGHT (8), NOUGEN_RECALL_MAX_WAITING (16), NOUGEN_RECALL_WAIT_S (2.0),
+# NOUGEN_RECALL_STALL_S (60), NOUGEN_RECALL_MAX_LIMIT (250), NOUGEN_RO_CACHE_KB (64000).
+
+def _search_env_num(name: str, default: float, minimum: float) -> float:
+    """Float from the environment; a missing, empty, non-numeric, NaN, infinite or
+    below-``minimum`` value gives ``default``."""
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return default
+    try:
+        f = float(val)
+    except ValueError:
+        return default
+    if not math.isfinite(f) or f < minimum:
+        return default
+    return f
+
+
+class SearchBusy(RuntimeError):
+    """Raised at once when the search admission queue is full."""
+    def __init__(self, retry_after: float, active: int, waiting: int):
+        self.retry_after = retry_after
+        self.active = active
+        self.waiting = waiting
+        super().__init__(
+            f"search busy: {active} active, {waiting} waiting; retry after {retry_after:g}s")
+
+
+class SearchAdmission:
+    """Hard, process-wide cap on searches: ``max_active`` running, ``max_waiting`` queued
+    for at most ``wait_s``; anything beyond that is refused at once with SearchBusy.
+    ``stats()`` is what a watchdog reads to tell "listening but not serving"."""
+
+    def __init__(self, max_active: int, max_waiting: int, wait_s: float, stall_s: float):
+        self.max_active = max_active
+        self.max_waiting = max_waiting
+        self.wait_s = wait_s
+        self.stall_s = stall_s
+        self._cond = _threading.Condition()
+        self._active = 0
+        self._waiting = 0
+        self._refused = 0
+        self._completed = 0
+        self._last_completed_monotonic = None
+        self._start_times = {}
+        self._next_token = 0
+        self._local = _threading.local()
+
+    def enter(self) -> None:
+        deadline = time.monotonic() + (self.wait_s if self.wait_s > 0 else 0)
+        with self._cond:
+            if self._active < self.max_active:
+                self._take_slot()
+                return
+            if self._waiting >= self.max_waiting:
+                self._refused += 1
+                raise SearchBusy(self.wait_s or 1.0, self._active, self._waiting)
+            self._waiting += 1
+            try:
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._cond.wait(timeout=remaining)
+                    if self._active < self.max_active:
+                        self._take_slot()
+                        return
+                self._refused += 1
+                raise SearchBusy(self.wait_s or 1.0, self._active, self._waiting)
+            finally:
+                self._waiting -= 1
+
+    def _take_slot(self):
+        token = self._next_token
+        self._next_token += 1
+        self._start_times[token] = time.monotonic()
+        self._active += 1
+        if not hasattr(self._local, 'stack'):
+            self._local.stack = []
+        self._local.stack.append(token)
+
+    def leave(self) -> None:
+        stack = getattr(self._local, "stack", None)
+        token = stack.pop() if stack else None
+        with self._cond:
+            if token is None or token not in self._start_times:
+                logger.warning("SearchAdmission.leave() called without matching enter()")
+                return
+            del self._start_times[token]
+            self._active -= 1
+            self._completed += 1
+            self._last_completed_monotonic = time.monotonic()
+            self._cond.notify()
+
+    def stats(self) -> dict:
+        with self._cond:
+            now = time.monotonic()
+            oldest_age = 0.0
+            if self._start_times:
+                oldest_start = min(self._start_times.values())
+                oldest_age = now - oldest_start
+            idle_s = None
+            if self._last_completed_monotonic is not None:
+                idle_s = now - self._last_completed_monotonic
+            stalled = self._active > 0 and oldest_age > self.stall_s
+            return {
+                "max_active": self.max_active,
+                "max_waiting": self.max_waiting,
+                "active": self._active,
+                "waiting": self._waiting,
+                "refused": self._refused,
+                "completed": self._completed,
+                "oldest_active_age_s": round(oldest_age, 3),
+                "idle_s": round(idle_s, 3) if idle_s is not None else None,
+                "stall_s": self.stall_s,
+                "stalled": stalled,
+            }
+
+
+_SEARCH_ADMISSION: Optional[SearchAdmission] = None
+_SEARCH_ADMISSION_LOCK = _threading.Lock()
+_SEARCH_ADMITTED: ContextVar[bool] = ContextVar("nougen_search_admitted", default=False)
+
+
+def search_admission() -> SearchAdmission:
+    global _SEARCH_ADMISSION
+    with _SEARCH_ADMISSION_LOCK:
+        if _SEARCH_ADMISSION is None:
+            max_active = int(_search_env_num("NOUGEN_RECALL_MAX_INFLIGHT", 8, 1))
+            max_waiting = int(_search_env_num("NOUGEN_RECALL_MAX_WAITING", 16, 0))
+            wait_s = _search_env_num("NOUGEN_RECALL_WAIT_S", 2.0, 0)
+            stall_s = _search_env_num("NOUGEN_RECALL_STALL_S", 60.0, 1)
+            _SEARCH_ADMISSION = SearchAdmission(max_active, max_waiting, wait_s, stall_s)
+        return _SEARCH_ADMISSION
+
+
+def reset_search_admission() -> None:
+    global _SEARCH_ADMISSION
+    with _SEARCH_ADMISSION_LOCK:
+        _SEARCH_ADMISSION = None
+
+
+@contextlib.contextmanager
+def admitted_search():
+    """Hold one search slot for the block. Re-entrant through a ContextVar, so a nested
+    retrieve or a lane thread started with copy_context() never takes a second slot."""
+    if _SEARCH_ADMITTED.get() or not recall_memory_guard_enabled():
+        yield
+        return
+    gate = search_admission()  # the same instance leaves, even if the singleton is reset meanwhile
+    gate.enter()
+    token = _SEARCH_ADMITTED.set(True)
+    try:
+        yield
+    finally:
+        _SEARCH_ADMITTED.reset(token)
+        gate.leave()
+
+
+def bound_search_limit(limit, default: int = 3) -> int:
+    try:
+        lim = int(limit)
+    except (TypeError, ValueError):
+        lim = default
+    cap = int(_search_env_num("NOUGEN_RECALL_MAX_LIMIT", 250, 1))
+    if lim < 1:
+        lim = 1
+    if lim > cap:
+        lim = cap
+    return lim
+
+
+def recall_memory_guard_enabled() -> bool:
+    """NOUGEN_RECALL_MEMORY_GUARD=1 turns the recall memory bounds on. Off by default."""
+    val = os.environ.get("NOUGEN_RECALL_MEMORY_GUARD", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def ro_cache_kb(default: int = 64000) -> int:
+    """Read-connection page cache in KiB; NOUGEN_RO_CACHE_KB applies only with the guard on."""
+    if not recall_memory_guard_enabled():
+        return default
+    return min(int(_search_env_num("NOUGEN_RO_CACHE_KB", default, 1000)), 1_000_000)
+
+
+def process_rss_bytes() -> Optional[int]:
+    """Resident set size of this process in bytes, or None. Never raises."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss
+    except Exception:
+        pass
+    try:
+        import resource  # absent on Windows
+        import sys
+        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return ru
+        return ru * 1024
+    except Exception:
+        return None
+
+
+def recall_memory_stats() -> dict:
+    """What recall holds in memory, for the health payload and a watchdog. Never raises."""
+    stats = {
+        "guard": recall_memory_guard_enabled(),
+        "rss_bytes": process_rss_bytes(),
+        "ro_pool_connections": len(_RO_CONN_POOL),
+        "ro_cache_kb": ro_cache_kb(),
+        "vector_matrix_bytes": 0,
+        "vector_matrices": 0,
+        "vector_builds_started": _VECTOR_BUILDS_STARTED,
+        "search": search_admission().stats(),
+    }
+    try:
+        total_bytes = 0
+        cache = _VECTOR_CACHE
+        for entry in list(cache.values()):
+            if not isinstance(entry, dict):
+                continue
+            matrix = entry.get("matrix")
+            if matrix is None:
+                continue
+            try:
+                # After an append the matrix is a _RowBlocks (no nbytes of its own): sum its
+                # blocks, so a cached matrix does not vanish from the total between saves.
+                total_bytes += sum(int(getattr(blk, "nbytes", 0) or 0) for blk in _matrix_blocks(matrix))
+            except Exception:
+                pass
+        stats["vector_matrix_bytes"] = total_bytes
+        stats["vector_matrices"] = len(cache)
+    except Exception:
+        pass
+    return stats
