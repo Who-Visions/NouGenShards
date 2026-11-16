@@ -247,6 +247,21 @@ def _env_budget_ms() -> int:
     return value if value > 0 else DEFAULT_BUDGET_MS
 
 
+def enter_read_only_process() -> bool:
+    """Stop this process writing ACCESSED rows; returns whether it still writes them.
+
+    For the one-shot hook process only, called once before the recall and
+    never undone: the switch is process-wide, so flipping it around a single
+    call would race in a threaded server. The ACCESSED write a read leaves
+    behind waits on the history database's writer slot, which made scans miss
+    the budget on a busy vault. ``NOUGEN_RECALL_HOOK_ACCESS_LOG=1`` keeps it.
+    """
+    from . import history  # pylint: disable=import-outside-toplevel
+    keep = os.environ.get("NOUGEN_RECALL_HOOK_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on")
+    history.set_access_logging(keep)
+    return keep
+
+
 def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     """UserPromptSubmit adapter: stdin JSON in, hookSpecificOutput JSON out."""
     try:
@@ -258,17 +273,7 @@ def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     prompt = str(payload.get("prompt") or "")
     if "budget_ms" not in kwargs:
         kwargs["budget_ms"] = _env_budget_ms()
-    # This adapter is the entry of a one-shot process that only reads. The
-    # ACCESSED write a read leaves behind waits on the history database's
-    # writer slot, which made scans miss the budget on a busy vault.
-    from . import history  # pylint: disable=import-outside-toplevel
-    keep = os.environ.get("NOUGEN_RECALL_HOOK_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on")
-    previous = history.set_access_logging(keep)
-    try:
-        block = format_block(recall_hook(prompt, **kwargs))
-    finally:
-        # Restored for in-process callers; the CLI entry exits right after.
-        history.set_access_logging(previous)
+    block = format_block(recall_hook(prompt, **kwargs))
     block = block.encode("utf-8", "replace").decode("utf-8")
     return json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                               "additionalContext": block}})

@@ -76,27 +76,62 @@ def test_switch_drops_access_rows_and_keeps_everything_else(written):
     assert _types(written) == ["DB_DEGRADED", "SEARCH_FALLBACK"]
 
 
-def test_adapter_reads_without_writing_and_restores_the_switch(vault, monkeypatch):
+@pytest.fixture
+def restore_switch():
+    previous = history._ACCESS_LOGGING  # pylint: disable=protected-access
+    yield
+    history.set_access_logging(previous)
+
+
+@pytest.mark.parametrize("raw,keeps", [(None, False), ("0", False), ("1", True), ("yes", True)])
+def test_one_shot_entry_sets_the_switch_from_env(monkeypatch, restore_switch, raw, keeps):
+    if raw is None:
+        monkeypatch.delenv("NOUGEN_RECALL_HOOK_ACCESS_LOG", raising=False)
+    else:
+        monkeypatch.setenv("NOUGEN_RECALL_HOOK_ACCESS_LOG", raw)
+    assert recall_hook.enter_read_only_process() is keeps
+    assert history._ACCESS_LOGGING is keeps  # pylint: disable=protected-access
+
+
+def test_adapter_never_touches_the_process_wide_switch(vault, monkeypatch):
+    """Overlapping adapter calls on threads must not be able to leave logging off."""
+    import threading
+
     seen: list = []
+    gate = threading.Barrier(2, timeout=10)
 
     def fake_recall(_prompt, **_kw):
+        gate.wait()  # both calls are inside the adapter at the same time
         seen.append(history._ACCESS_LOGGING)  # pylint: disable=protected-access
-        return {"tier": "keyword", "partial": False, "shards": [], "mark": {}}
+        return {"tier": "none", "shards": []}
 
     monkeypatch.setattr(recall_hook, "recall_hook", fake_recall)
     assert history._ACCESS_LOGGING is True  # pylint: disable=protected-access
-    recall_hook.claude_code_hook(json.dumps({"prompt": "bridge token rotation"}))
-    assert seen == [False]
+    threads = [threading.Thread(target=recall_hook.claude_code_hook, args=(json.dumps({"prompt": "bridge token rotation"}),))
+               for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+    assert seen == [True, True]
     assert history._ACCESS_LOGGING is True  # pylint: disable=protected-access
 
 
-def test_adapter_keeps_access_rows_when_asked(vault, monkeypatch):
-    seen: list = []
-    monkeypatch.setenv("NOUGEN_RECALL_HOOK_ACCESS_LOG", "1")
-    monkeypatch.setattr(recall_hook, "recall_hook",
-                        lambda _p, **_k: seen.append(history._ACCESS_LOGGING) or {"tier": "none", "shards": []})  # pylint: disable=protected-access
-    recall_hook.claude_code_hook(json.dumps({"prompt": "bridge token rotation"}))
-    assert seen == [True]
+def test_cli_prompt_entry_runs_read_only(tmp_path):
+    """The real one-shot entry turns ACCESSED rows off before the recall runs."""
+    driver = (
+        "import sys\n"
+        "from nougen_shards import agent_hooks, cli, history\n"
+        "agent_hooks.HANDLERS['prompt'] = lambda _e: {'access_logging': history._ACCESS_LOGGING}\n"
+        "sys.argv = ['nougen', 'hook', 'run', 'prompt']\n"
+        "cli.main()\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(SRC), "NOUGEN_VAULT_DIR": str(tmp_path)}
+    env.pop("NOUGEN_RECALL_HOOK_ACCESS_LOG", None)
+    proc = subprocess.run([sys.executable, "-c", driver], input=b"{}", stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, env=env, timeout=120, check=False)
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout.decode("utf-8").strip().splitlines()[-1]) == {"access_logging": False}
 
 
 @pytest.mark.parametrize("raw,expected", [
