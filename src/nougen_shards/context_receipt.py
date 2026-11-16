@@ -216,7 +216,14 @@ def status_line(receipt: dict[str, Any]) -> str:
     if st == COMPLETE:
         return (f"Shards receipt: COMPLETE (tier {rc.get('tier')}, {rc.get('fanout')} shard(s), "
                 f"relay legs {receipt.get('relay', {}).get('legs')}). Zero matches here is a real 'no match'.")
+    gate = (os.environ.get("NOUGEN_SHARDS_GATE") or "warn").strip().lower()
+    if gate == "deny":
+        effect = ("are blocked until recall completes or NOUGEN_DEGRADED_MODE=reviewed is set")
+    elif gate == "off":
+        effect = "are not gated (NOUGEN_SHARDS_GATE=off)"
+    else:
+        effect = ("draw a warning until recall completes (NOUGEN_SHARDS_GATE=warn; "
+                  "set it to deny to block them)")
     return (f"Shards receipt: {st} ({receipt.get('reason')}). Memory state is NOT verified: do not "
             "say 'no memory' or 'nothing found'; report DEGRADED/UNKNOWN. Protected mutations "
-            "(commit/push/merge/deploy/forget) are blocked until recall completes or "
-            "NOUGEN_DEGRADED_MODE=reviewed is set.")
+            f"(commit/push/merge/deploy/forget) {effect}.")
