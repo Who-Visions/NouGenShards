@@ -206,3 +206,78 @@ def test_incomplete_read_is_caught_in_request_and_falls_back(monkeypatch):
     )
     assert c.embed(nim.VERIFIED_EMBED_MODELS[0], "hello") == []
     assert c.last_errors[nim.VERIFIED_EMBED_MODELS[0]] == "IncompleteRead"
+
+
+def test_chat_detail_returns_token_counts_when_usage_present(monkeypatch):
+    target = nim.VERIFIED_CHAT_MODELS[0]
+    c, calls = _client({
+        ("/chat/completions", target): (
+            200,
+            {
+                "choices": [{"message": {"content": "OK"}}],
+                "model": target,
+                "usage": {"prompt_tokens": 12, "completion_tokens": 34},
+            },
+        )
+    }, monkeypatch)
+    detail = c.chat_detail(target, [{"role": "user", "content": "hi"}])
+    assert detail["content"] == "OK"
+    assert detail["model"] == target
+    assert detail["prompt_tokens"] == 12
+    assert detail["completion_tokens"] == 34
+    assert detail["errors"] == {}
+
+
+def test_chat_detail_returns_none_for_tokens_when_no_usage(monkeypatch):
+    target = nim.VERIFIED_CHAT_MODELS[0]
+    c, calls = _client({
+        ("/chat/completions", target): (
+            200,
+            {"choices": [{"message": {"content": "OK"}}], "model": target},
+        )
+    }, monkeypatch)
+    detail = c.chat_detail(target, [{"role": "user", "content": "hi"}])
+    assert detail["content"] == "OK"
+    assert detail["model"] == target
+    assert detail["prompt_tokens"] is None
+    assert detail["completion_tokens"] is None
+
+
+def test_chat_detail_all_models_fail_returns_errors(monkeypatch):
+    target = nim.VERIFIED_CHAT_MODELS[0]
+    c, calls = _client({
+        ("/chat/completions", "x/y"): (404, None),
+        ("/chat/completions", target): (404, None),
+    }, monkeypatch)
+    detail = c.chat_detail("x/y", [{"role": "user", "content": "hi"}], fallbacks=())
+    assert detail["content"] == ""
+    assert detail["model"] is None
+    assert detail["prompt_tokens"] is None
+    assert detail["completion_tokens"] is None
+    assert detail["errors"] == {"x/y": "404"}
+    assert [m for _, m, _ in calls] == ["x/y"]
+
+
+def test_chat_detail_no_key_makes_no_request(monkeypatch):
+    c, calls = _client({}, monkeypatch)
+    c.api_key = None
+    detail = c.chat_detail("auto", [{"role": "user", "content": "hi"}])
+    assert detail["content"] == ""
+    assert detail["model"] is None
+    assert detail["prompt_tokens"] is None
+    assert detail["completion_tokens"] is None
+    assert detail["errors"] == {nim.KEY_NAME: "missing"}
+    assert c.last_errors == {nim.KEY_NAME: "missing"}
+    assert calls == []
+
+
+def test_verified_code_models_unique_and_first_in_chat_models():
+    assert len(nim.VERIFIED_CODE_MODELS) == len(set(nim.VERIFIED_CODE_MODELS))
+    assert nim.VERIFIED_CODE_MODELS[0] in nim.VERIFIED_CHAT_MODELS
+
+
+def test_gemma_and_gpt_oss_are_last_two_chat_models():
+    assert nim.VERIFIED_CHAT_MODELS[-2:] == (
+        "google/gemma-4-31b-it",
+        "openai/gpt-oss-20b",
+    )
