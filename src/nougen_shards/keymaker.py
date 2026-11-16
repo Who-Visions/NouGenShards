@@ -324,7 +324,7 @@ def find_legacy_stores(roots=None) -> list:
             with os.scandir(root_p) as it:
                 for entry in it:
                     try:
-                        if not entry.is_dir(follow_symlinks=False):
+                        if not entry.is_dir(follow_symlinks=True):
                             continue
                     except OSError:
                         continue
@@ -342,7 +342,7 @@ def find_legacy_stores(roots=None) -> list:
                         with os.scandir(sub) as it2:
                             for entry2 in it2:
                                 try:
-                                    if not entry2.is_dir(follow_symlinks=False):
+                                    if not entry2.is_dir(follow_symlinks=True):
                                         continue
                                 except OSError:
                                     continue
