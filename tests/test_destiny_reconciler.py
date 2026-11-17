@@ -61,3 +61,23 @@ def test_finished_destiny_is_not_reopened_by_restated_goal(tmp_path, monkeypatch
     again = rec.reconcile([{"title": "Ship the drop zone", "goal": "photo drop works"}])
     assert again["created"] == []
     assert again["duplicate"][0]["existing"]["status"] == "fulfilled"
+
+
+def test_concurrent_reconciles_of_one_title_create_exactly_one(tmp_path, monkeypatch):
+    import threading
+    _use_tmp_db(tmp_path, monkeypatch)
+    intent = [{"title": "Race the same intent", "goal": "only one row may exist"}]
+    results = []
+    barrier = threading.Barrier(6)
+
+    def worker():
+        barrier.wait()
+        results.append(rec.reconcile(intent))
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=60)
+    assert sum(len(r["created"]) for r in results) == 1
+    assert len(destiny.unfinished_destinies(limit=50)["destinies"]) == 1

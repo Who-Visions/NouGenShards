@@ -13,9 +13,16 @@ Destiny is never re-opened by a restated goal.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List
+from contextlib import contextmanager
+from typing import Any, Dict, Iterable, Iterator, List
 
 from . import destiny
+
+try:  # POSIX
+    import fcntl as _fcntl
+except ImportError:  # Windows nodes
+    _fcntl = None
+    import msvcrt as _msvcrt
 
 ACTOR = "destiny-reconciler"
 
@@ -76,9 +83,36 @@ def apply(planned: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     return results
 
 
+@contextmanager
+def _exclusive() -> Iterator[None]:
+    """Serialize check-then-create across threads and processes on this host.
+
+    Without this, two reconciles of the same title can both read it as absent
+    and both insert: create_destiny has no uniqueness constraint.
+    """
+    lock_path = destiny.db_path().with_name(destiny.db_path().name + ".reconcile.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as fh:
+        if _fcntl is not None:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+        else:
+            fh.seek(0)
+            _msvcrt.locking(fh.fileno(), _msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
+
+
 def reconcile(intents: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Plan against the live store and apply. Idempotent by title."""
-    planned = plan(list(intents), existing_index())
-    created = apply(planned)
+    """Plan against the live store and apply. Idempotent by title, race-safe."""
+    with _exclusive():
+        planned = plan(list(intents), existing_index())
+        created = apply(planned)
     return {"created": created, "duplicate": planned["duplicate"],
             "invalid": planned["invalid"], "gaps": planned["gaps"]}
