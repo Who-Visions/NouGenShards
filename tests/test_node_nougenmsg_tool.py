@@ -18,7 +18,7 @@ from pathlib import Path
 from nougen_shards import nougenmsg
 
 APP = Path(__file__).resolve().parents[1] / "app.py"
-METHODS = {"emit_fleet", "emit_node", "live_ping"}
+METHODS = {"emit_fleet", "emit_node", "live_ping", "send_resolved"}
 CLASSES = {n for n, o in vars(nougenmsg).items()
            if inspect.isclass(o) and o.__module__ == nougenmsg.__name__}
 

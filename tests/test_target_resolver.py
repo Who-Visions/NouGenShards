@@ -320,3 +320,27 @@ def test_bus_delivers_presence_lane_to_local_inbox(monkeypatch, tmp_path):
     files = list((tmp_path / "inbox").glob("*.json"))
     assert len(files) == 1 and "chatgpt" not in files[0].name
     assert json.loads(files[0].read_text())["target"] == "chatgpt-app"
+
+
+def test_send_resolved_sends_a_presence_lane_to_its_node_only(monkeypatch):
+    """Codex P1 on #1100: an accepted lane must go to the resolved peer, never be
+    re-read by the legacy parse as 'every agent on this node'."""
+    from nougen_shards import nougenmsg as bus
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+    bus.clear_target_cache()
+    assert bus.note_lane_seen("deskapp", "whoart")
+    bus.clear_target_cache()
+    sent, pinged, fleet = [], [], []
+    monkeypatch.setattr(bus.NouGenMsgBus, "emit_node",
+                        classmethod(lambda cls, n, t, text, origin=None, audience=None:
+                                    sent.append((n, t)) or {n: "ok"}))
+    monkeypatch.setattr(bus.NouGenMsgBus, "live_ping",
+                        classmethod(lambda cls, *a, **k: pinged.append(a) or {}))
+    monkeypatch.setattr(bus.NouGenMsgBus, "emit_fleet",
+                        classmethod(lambda cls, *a, **k: fleet.append(k) or {}))
+    out = bus.NouGenMsgBus.send_resolved("@deskapp", "hi")
+    assert sent == [("whoart", "deskapp")] and pinged == [] and fleet == []
+    assert out["resolution"]["deliveries"][0]["node"] == "whoart"
+    refused = bus.NouGenMsgBus.send_resolved("@nobody-here", "hi")
+    assert refused["status"] == "not_resolvable" and sent == [("whoart", "deskapp")] and fleet == []

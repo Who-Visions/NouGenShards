@@ -3145,7 +3145,7 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     refusal = target_unknown(clean_target)
     if refusal:
         return {"status": "refused", "target": target, "priority": priority, **refusal}
-    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
+    res = NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async())
     return {
         "status": "delivered",
         "target": target,
@@ -3480,7 +3480,7 @@ def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     refusal = target_unknown(clean_target)
     if refusal:
         return {"status": "refused", "target": target, **refusal}
-    return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
+    return NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async())
 
 
 def _relay_handoffs_dir() -> "Path":

@@ -755,9 +755,10 @@ def main():
 
     # Check for @destination token
     raw_text = False
+    multi_target = None  # a lane on several nodes: sent through send_resolved below
     cleaned_args = []
     for a in args:
-        if a.startswith("@") and not node:
+        if a.startswith("@") and not node and not multi_target:
             from nougen_shards.nougenmsg import target_unknown
             refusal = target_unknown(a)
             if refusal:
@@ -766,9 +767,18 @@ def main():
                 print(f"[!] Not sent: {refusal['error']}")
                 print(f"    Resolvable now: {' '.join(refusal['resolvable'])}")
                 return
-            n, ag = NouGenMsgBus.parse_destination(a)
-            node = n
-            target_agent = ag
+            # The live resolver names the deliveries; the legacy parse read a lane it
+            # did not know as "every agent on this node".
+            from nougen_shards.nougenmsg import resolve_target, _self_node_name
+            resolution = resolve_target(a)
+            if resolution.kind == "group":
+                node, target_agent = "fleet", "all"
+            elif len(resolution.deliveries) == 1:
+                d = resolution.deliveries[0]
+                node = "local" if d.node == _self_node_name() else d.node
+                target_agent = d.lane or d.node
+            else:
+                multi_target = a
         elif a == "--local":
             node = "local"
         elif a == "--raw":
@@ -798,6 +808,10 @@ def main():
     curr = get_current_node()
     if not raw_text:
         text = house_style(text, curr, resolve_agent_label())
+    if multi_target:
+        res = NouGenMsgBus.send_resolved(multi_target, text, origin=origin)
+        print_inline_banner(f"RESOLVED: {curr.upper()} -> {multi_target.upper()}", res, text)
+        return
     if not node or node == "fleet":
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)

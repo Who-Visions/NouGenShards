@@ -4110,26 +4110,21 @@ def cmd_msg(args):
         emit(refusal, plain=_plain_refusal, args=args)
         return
 
-    node, agent_target = bus.parse_destination(target)
-
     if getattr(args, "dry_run", False):
-        preview = {
-            "target": target,
-            "resolved_node": node,
-            "resolved_agent": agent_target,
-            "would_call": ("emit_fleet" if node == "fleet" else "emit_node"),
-            "message": msg_text,
-        }
+        from .nougenmsg import resolve_target
+        resolution = resolve_target(target).as_dict()
+        preview = {"target": target, "deliveries": resolution["deliveries"],
+                   "would_call": "send_resolved", "message": msg_text}
         def _plain_dry_run(p, style):
-            yield f"[dry-run] --to {p['target']!r} resolves to node={p['resolved_node']!r} agent={p['resolved_agent']!r}"
-            yield f"[dry-run] would call {p['would_call']}(...) — nothing sent"
+            for d in p["deliveries"]:
+                yield f"[dry-run] --to {p['target']!r} -> node={d['node']!r} lane={d['lane']!r} ({d['how']})"
+            yield "[dry-run] nothing sent"
         emit(preview, plain=_plain_dry_run, args=args)
         return
 
-    if node == "fleet":
-        res = bus.emit_fleet(msg_text, target=agent_target)
-    else:
-        res = bus.emit_node(node, agent_target, msg_text)
+    # Send to exactly what the live resolver named (never the legacy parse, which read
+    # a lane it did not know as "every agent on this node").
+    res = bus.send_resolved(target, msg_text)
     def _plain_send(p, style):
         yield f"Message dispatched to {target}: {p}"
     emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)

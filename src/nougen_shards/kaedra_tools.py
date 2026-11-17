@@ -710,8 +710,11 @@ def _nougenmsg_send(args: dict) -> dict:
     if "kaedra" in clean or "self" in clean:
         return {"error": "refused: echo guard prevented targeting self/kaedra"}
 
-    node, agent = NouGenMsgBus.parse_destination(target)
-    if agent == "kaedra":
+    from nougen_shards.nougenmsg import resolve_target
+    resolution = resolve_target(target)
+    if not resolution.ok:
+        return {"error": resolution.error, "resolvable": resolution.resolvable}
+    if any(d.lane == "kaedra" for d in resolution.deliveries):
         return {"error": "refused: echo guard prevented targeting agent kaedra"}
 
     origin = {
@@ -720,7 +723,7 @@ def _nougenmsg_send(args: dict) -> dict:
         "lane": "kaedra-autonomous",
         "provenance_state": "asserted",
     }
-    res = NouGenMsgBus.live_ping(agent, message, node=node, origin=origin)
+    res = NouGenMsgBus.send_resolved(target, message, origin=origin)
     return {"delivered": True, "target": target, "result": res}
 
 

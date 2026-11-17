@@ -1417,6 +1417,59 @@ class NouGenMsgBus:
         return results
 
     @classmethod
+    def send_resolved(cls, target: str, text: str,
+                      origin: Optional[Dict[str, Any]] = None,
+                      audience: Optional[str] = None,
+                      background: bool = False) -> Dict[str, Any]:
+        """Resolve ``target`` against the live table and send to exactly what it names.
+
+        The one dispatch for the CLI, the MCP tools and app.py. An unknown or
+        unreachable target returns the refusal and sends nothing; a group is the
+        only fan-out; every other delivery goes to its own (node, lane) once, so a
+        lane resolved to another node is never re-read as "everyone here".
+        """
+        res = resolve_target(target)
+        if not res.ok:
+            return {"delivered": False, "status": "not_resolvable", "reason": res.reason,
+                    "error": res.error, "resolvable": res.resolvable,
+                    "target": str(target)[:80]}
+        curr = get_current_node()
+        here = {curr, _self_node_name(), "local"}
+        if res.kind == "group":
+            peers = sorted({d.node for d in res.deliveries} - here)
+            results = cls.emit_fleet(text=text, target="all", origin=origin, audience=audience,
+                                     background=background, nodes=peers)
+            return {"resolution": res.as_dict(), "results": results}
+        routes, seen = [], set()
+        for d in res.deliveries:
+            node = curr if d.node in here else d.node
+            # No lane means the node itself: the receiving node reads its own name as
+            # "this node's agent lanes" (live_ping), exactly as a bare '@<node>' did.
+            route = (node, d.lane or d.node)
+            if route not in seen:
+                seen.add(route)
+                routes.append(route)
+        results: Dict[str, Any] = {}
+        remote = [r for r in routes if r[0] != curr]
+        for node, agent in routes:
+            if node == curr:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        if background and remote:
+            def _fan_out(todo=tuple(remote)):
+                for node, agent in todo:
+                    try:
+                        cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            threading.Thread(target=_fan_out, daemon=True).start()
+            for node, _ in remote:
+                results[node] = {"queued": True}
+        else:
+            for node, agent in remote:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        return {"resolution": res.as_dict(), "results": results}
+
+    @classmethod
     def list_peers(cls) -> Dict[str, Any]:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
