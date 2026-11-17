@@ -130,6 +130,13 @@ class Seen(dict):
         self.pop(leg_id, None)
         self[leg_id] = None
 
+    def __eq__(self, other):  # compares as the set of ids, so callers may treat it as one
+        if isinstance(other, (set, frozenset)):
+            return set(self) == other
+        return dict.__eq__(self, other)
+
+    __hash__ = None
+
     def __or__(self, other):  # keep ``seen | {...}`` working for old callers
         out = Seen(self)
         for item in other:
