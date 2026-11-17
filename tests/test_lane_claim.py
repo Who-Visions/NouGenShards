@@ -10,6 +10,33 @@ from nougen_shards.lane_claim import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fleet_side_effects(monkeypatch):
+    """Keep every test in this file off the live fleet.
+
+    claim_lane() captures a "Lane Claim" shard and broadcasts a wake message on
+    NouGenMsg and into ~/.nougen/agy_inbox. Unstubbed, each run of this file
+    wrote two real shards and sent two "MANDATORY LANE WORK EXECUTION" messages
+    for src/foo.py and src/mcp_test.py to every lane. The stubs record the
+    calls so tests can still assert the claim path reaches both hooks.
+    """
+    from nougen_shards import lane_claim
+
+    calls = {"shards": [], "wakes": []}
+
+    def fake_replicate(claim):
+        calls["shards"].append(claim)
+        return True
+
+    def fake_wake(claim):
+        calls["wakes"].append(claim)
+        return {"stubbed": True}
+
+    monkeypatch.setattr(lane_claim, "replicate_to_nougen_shards", fake_replicate)
+    monkeypatch.setattr(lane_claim, "dispatch_lane_wake", fake_wake)
+    return calls
+
+
 @pytest.fixture
 def temp_claims_dir(tmp_path):
     claims = tmp_path / "claims"
@@ -185,3 +212,19 @@ def test_mcp_lane_claim_and_hi_tools(temp_claims_dir, monkeypatch):
     hi_data = json.loads(raw_hi)
     assert "identity" in hi_data
 
+
+def test_claim_reaches_both_fleet_hooks_through_the_stubs(temp_claims_dir, fleet_side_effects):
+    result = claim_lane(scope=["src/x.py"], goal="hook wiring", agent="tester", machine="box",
+                        claims_dir=temp_claims_dir)
+    assert result["shard_replicated"] is True
+    assert result["wake_dispatch"] == {"stubbed": True}
+    assert [c["goal"] for c in fleet_side_effects["shards"]] == ["hook wiring"]
+    assert [c["goal"] for c in fleet_side_effects["wakes"]] == ["hook wiring"]
+
+
+def test_opting_out_skips_both_fleet_hooks(temp_claims_dir, fleet_side_effects):
+    result = claim_lane(scope=["src/x.py"], goal="quiet", agent="tester", machine="box",
+                        claims_dir=temp_claims_dir, replicate_shard=False, notify=False)
+    assert "shard_replicated" not in result
+    assert "wake_dispatch" not in result
+    assert fleet_side_effects == {"shards": [], "wakes": []}
