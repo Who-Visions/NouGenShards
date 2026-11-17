@@ -3,10 +3,10 @@ NouGen vault resolved to %USERPROFILE%\AppData\Local\Temp\bench_vault_no_memory_
 [no_memory] tick 12: {'blocked': 4, 'failed': 91, 'queued': 5} tokens=298550
 [no_memory] tick 13: {'blocked': 4, 'failed': 96} tokens=304328
 [no_memory] tick 14: {'blocked': 4, 'failed': 96} tokens=304328
-NouGen vault resolved to C:\Users\super\AppData\Local\Temp\bench_vault_prompt_only_lwdt1a1v via NOUGEN_VAULT_DIR
+NouGen vault resolved to %USERPROFILE%\AppData\Local\Temp\bench_vault_prompt_only_lwdt1a1v via NOUGEN_VAULT_DIR
 [prompt_only] tick 11: {'blocked': 4, 'done': 96} tokens=166249
 [prompt_only] tick 12: {'blocked': 4, 'done': 96} tokens=166249
-NouGen vault resolved to C:\Users\super\AppData\Local\Temp\bench_vault_shards_first_vr26pmh1 via NOUGEN_VAULT_DIR
+NouGen vault resolved to %USERPROFILE%\AppData\Local\Temp\bench_vault_shards_first_vr26pmh1 via NOUGEN_VAULT_DIR
 [shards_first] tick 11: {'blocked': 4, 'done': 96} tokens=32634
 [shards_first] tick 12: {'blocked': 4, 'done': 96} tokens=32634
 [
