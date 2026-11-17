@@ -397,3 +397,10 @@ def test_active_destiny_gets_no_redundant_active_update(env):
 def test_supersede_zero_is_refused(env):
     out = destiny.create_destiny("Zero", "supersede id zero", supersedes=0)
     assert "error" in out and destiny.unfinished_destinies()["total"] == 0
+
+
+def test_negative_token_report_cannot_refund_budget(env):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[dest(1)], execute=lambda *a: {"output": "o", "tokens": -500})
+    out = dr.tick(dr.Config(tick_token_budget=1000), ports)
+    assert out["results"][0]["tokens"] == 0 and out["tokens_left"] == 1000

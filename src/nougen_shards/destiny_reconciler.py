@@ -230,6 +230,7 @@ def resume_expired(cfg: Config, ports: Ports, *, path: Optional[Path] = None) ->
     now = ports.clock()
     n = 0
     with _connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")  # concurrent resumers must not double-count one expiry
         rows = conn.execute(
             "SELECT * FROM tasks WHERE state IN (?,?,?,?) AND lease_expires IS NOT NULL AND lease_expires < ?",
             (CLAIMED, RECALLED, RUNNING, VERIFYING, now)).fetchall()
@@ -413,7 +414,7 @@ def _run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
     if result is None:
         S(state=QUEUED)
         return {"task": task["key"], "outcome": "all_routes_down"}
-    tokens = min(int(result.get("tokens") or 0), 10 ** 9)
+    tokens = max(0, min(int(result.get("tokens") or 0), 10 ** 9))  # a negative count must not refund budget
     spent = task["tokens_spent"] + tokens
     if tokens > remaining:
         # The executor overran the allowance it was handed: its output is not trusted or published.
@@ -480,7 +481,12 @@ def single_instance(lock_path: Path, stale_s: float = 900.0):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         if lock_path.exists() and time.time() - lock_path.stat().st_mtime > stale_s:
-            lock_path.unlink()
+            # rename is atomic: only one caller wins the stale lock, and the
+            # loser cannot unlink a lock the winner just created.
+            grave = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
+            with contextlib.suppress(OSError):
+                os.replace(lock_path, grave)
+                os.unlink(grave)
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         raise RuntimeError(f"another reconciler holds {lock_path}")
