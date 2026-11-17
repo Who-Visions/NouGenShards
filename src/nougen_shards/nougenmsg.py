@@ -1455,14 +1455,25 @@ class NouGenMsgBus:
                 results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
         if background and remote:
             def _fan_out(todo=tuple(remote)):
+                # Same contract as emit_fleet's background fan-out: a failed or raising
+                # send is reported on stderr (the node's err log), never swallowed.
                 for node, agent in todo:
                     try:
-                        cls.emit_node(node, agent, text, origin=origin, audience=audience)
-                    except Exception:  # pylint: disable=broad-except
-                        pass
-            threading.Thread(target=_fan_out, daemon=True).start()
+                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                        bad = {k: v for k, v in (res or {}).items()
+                               if isinstance(v, str) and v.startswith("Error")}
+                        if bad:
+                            print(f"[nougenmsg] background send to {node}/{agent} failed: {bad}",
+                                  file=sys.stderr, flush=True)
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background send to {node}/{agent} raised: "
+                              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_fan_out, name="nougenmsg-send-resolved", daemon=True)
+            t.start()
+            cls._last_fanout_thread = t  # tests join it; nothing in production waits on it
             for node, _ in remote:
-                results[node] = {"queued": True}
+                results[node] = {"queued": True, "via": "ssh",
+                                 "failure_report": "stderr of the sending process"}
         else:
             for node, agent in remote:
                 results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
