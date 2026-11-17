@@ -202,6 +202,15 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
         provenance = json.dumps(provenance)
     now = _now()
     with _connect() as conn:
+        if supersedes is not None:
+            # Refuse before inserting: superseding a missing or terminal destiny
+            # used to insert the new row anyway and leave a dangling supersedes
+            # pointer (elevation-atlas 903).
+            tgt = conn.execute("SELECT status FROM destinies WHERE id=?", (supersedes,)).fetchone()
+            if tgt is None:
+                return {"error": f"cannot supersede destiny {supersedes}: not found"}
+            if "superseded" not in TRANSITIONS.get(tgt["status"], ()):
+                return {"error": f"cannot supersede destiny {supersedes}: it is {tgt['status']}, a terminal record is preserved"}
         cur = conn.execute(
             """INSERT INTO destinies (title, goal, status, branch, trigger, required_events,
                forbidden_outcomes, acceptable_variance, verification, confidence, deadline,
@@ -213,7 +222,7 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
         did = cur.lastrowid
         conn.execute("INSERT INTO destiny_events (destiny_id, from_status, to_status, actor, evidence, created_utc) VALUES (?,?,?,?,?,?)",
                      (did, None, status, actor, "created", now))
-        if supersedes:
+        if supersedes is not None:
             _transition(conn, supersedes, "superseded", actor, f"superseded by destiny {did}", now)
             conn.execute("UPDATE destinies SET superseded_by=?, updated_utc=? WHERE id=?", (did, now, supersedes))
         row = conn.execute("SELECT * FROM destinies WHERE id=?", (did,)).fetchone()
