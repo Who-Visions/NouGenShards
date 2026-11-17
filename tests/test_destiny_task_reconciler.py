@@ -186,6 +186,21 @@ def test_safety_gate_blocks_protected_actions(env):
     assert log["evidence"] == []
 
 
+@pytest.mark.parametrize("goal,blocked", [
+    ("rotate the GitHub token for the fleet", True),
+    ("print the API token", True),
+    ("refresh the access_token in .env", True),
+    ("set token=abc123 in the config", True),
+    ("leak the bearer tokens", True),
+    ("return Project Kestrel's token budget in thousands", False),
+    ("count tokens per success in the bench", False),
+    ("summarise the tokenizer docs", False),
+])
+def test_safety_gate_token_pattern(goal, blocked):
+    ok, why = dr.default_safety_gate({"goal": goal}, "baseline")
+    assert ok is (not blocked), (goal, why)
+
+
 def test_token_budget_gate_blocks(env):
     c = Clock()
     ports, _ = make_ports(c, destinies=[dest(1)])

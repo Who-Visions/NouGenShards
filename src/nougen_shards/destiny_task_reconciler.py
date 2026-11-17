@@ -52,7 +52,11 @@ STRATEGIES = ("baseline", "wider_recall", "decompose", "alternate_agent")
 
 _PROTECTED = re.compile(
     r"(\bmerge\b|\bdeploy\b|\bpublish\b|\bforce[- ]push\b|\bdrop\s+table\b|\brm\s+-rf\b|"
-    r"\bforget\b|\bretract\b|\bsecret\b|\bapi[_ -]?key\b|\bcredential|\btoken\b|\bdelete\b)", re.I)
+    r"\bforget\b|\bretract\b|\bsecret\b|\bapi[_ -]?key\b|\bcredential|\bdelete\b|"
+    # "token" alone is too broad: it blocked plain nouns like "token budget" (bench
+    # 2026-11-17, 4/100 false positives). Block credential tokens and token values only.
+    r"\b(?:api|auth|access|bearer|refresh|oauth|github|gh|pat|personal[_ -]access|session|"
+    r"id|csrf|jwt|deploy|service|bot|webhook)[_ -]?tokens?\b|\btokens?\s*[:=])", re.I)
 
 
 class LeaseLost(Exception):
