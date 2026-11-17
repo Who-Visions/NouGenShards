@@ -154,9 +154,51 @@ def test_at11_at12_repair_loop_and_consecutive_failure_stop():
 
     # AT-12: 3 consecutive same-class failures trip circuit breaker
     for i in range(1, 4):
-        lc.append_ledger("t-trip", "attempt_failed", {"attempt": i, "failure_class": "deterministic"})
+        lc.append_ledger("t-trip", "attempt_failed", {"attempt": i, "failure_class": "deterministic", "tokens": 2000})
     with pytest.raises(lc.BudgetTrippedError):
         lc.check_budget("t-trip", lc.Budget(max_attempts=10, repeat_failure_stop=3))
+
+    # Failed-call tokens count toward cumulative budget
+    with pytest.raises(lc.BudgetTrippedError):
+        lc.check_budget("t-trip", lc.Budget(max_attempts=10, max_tokens=7000, repeat_failure_stop=10), call_tokens=1500)
+
+
+def test_resume_after_crash_restores_attempt_and_verifier_timeout(monkeypatch):
+    import subprocess
+    # Simulate a previous crashed deterministic attempt in ledger
+    lc.append_ledger("t-resume", "init", {"owner": "old"})
+    lc.append_ledger("t-resume", "attempt", {
+        "attempt": 1, "owner": "old", "route": "nvidia_nim_free",
+        "strategy_hash": lc.compute_strategy_hash("baseline"), "what_we_learned": "initial",
+    })
+    lc.append_ledger("t-resume", "attempt_failed", {
+        "attempt": 1, "failure_class": "deterministic", "tokens": 100, "output": "AssertionError",
+    })
+    seen: list[tuple[int, str]] = []
+
+    def step(attempt: int, route: str, strategy: str):
+        seen.append((attempt, strategy))
+        return True, "ok", 100
+
+    def repair(attempt: int, output: str, prev_hash: str):
+        return "recovered-strategy-v2", "resumed with new strategy"
+
+    res = lc.run_relentless(
+        "t-resume", "new-owner",
+        [lc.SuccessCriterion(kind="assert", target="ok", fn=lambda: (True, "pass"))],
+        step, repair_fn=repair, budget=lc.Budget(max_attempts=4),
+    )
+    assert res["status"] == "done"
+    assert seen == [(2, "recovered-strategy-v2")]
+
+    # Verifier timeout converts to failed check instead of uncaught exception
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="slow", timeout=300)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    v = lc.verify_task("t-timeout", [lc.SuccessCriterion(kind="cmd", target="slow")])
+    assert v["status"] == "verify_failed"
+    assert "timeout after 300s" in v["checks"][0]["detail"]
 
 
 def test_nougen_loop_relentless_repairs_then_passes(tmp_path):

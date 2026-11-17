@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -267,7 +268,11 @@ def check_budget(
 
     entries = read_ledger(task_id)
     attempts = [e for e in entries if e.get("event") == "attempt"]
-    total_tokens = sum(int((e.get("data") or {}).get("tokens", 0)) for e in attempts) + call_tokens
+    total_tokens = sum(
+        int((e.get("data") or {}).get("tokens", 0))
+        for e in entries
+        if e.get("event") in ("attempt", "attempt_failed", "attempt_done")
+    ) + call_tokens
     if total_tokens >= budget.max_tokens:
         raise BudgetTrippedError(f"Task tokens {total_tokens} reached cap {budget.max_tokens}")
     if len(attempts) >= budget.max_attempts:
@@ -309,7 +314,11 @@ def _eval_criterion(c: SuccessCriterion, cwd: Path) -> tuple[bool, str]:
     if c.fn is not None:
         return c.fn()
     if c.kind == "cmd":
-        proc = subprocess.run(c.target, cwd=cwd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        timeout_s = 300
+        try:
+            proc = subprocess.run(c.target, cwd=cwd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return False, f"timeout after {timeout_s}s"
         ok = proc.returncode == 0
         tail = "\n".join((proc.stdout + "\n" + proc.stderr).strip().splitlines()[-8:])
         return ok, f"rc={proc.returncode} {tail}".strip()
@@ -371,15 +380,32 @@ def run_relentless(
     cfg = budget or Budget()
     started = time.time()
     acquire_lease(task_id, owner)
-    if not read_ledger(task_id) or current_status(task_id) == "new":
+    existing = read_ledger(task_id)
+    if not existing or current_status(task_id) == "new":
         append_ledger(task_id, "init", {"owner": owner, "criteria": [asdict(c) for c in criteria if c.fn is None]})
+
+    prior_attempts = [e for e in existing if e.get("event") == "attempt"]
+    prior_fails = [e for e in existing if e.get("event") == "attempt_failed"]
+    attempt_num = len(prior_attempts)
+    throttled_routes: set[str] = set()
+    transient_retries = sum(1 for e in prior_fails if (e.get("data") or {}).get("failure_class") == "transient")
 
     strategy = initial_strategy
     strategy_hash = compute_strategy_hash(strategy)
     what_we_learned = "initial attempt"
-    throttled_routes: set[str] = set()
-    transient_retries = 0
-    attempt_num = 0
+    if prior_attempts:
+        last_fail = prior_fails[-1] if prior_fails else None
+        last_hash = (prior_attempts[-1].get("data") or {}).get("strategy_hash", strategy_hash)
+        if last_fail and (last_fail.get("data") or {}).get("failure_class") == "transient":
+            what_we_learned = "transient retry"
+            strategy_hash = last_hash
+        elif repair_fn is not None and last_fail:
+            strategy, what_we_learned = repair_fn(
+                attempt_num, str((last_fail.get("data") or {}).get("output", "")), last_hash
+            )
+            strategy_hash = compute_strategy_hash(strategy)
+        else:
+            what_we_learned = "resumed after interruption"
 
     try:
         while True:
@@ -401,11 +427,27 @@ def run_relentless(
                     "what_we_learned": what_we_learned,
                 },
             )
+            stop_beat = threading.Event()
+
+            def _beat_loop() -> None:
+                while not stop_beat.wait(300.0):
+                    try:
+                        heartbeat(task_id, owner)
+                    except Exception:
+                        break
+
+            beat_thread = threading.Thread(target=_beat_loop, daemon=True)
             heartbeat(task_id, owner)
-            ok, output, tokens = step_fn(attempt_num, route, strategy)
+            beat_thread.start()
+            try:
+                ok, output, tokens = step_fn(attempt_num, route, strategy)
+            finally:
+                stop_beat.set()
+                beat_thread.join(timeout=1.0)
             check_budget(task_id, cfg, call_tokens=tokens, started_epoch=started)
 
             if ok:
+                append_ledger(task_id, "attempt_done", {"attempt": attempt_num, "tokens": tokens})
                 v = verify_task(task_id, criteria, cwd=cwd)
                 if v["status"] == "done":
                     return {"status": "done", "attempts": attempt_num, "verify": v}

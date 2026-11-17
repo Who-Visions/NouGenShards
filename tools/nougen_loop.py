@@ -348,10 +348,13 @@ class Loop:
         return 1 if failed else 0
 
     def _run_relentless(self) -> int:
+        import socket  # pylint: disable=import-outside-toplevel
+        import uuid  # pylint: disable=import-outside-toplevel
         from nougen_shards import loop_contract as lc  # pylint: disable=import-outside-toplevel
 
         task_id = getattr(self.a, "task_id", "") or slug(self.a.goal)
-        owner = os.environ.get("NOUGEN_AGENT", "nougen-loop")
+        agent = os.environ.get("NOUGEN_AGENT", "nougen-loop")
+        owner = f"{agent}:{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         verify_cmd = getattr(self.a, "verify_cmd", "")
         test_cmd = detect_test_cmd(self.cwd)
         if not verify_cmd and test_cmd:
