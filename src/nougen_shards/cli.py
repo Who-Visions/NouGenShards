@@ -4101,6 +4101,15 @@ def cmd_msg(args):
         emit(peers if isinstance(peers, dict) else {"peers": peers}, plain=_plain_peers, args=args)
         return
 
+    from .nougenmsg import target_unknown
+    refusal = target_unknown(target)
+    if refusal:
+        def _plain_refusal(p, style):
+            yield f"Not sent: {p['error']}"
+            yield f"Resolvable now: {' '.join(p['resolvable'])}"
+        emit(refusal, plain=_plain_refusal, args=args)
+        return
+
     node, agent_target = bus.parse_destination(target)
 
     if getattr(args, "dry_run", False):

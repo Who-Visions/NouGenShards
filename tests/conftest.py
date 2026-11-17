@@ -191,6 +191,16 @@ def _fleet_hosts_fixture(monkeypatch):
     monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(Path(__file__).parent / "fixtures" / "fleet_hosts.json"))
 
 
+@pytest.fixture(autouse=True)
+def _target_resolver_isolation(monkeypatch, tmp_path):
+    """The '@name' resolver reads live data: keep tests off the network (no reachability
+    probe), off the operator's presence file, and off a table cached by another test.
+    A test of the probe or the cache sets these itself."""
+    monkeypatch.setenv("NOUGEN_MSG_RESOLVE_PROBE", "0")
+    monkeypatch.setenv("NOUGEN_MSG_RESOLVE_TTL_S", "0")
+    monkeypatch.setenv("NOUGEN_LANE_PRESENCE_FILE", str(tmp_path / "lane_presence.json"))
+
+
 @pytest.fixture(scope="session")
 def shared_mcp_client():
     """The one lifespan-entered node client for the whole process.

@@ -68,6 +68,9 @@ DEFAULT_PORT = 8766
 DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
 SENDER_LABEL_CHARS = 64
+# Inbox lanes this receiver accepts with no live session behind them. They are the
+# default for NOUGEN_MSG_LOCAL_LANES (set it to change them); nodes, app lanes and
+# groups are never listed here, they come from the live table at send time.
 _LOCAL_AGENT_TARGETS = frozenset({
     "antigravity", "agy", "claude", "claude-code", "codex", "codex-cli",
     "kaedra", "solai", "yukiai", "nobody",
@@ -79,8 +82,13 @@ _LOCAL_AGENT_TARGETS = frozenset({
 _LOCAL_MODEL_LANES = frozenset({"ollama", "openrouter"})
 
 
+os.environ.setdefault("NOUGEN_MSG_LOCAL_LANES", ",".join(sorted(_LOCAL_AGENT_TARGETS)))
+
+
 def _parse_foreign_target(target: str) -> "tuple[str, str] | None":
-    """Return (dest_node, dest_agent) if target is non-local, or None if local."""
+    """Fallback parse for a bare receiver without nougen_shards (see _plan_route).
+
+    Return (dest_node, dest_agent) if target is non-local, or None if local."""
     raw = str(target or "").strip().lower()
     if not raw or raw == "all":
         # Bare "all" is the wire agent target sent by send_direct_http for node-only sends.
@@ -102,6 +110,92 @@ def _parse_foreign_target(target: str) -> "tuple[str, str] | None":
     return (stripped, "all")
 
 
+def _plan_route(target: str) -> "tuple[list, bool, dict | None]":
+    """Resolve a target against the live table: (remote routes, deliver here too, refusal).
+
+    A route is (dest_node, dest_agent); the fleet group is the single route
+    ("fleet", "all", [peer, ...]). Every name comes from nougen_shards' resolver, which
+    only picks among registry peers, live lanes and groups; an unknown or unreachable
+    target is a refusal listing what resolves right now, never a broadcast. A bare
+    receiver without the package keeps the old local-only parse.
+    """
+    raw = str(target or "").strip().lower()
+    if not raw or raw == "all":
+        # Bare "all" is the wire agent target send_direct_http uses for node-only sends.
+        return [], True, None
+    try:
+        from nougen_shards import nougenmsg as _bus_mod  # noqa: E402
+        res = _bus_mod.resolve_target(target)
+        here = {NODE, _bus_mod._self_node_name()}
+    except Exception:
+        legacy = _parse_foreign_target(target)
+        return ([legacy] if legacy else []), legacy is None, None
+    if not res.ok:
+        return [], False, {
+            "delivered": False, "routed": False, "status": "not_resolvable",
+            "reason": res.reason, "error": res.error, "node": NODE,
+            "target": str(target)[:80], "resolvable": res.resolvable,
+        }
+    remote = [d for d in res.deliveries if d.node not in here]
+    local = len(remote) < len(res.deliveries)
+    if res.kind == "group" and res.target in ("all", "fleet"):
+        return [("fleet", "all", sorted({d.node for d in remote}))], False, None
+    routes, seen = [], set()
+    for d in remote:
+        route = (d.node, d.lane or "all")
+        if route not in seen:
+            seen.add(route)
+            routes.append(route)
+    return routes, local, None
+
+
+def _note_sender_presence(msg: dict) -> None:
+    """Record which node a sending lane lives on, so '@<lane>' resolves at send time.
+
+    Only for authenticated traffic, only from the envelope's machine and lane (or a
+    'node/lane' sender label), and the store refuses any node outside the registry.
+    """
+    if not AUTH_TOKEN:
+        return
+    try:
+        from nougen_shards.nougenmsg import note_lane_seen  # noqa: E402
+        env = msg.get("origin_envelope") if isinstance(msg.get("origin_envelope"), dict) else {}
+        machine, lane = env.get("machine"), env.get("lane")
+        if not (machine and lane):
+            machine, sep, lane = str(msg.get("sender") or "").partition("/")
+            if not sep:
+                return
+        from nougen_shards.nougenmsg import _registry_node_names  # noqa: E402
+        if str(machine).strip().lower() in _registry_node_names():
+            note_lane_seen(str(lane), str(machine))
+        else:
+            # A connector lane ('chatgpt-app/g-x', 'meta-app') is not a node: it talks to
+            # this node and reads its inbox here, so it is present on THIS node.
+            note_lane_seen(str(machine), NODE)
+    except Exception:
+        pass
+
+
+def _dispatch_routes(msg: dict, routes: list) -> "tuple[int, dict]":
+    """Forward to every resolved route once; one route answers exactly as before."""
+    if len(routes) == 1:
+        return _dispatch_foreign_target(msg, routes[0])
+    results, failed, payload = {}, [], {}
+    for route in routes:
+        status, payload = _dispatch_foreign_target(msg, route)
+        results[route[0]] = payload.get("results", payload.get("error"))
+        if status >= 400:
+            failed.append({"node": route[0], "status": status, "error": payload.get("error")})
+    if len(failed) == len(routes):
+        return 502, {"delivered": False, "routed": False, "status": "route_failed",
+                     "error": "no resolved node accepted the message", "node": NODE,
+                     "target": msg["target"], "message_id": msg["message_id"],
+                     "results": results, "failed": failed}
+    return 200, {"delivered": True, "routed": True, "duplicate": False, "method": "fleet_bus",
+                 "node": NODE, "target": msg["target"], "message_id": msg["message_id"],
+                 "build": build_id(), "results": results, "failed": failed}
+
+
 def _get_fleet_bus():
     """Return NouGenMsgBus when nougen_shards is importable, else None."""
     try:
@@ -111,9 +205,9 @@ def _get_fleet_bus():
         return None
 
 
-def _dispatch_foreign_target(msg: dict, dest: "tuple[str, str]") -> "tuple[int, dict]":
+def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
     """Forward a non-local target via NouGenMsgBus, or refuse with 422 if unavailable."""
-    dest_node, dest_agent = dest
+    dest_node, dest_agent = dest[0], dest[1]
     bus = None if dest_agent.split(":", 1)[0].strip() in _LOCAL_MODEL_LANES else _get_fleet_bus()
     if bus is None:
         return 422, {
@@ -131,7 +225,9 @@ def _dispatch_foreign_target(msg: dict, dest: "tuple[str, str]") -> "tuple[int, 
     origin = dict(raw_env) if isinstance(raw_env, dict) else {}
     origin.setdefault("original_sender", msg.get("sender", "unknown"))
     if dest_node == "fleet":
-        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True)
+        # The peers come from the live table when the resolver supplied them.
+        peers = {"nodes": list(dest[2])} if len(dest) > 2 else {}
+        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True, **peers)
         return 200, {
             "delivered": True,
             "routed": True,
@@ -869,7 +965,13 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
-        foreign = _parse_foreign_target(str(msg["target"]))
+        routes, deliver_here, refusal = _plan_route(str(msg["target"]))
+        if refusal is not None:
+            # Unknown or unreachable: say so and list what resolves now. Nothing is
+            # claimed, recorded or broadcast for a target nobody would receive.
+            self._send(refusal, 422)
+            return
+        _note_sender_presence(msg)
         assign_message_id(msg)
         first, seen = claim_message(msg)
         if not first:
@@ -885,9 +987,9 @@ class Handler(BaseHTTPRequestHandler):
                 dup["receipt"] = "/msg/{}".format(msg["message_id"])
             self._send(dup)
             return
-        if foreign is not None:
+        if routes and not deliver_here:
             try:
-                status, payload = _dispatch_foreign_target(msg, foreign)
+                status, payload = _dispatch_routes(msg, routes)
             except Exception:
                 release_claim(msg)
                 raise
@@ -913,7 +1015,18 @@ class Handler(BaseHTTPRequestHandler):
         # node runs is a rung toward choosing an exploit against a node it can
         # already reach — not a secret, but not free either. A checker holding
         # the token gets it cheaply; a scanner does not.
-        self._send({"delivered": True, "duplicate": False, "method": "http", "node": NODE,
+        also = {}
+        if routes:
+            # A lane hosted here and on other nodes: delivered here above, and once to
+            # each other node. A peer that refuses is reported, not hidden.
+            try:
+                status, routed = _dispatch_routes(msg, routes)
+            except Exception as exc:
+                status, routed = 502, {"error": str(exc)}
+            also = {"routed": status < 400, "routes": routed.get("results"),
+                    "failed": routed.get("failed") or ([routed.get("error")] if status >= 400 else [])}
+
+        self._send({"delivered": True, "duplicate": False, "method": "http", "node": NODE, **also,
                     "file": path.name,
                     "message_id": msg["message_id"], "in_reply_to": msg.get("in_reply_to"),
                     "receipt": "/msg/{}".format(msg["message_id"]),

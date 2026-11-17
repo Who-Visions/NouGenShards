@@ -3140,8 +3140,11 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
     # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
     # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
-    from nougen_shards.nougenmsg import NouGenMsgBus
+    from nougen_shards.nougenmsg import NouGenMsgBus, target_unknown
     clean_target = target.lstrip("@").lower() if target else "all"
+    refusal = target_unknown(clean_target)
+    if refusal:
+        return {"status": "refused", "target": target, "priority": priority, **refusal}
     res = NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
     return {
         "status": "delivered",
@@ -3472,8 +3475,11 @@ def fleet_status() -> dict:
 @_offloaded
 def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
-    from nougen_shards.nougenmsg import NouGenMsgBus  # emit_fleet is NouGenMsgBus's, not AgentPinger's
+    from nougen_shards.nougenmsg import NouGenMsgBus, target_unknown  # emit_fleet is NouGenMsgBus's, not AgentPinger's
     clean_target = target.lstrip("@").lower()
+    refusal = target_unknown(clean_target)
+    if refusal:
+        return {"status": "refused", "target": target, **refusal}
     return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
 
 

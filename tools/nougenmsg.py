@@ -758,6 +758,14 @@ def main():
     cleaned_args = []
     for a in args:
         if a.startswith("@") and not node:
+            from nougen_shards.nougenmsg import target_unknown
+            refusal = target_unknown(a)
+            if refusal:
+                # Resolved from the live table at send time: an unknown name is refused
+                # here, never treated as "everyone on this node".
+                print(f"[!] Not sent: {refusal['error']}")
+                print(f"    Resolvable now: {' '.join(refusal['resolvable'])}")
+                return
             n, ag = NouGenMsgBus.parse_destination(a)
             node = n
             target_agent = ag
