@@ -174,6 +174,12 @@ def run_arm(arm: str, facts, tasks, *, max_ticks: int = 40, log=print) -> dict:
                                verification="hidden asserts per task", status="dormant", actor="bench")
     did = d.get("id") or d.get("destiny", {}).get("id")
     by_goal = {t["goal"]: t for t in tasks}
+    cfg = dr.Config(owner=f"bench-{arm}", max_attempts=3, lease_s=300, max_tasks_per_tick=len(tasks),
+                    tick_token_budget=10 ** 7, task_token_budget=60000, auto_fulfill=True)
+    # Route timeouts are injected on the first configured route only (see
+    # execute): the fault is a property of that route, never of whichever
+    # route the reconciler happens to try first.
+    fault_route = cfg.routes[0]
     for i, t in enumerate(tasks):
         t["route_fault"] = (i % 5 == 0)
         t["crash_fault"] = (i % 10 == 3)
@@ -196,9 +202,16 @@ def run_arm(arm: str, facts, tasks, *, max_ticks: int = 40, log=print) -> dict:
     def execute(task, agent, route, context, strategy):
         key = task["goal"].replace("Break into the smallest steps, then solve: ", "")
         t = by_goal[key]
-        if t["route_fault"] and key not in fired["route"]:
+        # The injected timeout belongs to the first configured route (the
+        # primary lane), not to whichever route the reconciler tries first:
+        # which route is tried first is decided by the cooldown table, so
+        # firing on attempt order lets the fault leak onto the failover route
+        # and knock out the last healthy lane instead of measuring failover.
+        # A flagged task attempted while the primary route cools down runs
+        # unfaulted on the failover route; only fired faults count as faulted.
+        if t["route_fault"] and route == fault_route and key not in fired["route"]:
             fired["route"].add(key)
-            raise dr.RouteTimeout("injected: route timeout")
+            raise dr.RouteTimeout(f"injected: {route} timeout")
         if t["crash_fault"] and key not in fired["crash"]:
             fired["crash"].add(key)
             raise Crash("injected: worker killed mid-task")
@@ -238,8 +251,6 @@ def run_arm(arm: str, facts, tasks, *, max_ticks: int = 40, log=print) -> dict:
         agents=lambda: [dr.Agent("e2b-qat"), dr.Agent("gemma2-2b")],
         record_evidence=record_evidence, publish_relay=publish_relay,
         relay_check=lambda: {"ok": True, "legs": 0}, clock=clock)
-    cfg = dr.Config(owner=f"bench-{arm}", max_attempts=3, lease_s=300, max_tasks_per_tick=len(tasks),
-                    tick_token_budget=10 ** 7, task_token_budget=60000, auto_fulfill=True)
 
     t0 = time.time()
     crashes = ticks = 0
