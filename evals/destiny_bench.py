@@ -115,7 +115,35 @@ def extract_code(text: str) -> str:
     return (m[-1] if m else text).strip()
 
 
+_FORBIDDEN_NAMES = frozenset({
+    "__import__", "eval", "exec", "compile", "open", "getattr", "setattr",
+    "delattr", "globals", "locals", "vars", "dir", "input", "breakpoint",
+})
+
+
+def _validate_generated_ast(code: str) -> str | None:
+    """Reject imports, dunder attributes, and I/O builtins before execution."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return f"syntax error: {exc}"
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return "forbidden import"
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            return f"forbidden dunder attribute: {node.attr}"
+        if isinstance(node, ast.Name) and (
+            node.id in _FORBIDDEN_NAMES or node.id.startswith("__")
+        ):
+            return f"forbidden identifier: {node.id}"
+    return None
+
+
 def hidden_verify(code: str, expected) -> tuple[bool, str]:
+    err = _validate_generated_ast(code)
+    if err:
+        return False, f"sandbox rejected: {err}"
     prog = code + f"\n\nassert answer() == {expected!r}, repr(answer())\nprint('ok')\n"
     try:
         p = subprocess.run([sys.executable, "-I", "-c", prog], capture_output=True, text=True, timeout=10)
@@ -168,9 +196,9 @@ def run_arm(arm: str, facts, tasks, *, max_ticks: int = 40, log=print) -> dict:
     def execute(task, agent, route, context, strategy):
         key = task["goal"].replace("Break into the smallest steps, then solve: ", "")
         t = by_goal[key]
-        if t["route_fault"] and route == "blade" and key not in fired["route"]:
+        if t["route_fault"] and key not in fired["route"]:
             fired["route"].add(key)
-            raise dr.RouteTimeout("injected: blade gateway timeout")
+            raise dr.RouteTimeout("injected: route timeout")
         if t["crash_fault"] and key not in fired["crash"]:
             fired["crash"].add(key)
             raise Crash("injected: worker killed mid-task")
