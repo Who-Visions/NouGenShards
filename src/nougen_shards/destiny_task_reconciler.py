@@ -145,9 +145,10 @@ class Agent:
 class Config:
     owner: str = "reconciler"
     lease_s: float = 300.0
-    # Renew the lease this often while execute runs (0 = lease_s / 3, capped at 30s).
-    # Without it a long execute outlives its lease and resume_expired re-queues a
-    # still-running task, double-executing it and double-spending tokens.
+    # Renew the lease this often while execute, verify and publish run
+    # (0 = lease_s / 3, capped at 30s). Without it a long execute, verify or
+    # publish outlives its lease and resume_expired re-queues a still-running
+    # task, double-executing it and double-spending tokens.
     lease_heartbeat_s: float = 0.0
     max_attempts: int = 4
     task_token_budget: int = 20000
@@ -372,10 +373,12 @@ def choose_agent(task: dict, agents: Sequence[Agent], *, strategy: str, exclude:
 
 
 class _LeaseHeartbeat:
-    """Renew the claim lease on a background thread while ``execute`` runs.
+    """Renew the claim lease on a background thread while execute, verification
+    and publication run.
 
-    ``execute`` is a synchronous port call, so without this a long run outlives
-    its lease and ``resume_expired`` re-queues a still-running task. Each beat
+    ``execute``, ``verify``, ``record_evidence`` and ``publish_relay`` are
+    synchronous port calls, so without this a long run outlives its lease and
+    ``resume_expired`` re-queues a still-running task. Each beat
     extends ``lease_expires`` by a full ``lease_s`` from the reconciler clock,
     fenced by the claim token; a beat that lands on another owner stops the
     thread, and the worker's next fenced write then raises ``LeaseLost``.
@@ -476,58 +479,58 @@ def _run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
                 result = {"error": f"{type(exc).__name__}: {exc}", "tokens": 0}
                 route_used = route
                 break
-    if result is None:
-        # Every route down still burns the attempt: re-queueing for free let a
-        # dead fleet spin this task forever without ever hitting max_attempts.
-        _log_attempt(task, attempt, strategy, agent.id, None, "all_routes_down", 0,
-                     "no route answered", path, ports)
-        exhausted = attempt >= cfg.max_attempts
+        if result is None:
+            # Every route down still burns the attempt: re-queueing for free let a
+            # dead fleet spin this task forever without ever hitting max_attempts.
+            _log_attempt(task, attempt, strategy, agent.id, None, "all_routes_down", 0,
+                         "no route answered", path, ports)
+            exhausted = attempt >= cfg.max_attempts
+            S(state=FAILED if exhausted else QUEUED, attempts=attempt,
+              strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
+            return {"task": task["key"], "outcome": "all_routes_down", "attempts": attempt}
+        tokens = max(0, min(int(result.get("tokens") or 0), 10 ** 9))  # a negative count must not refund budget
+        spent = task["tokens_spent"] + tokens
+        if tokens > remaining:
+            # The executor overran the allowance it was handed: its output is not trusted or published.
+            _log_attempt(task, attempt, strategy, agent.id, route_used, "over_budget", tokens,
+                         f"used {tokens} of {remaining} allowed", path, ports)
+            S(state=BLOCKED, tokens_spent=spent, attempts=attempt, blocked_reason=f"executor exceeded token budget ({tokens}>{remaining})")
+            return {"task": task["key"], "outcome": "blocked", "reason": "executor over budget", "tokens": tokens}
+        S(state=VERIFYING, tokens_spent=spent)
+        verdict = {"passed": False, "evidence": result.get("error", "no output"), "verifier": None}
+        if "error" not in result:
+            verdict = ports.verify(task, result)
+            if verdict.get("verifier") == agent.id or not verdict.get("verifier"):
+                verdict = {"passed": False, "verifier": verdict.get("verifier"),
+                           "evidence": "verification rejected: verifier must be identified and independent of the executor"}
+        S(state=VERIFYING)  # fence check + lease renewal before anything is published
+        refs = [str(s.get("id") or s.get("ref")) for s in context["shards"] if s.get("id") or s.get("ref")]
+        if verdict.get("passed"):
+            # Publish and DONE cannot be one atomic write (the sinks are external),
+            # so both payloads carry the same stable idempotency key: a crash after
+            # publish but before DONE re-publishes with the same key and a sink
+            # that dedupes on it records the evidence once. DONE itself is a
+            # single fenced UPDATE, so it lands exactly once.
+            publish_key = task["key"]
+            shard = ports.record_evidence(task, {"result": result, "verdict": verdict, "receipt": receipt, "agent": agent.id, "route": route_used, "idempotency_key": publish_key})
+            leg = ports.publish_relay(task, {"shard": shard, "verdict": verdict, "agent": agent.id, "attempt": attempt, "idempotency_key": publish_key})
+            if task.get("destiny_id") is not None:
+                ports.link_destiny(task["destiny_id"], "shard", str(shard), "evidence")
+                ports.link_destiny(task["destiny_id"], "relay", str(leg), "outcome")
+                ports.link_destiny(task["destiny_id"], "agent", agent.id, "actor")
+            ports.mark_utility(refs, True)
+            _log_attempt(task, attempt, strategy, agent.id, route_used, "passed", tokens, verdict, path, ports)
+            S(state=DONE, attempts=attempt)
+            _maybe_fulfill(task, cfg, ports, path)
+            return {"task": task["key"], "outcome": "done", "attempts": attempt, "tokens": tokens, "agent": agent.id,
+                    "route": route_used, "shard": shard, "relay": leg}
+        ports.mark_utility(refs, False)
+        _log_attempt(task, attempt, strategy, agent.id, route_used, "failed_verification", tokens, verdict, path, ports)
+        exhausted = attempt >= cfg.max_attempts or spent >= cfg.task_token_budget
         S(state=FAILED if exhausted else QUEUED, attempts=attempt,
-          strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
-        return {"task": task["key"], "outcome": "all_routes_down", "attempts": attempt}
-    tokens = max(0, min(int(result.get("tokens") or 0), 10 ** 9))  # a negative count must not refund budget
-    spent = task["tokens_spent"] + tokens
-    if tokens > remaining:
-        # The executor overran the allowance it was handed: its output is not trusted or published.
-        _log_attempt(task, attempt, strategy, agent.id, route_used, "over_budget", tokens,
-                     f"used {tokens} of {remaining} allowed", path, ports)
-        S(state=BLOCKED, tokens_spent=spent, attempts=attempt, blocked_reason=f"executor exceeded token budget ({tokens}>{remaining})")
-        return {"task": task["key"], "outcome": "blocked", "reason": "executor over budget", "tokens": tokens}
-    S(state=VERIFYING, tokens_spent=spent)
-    verdict = {"passed": False, "evidence": result.get("error", "no output"), "verifier": None}
-    if "error" not in result:
-        verdict = ports.verify(task, result)
-        if verdict.get("verifier") == agent.id or not verdict.get("verifier"):
-            verdict = {"passed": False, "verifier": verdict.get("verifier"),
-                       "evidence": "verification rejected: verifier must be identified and independent of the executor"}
-    S(state=VERIFYING)  # fence check + lease renewal before anything is published
-    refs = [str(s.get("id") or s.get("ref")) for s in context["shards"] if s.get("id") or s.get("ref")]
-    if verdict.get("passed"):
-        # Publish and DONE cannot be one atomic write (the sinks are external),
-        # so both payloads carry the same stable idempotency key: a crash after
-        # publish but before DONE re-publishes with the same key and a sink
-        # that dedupes on it records the evidence once. DONE itself is a
-        # single fenced UPDATE, so it lands exactly once.
-        publish_key = task["key"]
-        shard = ports.record_evidence(task, {"result": result, "verdict": verdict, "receipt": receipt, "agent": agent.id, "route": route_used, "idempotency_key": publish_key})
-        leg = ports.publish_relay(task, {"shard": shard, "verdict": verdict, "agent": agent.id, "attempt": attempt, "idempotency_key": publish_key})
-        if task.get("destiny_id") is not None:
-            ports.link_destiny(task["destiny_id"], "shard", str(shard), "evidence")
-            ports.link_destiny(task["destiny_id"], "relay", str(leg), "outcome")
-            ports.link_destiny(task["destiny_id"], "agent", agent.id, "actor")
-        ports.mark_utility(refs, True)
-        _log_attempt(task, attempt, strategy, agent.id, route_used, "passed", tokens, verdict, path, ports)
-        S(state=DONE, attempts=attempt)
-        _maybe_fulfill(task, cfg, ports, path)
-        return {"task": task["key"], "outcome": "done", "attempts": attempt, "tokens": tokens, "agent": agent.id,
-                "route": route_used, "shard": shard, "relay": leg}
-    ports.mark_utility(refs, False)
-    _log_attempt(task, attempt, strategy, agent.id, route_used, "failed_verification", tokens, verdict, path, ports)
-    exhausted = attempt >= cfg.max_attempts or spent >= cfg.task_token_budget
-    S(state=FAILED if exhausted else QUEUED, attempts=attempt,
-         strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
-    return {"task": task["key"], "outcome": "failed" if exhausted else "retry", "attempts": attempt,
-            "next_strategy": STRATEGIES[min(sidx + 1, len(STRATEGIES) - 1)], "tokens": tokens}
+             strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
+        return {"task": task["key"], "outcome": "failed" if exhausted else "retry", "attempts": attempt,
+                "next_strategy": STRATEGIES[min(sidx + 1, len(STRATEGIES) - 1)], "tokens": tokens}
 
 
 def _maybe_fulfill(task: dict, cfg: Config, ports: Ports, path: Optional[Path]) -> None:

@@ -2,6 +2,7 @@
 
 All ports are scripted; nothing touches the network, the real vault or a relay.
 """
+import sqlite3
 import time
 
 import pytest
@@ -27,7 +28,7 @@ def env(tmp_path, monkeypatch):
 
 
 def make_ports(clock, *, destinies=None, intents=None, shards=None, execute=None, verify=None,
-               agents=None, recall=None, log=None):
+               agents=None, recall=None, record_evidence=None, log=None):
     log = log if log is not None else {}
     log.setdefault("evidence", [])
     log.setdefault("relay", [])
@@ -46,7 +47,7 @@ def make_ports(clock, *, destinies=None, intents=None, shards=None, execute=None
         execute=execute or (lambda task, agent, route, ctx, strat: {"output": "ok", "tokens": 10}),
         verify=verify or (lambda task, res: {"passed": True, "evidence": "hidden test green", "verifier": "judge"}),
         agents=lambda: agents or [dr.Agent("a1"), dr.Agent("a2")],
-        record_evidence=lambda t, p: log["evidence"].append(p) or f"9{len(log['evidence'])}@db1",
+        record_evidence=record_evidence or (lambda t, p: log["evidence"].append(p) or f"9{len(log['evidence'])}@db1"),
         publish_relay=lambda t, p: log["relay"].append(p) or f"leg{len(log['relay'])}",
         link_destiny=lambda *a: log["links"].append(a),
         update_destiny=lambda *a: log["updates"].append(a),
@@ -315,6 +316,44 @@ def test_lease_heartbeat_keeps_long_execute_owned(env):
     assert holder["resumed"] == 0
     assert holder["second"] is None
     assert out["results"][0]["outcome"] == "done"
+
+
+def test_heartbeat_renews_lease_through_verify_and_publish(env):
+    """#1103 follow-up: the heartbeat must cover verify + publish, not just execute.
+
+    The lease is 1s (fake clock); verify and record_evidence each advance the
+    fake clock 5s and sleep 0.35s of real time (heartbeat interval 0.1s). A live
+    heartbeat renews lease_expires past the advanced clock; a stopped one leaves
+    it at the claim-time value. Proven against the old code: both readings stay
+    at 1_000_001.0 (same idiom as test_lease_heartbeat_keeps_long_execute_owned).
+    """
+    c = Clock()
+    db = env / "rec.db"
+    seen = {}
+
+    def lease_expires():
+        with sqlite3.connect(str(db)) as conn:
+            row = conn.execute("SELECT lease_expires FROM tasks ORDER BY id LIMIT 1").fetchone()
+            return row[0]
+
+    def slow_verify(task, res):
+        c.t += 5.0
+        time.sleep(0.35)  # heartbeat (0.1s interval) renews the lease meanwhile
+        seen["during_verify"] = lease_expires()
+        return {"passed": True, "evidence": "ok", "verifier": "judge"}
+
+    def slow_evidence(task, payload):
+        c.t += 5.0
+        time.sleep(0.35)
+        seen["during_publish"] = lease_expires()
+        return "9@db1"
+
+    ports, log = make_ports(c, destinies=[dest(1)], verify=slow_verify,
+                            record_evidence=slow_evidence)
+    out = dr.tick(dr.Config(lease_s=1.0, lease_heartbeat_s=0.1), ports)
+    assert out["results"][0]["outcome"] == "done"
+    assert seen["during_verify"] > 1_000_004.0
+    assert seen["during_publish"] > 1_000_009.0
 
 
 def test_crash_resume_requeues_and_counts_the_attempt(env):
