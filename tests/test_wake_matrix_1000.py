@@ -93,5 +93,5 @@ def test_wire_protocol_and_claim_mandate():
         assert len(lines) >= 3
         assert b"auth" in lines[0]
         assert b"user" in lines[1]
-        if i % 2 == 0:
-            assert "HARDCADE NATIVE MANDATE" in payload
+        # No pushy suffix on injected text any more (relay style, 11/17).
+        assert "MANDATE" not in payload
