@@ -324,6 +324,11 @@ class Loop:
                            "" if r.returncode == 0 else "handoff returned nonzero", {"tail": _tail(r.stdout, 2)})
 
     def run(self) -> int:
+        if getattr(self.a, "relentless", False):
+            return self._run_relentless()
+        return self._run_once()
+
+    def _run_once(self) -> int:
         selected = [s for s in STAGES if s not in set(self.a.skip)]
         for stage in selected:
             try:
@@ -341,6 +346,75 @@ class Loop:
             print(json.dumps([asdict(r) for r in self.results], indent=2))
         failed = [r for r in self.results if r.status == "failed"]
         return 1 if failed else 0
+
+    def _run_relentless(self) -> int:
+        import socket  # pylint: disable=import-outside-toplevel
+        import uuid  # pylint: disable=import-outside-toplevel
+        from nougen_shards import loop_contract as lc  # pylint: disable=import-outside-toplevel
+
+        task_id = getattr(self.a, "task_id", "") or slug(self.a.goal)
+        agent = os.environ.get("NOUGEN_AGENT", "nougen-loop")
+        owner = f"{agent}:{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+        verify_cmd = getattr(self.a, "verify_cmd", "")
+        test_cmd = detect_test_cmd(self.cwd)
+        if not verify_cmd and test_cmd:
+            verify_cmd = " ".join(shlex.quote(c) for c in test_cmd)
+        if not verify_cmd:
+            raise lc.ProseGoalError("Relentless mode requires --verify-cmd or a detected test command (AT-01)")
+        criteria = [lc.SuccessCriterion(kind="cmd", target=verify_cmd)]
+        budget = lc.Budget(
+            max_attempts=int(getattr(self.a, "max_attempts", 3)),
+            max_tokens=int(getattr(self.a, "budget_tokens", 50000)),
+        )
+        repair_cmd = getattr(self.a, "repair_cmd", "")
+
+        def step_fn(attempt: int, route: str, strategy: str) -> tuple[bool, str, int]:
+            self.results = []
+            for stage in ("recall", "build", "harden"):
+                if stage in set(self.a.skip):
+                    continue
+                res = getattr(self, f"st_{stage}")()
+                self.results.append(res)
+                self._print(res)
+                if res.status == "failed":
+                    return False, json.dumps(res.evidence) or res.reason, 0
+            return True, "pre-verify stages passed", 0
+
+        def repair_fn(attempt: int, output: str, prev_hash: str) -> tuple[str, str]:
+            if not repair_cmd:
+                raise lc.StrategyRepeatError("build/verify failed and no --repair-cmd provided")
+            env = os.environ.copy()
+            env["NOUGEN_LOOP_ATTEMPT"] = str(attempt)
+            env["NOUGEN_LOOP_FAILURE_TAIL"] = output[:2000]
+            proc = subprocess.run(repair_cmd, cwd=self.cwd, shell=True, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=STAGE_TIMEOUT, env=env, creationflags=_NO_WINDOW)
+            strategy = f"repair-attempt-{attempt}-{proc.returncode}-{len(proc.stdout)}"
+            learned = _tail(proc.stdout + proc.stderr, 4) or f"repair cmd exited {proc.returncode}"
+            return strategy, learned
+
+        outcome = lc.run_relentless(
+            task_id, owner, criteria, step_fn,
+            repair_fn=repair_fn if repair_cmd else None,
+            budget=budget, cwd=self.cwd,
+        )
+        if outcome.get("status") != "done":
+            if self.a.json:
+                print(json.dumps(outcome, indent=2))
+            return 1
+
+        # Verification passed: now run the write/closeout stages once.
+        for stage in ("commit", "pr", "shard", "dream", "evolve", "handoff"):
+            if stage in set(self.a.skip):
+                self.results.append(StageResult(stage, "skipped", "--skip"))
+                continue
+            res = getattr(self, f"st_{stage}")()
+            self.results.append(res)
+            self._print(res)
+            if res.status == "failed" and not self.a.keep_going:
+                return 1
+        if self.a.json:
+            print(json.dumps({"outcome": outcome, "stages": [asdict(r) for r in self.results]}, indent=2))
+        return 0
 
     def _print(self, res: StageResult) -> None:
         if self.a.json:
@@ -366,6 +440,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--on-current-branch", action="store_true",
                    help="allow committing on a non-default branch the loop did not create (it must be yours)")
     p.add_argument("--keep-going", action="store_true", help="continue after a failed stage")
+    p.add_argument("--relentless", action="store_true", help="run governed closed-loop repair/verify until done or budget trips")
+    p.add_argument("--task-id", default="", help="task ledger ID for --relentless")
+    p.add_argument("--max-attempts", type=int, default=3, help="max attempts in --relentless mode")
+    p.add_argument("--budget-tokens", type=int, default=50000, help="token budget in --relentless mode")
+    p.add_argument("--repair-cmd", default="", help="shell command run on deterministic failure in --relentless mode")
+    p.add_argument("--verify-cmd", default="", help="explicit verification command for --relentless mode")
     p.add_argument("--json", action="store_true", help="machine-readable results")
     return p.parse_args(argv)
 
