@@ -196,7 +196,8 @@ def test_token_budget_gate_blocks(env):
                            execute=lambda *a: {"output": "o", "tokens": 50},
                            verify=lambda t, r: {"passed": False, "evidence": "red", "verifier": "judge"})
     out2 = dr.tick(cfg, ports2)
-    assert out2["results"][0]["outcome"] == "failed"  # spent 50 >= 5: no further retry
+    assert out2["results"][0]["outcome"] == "blocked"  # executor used 50 of the 5 it was handed
+    assert dr.status()["attempt_outcomes"] == {"over_budget": 2}  # d1 (queued by the first tick) and d2
 
 
 def test_blade_timeout_routes_via_phoebus_and_cools_down(env):
@@ -273,7 +274,7 @@ def test_single_claim_under_concurrent_claimers(env):
     dr.discover(ports)
     first = dr.claim_next(dr.Config(owner="w1"), ports)
     second = dr.claim_next(dr.Config(owner="w2"), ports)
-    assert first is not None and first["lease_owner"] == "w1"
+    assert first is not None and first["lease_owner"].startswith("w1:")
     assert second is None
 
 
@@ -323,3 +324,55 @@ def test_store_ports_discover_and_refuse_unsupplied_spend_ports(env):
     with pytest.raises(NotImplementedError):
         ports.execute({}, dr.Agent("a"), "blade", {}, "baseline")
     assert dr.main(["status"]) == 0
+
+
+def test_executor_is_handed_the_remaining_budget(env):
+    c = Clock()
+    seen = []
+    ports, _ = make_ports(c, destinies=[dest(1)],
+                          execute=lambda task, agent, route, ctx, strat: seen.append(ctx["budget_tokens"]) or {"output": "o", "tokens": 1})
+    dr.tick(dr.Config(task_token_budget=700, tick_token_budget=300), ports)
+    assert seen == [300]
+
+
+def test_stale_worker_cannot_overwrite_new_owner(env):
+    c = Clock()
+    holder = {}
+
+    def execute(task, agent, route, ctx, strat):
+        c.t += 1000  # outlives the lease
+        dr.resume_expired(dr.Config(), holder["ports"])
+        holder["second"] = dr.claim_next(dr.Config(owner="w2"), holder["ports"])
+        return {"output": "ok", "tokens": 1}
+
+    ports, log = make_ports(c, destinies=[dest(1)], execute=execute)
+    holder["ports"] = ports
+    out = dr.tick(dr.Config(owner="w1", lease_s=60), ports)
+    assert out["results"][0]["outcome"] == "lease_lost"
+    assert log["evidence"] == []                      # the old worker published nothing
+    assert holder["second"]["lease_owner"].startswith("w2:")
+
+
+def test_persistent_recall_outage_is_bounded(env):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[dest(1)], recall=lambda q, n: {"tier": "none", "shards": []})
+    cfg = dr.Config(max_attempts=3, max_tasks_per_tick=1)
+    for _ in range(6):
+        dr.tick(cfg, ports)
+    assert dr.status()["tasks"] == {"failed": 1}
+    assert dr.status()["attempt_outcomes"] == {"recall_refused": 3}
+
+
+def test_missing_relay_check_is_degraded_not_healthy(env):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[dest(1)])
+    ports.relay_check = None
+    out = dr.tick(dr.Config(max_tasks_per_tick=1), ports)
+    assert out["results"][0]["outcome"] == "recall_refused"
+
+
+def test_db_override_ignored_in_tenant_context(env, monkeypatch):
+    from nougen_shards import core
+    monkeypatch.setattr(core, "is_tenant_context", lambda: True)
+    monkeypatch.setattr(core, "active_vault_dir", lambda: env / "tenant-vault")
+    assert dr.db_path() == env / "tenant-vault" / "reconciler.db"

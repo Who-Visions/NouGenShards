@@ -28,6 +28,7 @@ and Destiny 10 stays open until that measurement exceeds its own seed band.
 from __future__ import annotations
 
 import contextlib
+import uuid
 import hashlib
 import json
 import os
@@ -50,6 +51,10 @@ _PROTECTED = re.compile(
     r"\bforget\b|\bretract\b|\bsecret\b|\bapi[_ -]?key\b|\bcredential|\btoken\b|\bdelete\b)", re.I)
 
 
+class LeaseLost(Exception):
+    """This worker no longer owns the task (lease expired and was re-claimed)."""
+
+
 class RouteTimeout(Exception):
     """Raised by an executor when a route (e.g. the Blade gateway) times out."""
 
@@ -59,10 +64,12 @@ def _now() -> float:
 
 
 def db_path() -> Path:
-    raw = os.environ.get("NOUGEN_RECONCILER_DB", "").strip()
-    if raw:
-        return Path(raw)
+    """Tenant requests always resolve inside their own vault; the env override
+    never applies to them (same rule as destiny.db_path)."""
     from . import core
+    raw = os.environ.get("NOUGEN_RECONCILER_DB", "").strip()
+    if raw and not core.is_tenant_context():
+        return Path(raw)
     return Path(core.active_vault_dir()) / "reconciler.db"
 
 
@@ -249,13 +256,15 @@ def claim_next(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> Opt
             return None
         cur = conn.execute(
             "UPDATE tasks SET state=?, lease_owner=?, lease_expires=?, updated=? WHERE id=? AND state=?",
-            (CLAIMED, cfg.owner, now + cfg.lease_s, now, row["id"], QUEUED))
+            (CLAIMED, f"{cfg.owner}:{uuid.uuid4().hex[:8]}", now + cfg.lease_s, now, row["id"], QUEUED))
         if cur.rowcount != 1:
             return None
         return dict(conn.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
 
 
-def _set(task_id: int, path: Optional[Path], ports: Ports, cfg: Config, **cols) -> None:
+def _set(task_id: int, path: Optional[Path], ports: Ports, cfg: Config, *, fence: Optional[str] = None, **cols) -> None:
+    """Update a task. With ``fence`` (the claim token) the write only lands while
+    this worker still owns the lease; otherwise LeaseLost is raised."""
     cols["updated"] = ports.clock()
     if cols.get("state") in OPEN_STATES and "lease_expires" not in cols:
         cols["lease_expires"] = ports.clock() + cfg.lease_s
@@ -264,7 +273,12 @@ def _set(task_id: int, path: Optional[Path], ports: Ports, cfg: Config, **cols) 
         cols.setdefault("lease_expires", None)
     sets = ", ".join(f"{k}=?" for k in cols)
     with _connect(path) as conn:
-        conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*cols.values(), task_id))
+        if fence is None:
+            conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", (*cols.values(), task_id))
+        else:
+            cur = conn.execute(f"UPDATE tasks SET {sets} WHERE id=? AND lease_owner=?", (*cols.values(), task_id, fence))
+            if cur.rowcount != 1:
+                raise LeaseLost(f"task {task_id} is no longer leased to {fence}")
 
 
 def _log_attempt(task: dict, n: int, strategy: str, agent: Optional[str], route: Optional[str],
@@ -299,7 +313,7 @@ def bounded_recall(task: dict, cfg: Config, ports: Ports, *, widen: bool = False
         used += toks
     raw = {**raw, "shards": kept}
     session = f"{cfg.session_prefix}-{task['key']}"
-    relay = ports.relay_check() if ports.relay_check else {"ok": True}
+    relay = ports.relay_check() if ports.relay_check else {"ok": False, "error": "relay check port not supplied"}
     receipt = context_receipt.build(session, task["goal"], raw, relay=relay, agent=cfg.owner)
     receipt["recall"]["tokens"] = used
     receipt["recall"]["bounded"] = {"limit": limit, "token_cap": cap}
@@ -336,33 +350,50 @@ def choose_agent(task: dict, agents: Sequence[Agent], *, strategy: str, exclude:
 # --------------------------------------------------------------------------
 def run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
              path: Optional[Path] = None) -> dict:
-    """Drive one claimed task through exactly one attempt. Returns an outcome dict."""
+    """Drive one claimed task through exactly one attempt. Returns an outcome dict.
+
+    Every task write is fenced by the claim token, so a worker that outlived its
+    lease cannot overwrite the new owner's state or publish evidence.
+    """
+    try:
+        return _run_task(task, cfg, ports, tick_budget_left=tick_budget_left, path=path)
+    except LeaseLost as exc:
+        return {"task": task["key"], "outcome": "lease_lost", "reason": str(exc)}
+
+
+def _run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
+              path: Optional[Path] = None) -> dict:
+    def S(**cols):
+        _set(task["id"], path, ports, cfg, fence=task["lease_owner"], **cols)
+
     attempt = task["attempts"] + 1
     sidx = min(task["strategy_idx"], len(STRATEGIES) - 1)
     strategy = STRATEGIES[sidx]
     gate = ports.safety_gate or default_safety_gate
     ok, why = gate(task, strategy)
     if not ok:
-        _set(task["id"], path, ports, cfg, state=BLOCKED, blocked_reason=why)
+        S(state=BLOCKED, blocked_reason=why)
         return {"task": task["key"], "outcome": "blocked", "reason": why}
     remaining = min(cfg.task_token_budget - task["tokens_spent"], tick_budget_left)
     if remaining <= 0:
-        _set(task["id"], path, ports, cfg, state=BLOCKED, blocked_reason="token budget exhausted")
+        S(state=BLOCKED, blocked_reason="token budget exhausted")
         return {"task": task["key"], "outcome": "blocked", "reason": "budget"}
     try:
         context, receipt = bounded_recall(task, cfg, ports, widen=(strategy == "wider_recall"))
     except PermissionError as exc:
         _log_attempt(task, attempt, strategy, None, None, "recall_refused", 0, str(exc), path, ports)
-        _set(task["id"], path, ports, cfg, state=QUEUED, attempts=attempt)
-        return {"task": task["key"], "outcome": "recall_refused", "reason": str(exc)}
-    _set(task["id"], path, ports, cfg, state=RECALLED)
+        S(state=FAILED if attempt >= cfg.max_attempts else QUEUED, attempts=attempt,
+          strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
+        return {"task": task["key"], "outcome": "recall_refused", "reason": str(exc), "attempts": attempt}
+    S(state=RECALLED)
     agent = choose_agent(task, ports.agents(), strategy=strategy)
     if agent is None:
-        _set(task["id"], path, ports, cfg, state=QUEUED)
+        S(state=QUEUED)
         return {"task": task["key"], "outcome": "no_eligible_agent"}
+    context["budget_tokens"] = remaining
     goal_for_agent = task if strategy != "decompose" else {**task, "goal": "Break into the smallest steps, then solve: " + task["goal"]}
     result, route_used, tokens = None, None, 0
-    _set(task["id"], path, ports, cfg, state=RUNNING, last_agent=agent.id)
+    S(state=RUNNING, last_agent=agent.id)
     for route in _routes_available(cfg, ports, path):
         try:
             result = ports.execute(goal_for_agent, agent, route, context, strategy)
@@ -376,17 +407,24 @@ def run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
             route_used = route
             break
     if result is None:
-        _set(task["id"], path, ports, cfg, state=QUEUED)
+        S(state=QUEUED)
         return {"task": task["key"], "outcome": "all_routes_down"}
     tokens = min(int(result.get("tokens") or 0), 10 ** 9)
     spent = task["tokens_spent"] + tokens
-    _set(task["id"], path, ports, cfg, state=VERIFYING, tokens_spent=spent)
+    if tokens > remaining:
+        # The executor overran the allowance it was handed: its output is not trusted or published.
+        _log_attempt(task, attempt, strategy, agent.id, route_used, "over_budget", tokens,
+                     f"used {tokens} of {remaining} allowed", path, ports)
+        S(state=BLOCKED, tokens_spent=spent, attempts=attempt, blocked_reason=f"executor exceeded token budget ({tokens}>{remaining})")
+        return {"task": task["key"], "outcome": "blocked", "reason": "executor over budget", "tokens": tokens}
+    S(state=VERIFYING, tokens_spent=spent)
     verdict = {"passed": False, "evidence": result.get("error", "no output"), "verifier": None}
     if "error" not in result:
         verdict = ports.verify(task, result)
         if verdict.get("verifier") == agent.id or not verdict.get("verifier"):
             verdict = {"passed": False, "verifier": verdict.get("verifier"),
                        "evidence": "verification rejected: verifier must be identified and independent of the executor"}
+    S(state=VERIFYING)  # fence check + lease renewal before anything is published
     refs = [str(s.get("id") or s.get("ref")) for s in context["shards"] if s.get("id") or s.get("ref")]
     if verdict.get("passed"):
         shard = ports.record_evidence(task, {"result": result, "verdict": verdict, "receipt": receipt, "agent": agent.id, "route": route_used})
@@ -397,14 +435,14 @@ def run_task(task: dict, cfg: Config, ports: Ports, *, tick_budget_left: int,
             ports.link_destiny(task["destiny_id"], "agent", agent.id, "actor")
         ports.mark_utility(refs, True)
         _log_attempt(task, attempt, strategy, agent.id, route_used, "passed", tokens, verdict, path, ports)
-        _set(task["id"], path, ports, cfg, state=DONE, attempts=attempt)
+        S(state=DONE, attempts=attempt)
         _maybe_fulfill(task, cfg, ports, path)
         return {"task": task["key"], "outcome": "done", "attempts": attempt, "tokens": tokens, "agent": agent.id,
                 "route": route_used, "shard": shard, "relay": leg}
     ports.mark_utility(refs, False)
     _log_attempt(task, attempt, strategy, agent.id, route_used, "failed_verification", tokens, verdict, path, ports)
     exhausted = attempt >= cfg.max_attempts or spent >= cfg.task_token_budget
-    _set(task["id"], path, ports, cfg, state=FAILED if exhausted else QUEUED, attempts=attempt,
+    S(state=FAILED if exhausted else QUEUED, attempts=attempt,
          strategy_idx=min(sidx + 1, len(STRATEGIES) - 1))
     return {"task": task["key"], "outcome": "failed" if exhausted else "retry", "attempts": attempt,
             "next_strategy": STRATEGIES[min(sidx + 1, len(STRATEGIES) - 1)], "tokens": tokens}
