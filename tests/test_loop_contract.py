@@ -1,7 +1,6 @@
 """Acceptance tests AT-01..AT-12 for nougen_shards.loop_contract and relentless nougen_loop."""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
