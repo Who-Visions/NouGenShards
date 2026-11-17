@@ -245,13 +245,17 @@ def resume_expired(cfg: Config, ports: Ports, *, path: Optional[Path] = None) ->
     return n
 
 
-def claim_next(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> Optional[dict]:
+def claim_next(cfg: Config, ports: Ports, *, path: Optional[Path] = None,
+               exclude: Sequence[int] = ()) -> Optional[dict]:
     """Atomically take the oldest queued task. One owner per task, enforced by
     the conditional UPDATE; a lost race returns None rather than double-claiming."""
     now = ports.clock()
     with _connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM tasks WHERE state=? ORDER BY id LIMIT 1", (QUEUED,)).fetchone()
+        skip = ",".join("?" * len(exclude))
+        row = conn.execute(
+            f"SELECT * FROM tasks WHERE state=?{f' AND id NOT IN ({skip})' if exclude else ''} ORDER BY id LIMIT 1",
+            (QUEUED, *exclude)).fetchone()
         if row is None:
             return None
         cur = conn.execute(
@@ -460,7 +464,9 @@ def _maybe_fulfill(task: dict, cfg: Config, ports: Ports, path: Optional[Path]) 
         return
     with _connect(path) as conn:
         total, done = conn.execute("SELECT COUNT(*), SUM(state=?) FROM tasks WHERE destiny_id=?", (DONE, did)).fetchone()
-    ports.update_destiny(did, "active", cfg.owner, "reconciler: first verified task")
+    current = next((d for d in ports.list_destinies() if d.get("id") == did), None)
+    if current is not None and current.get("status") == "dormant":
+        ports.update_destiny(did, "active", cfg.owner, "reconciler: first verified task")
     if cfg.auto_fulfill and total and done == total:
         ports.update_destiny(did, "fulfilled", cfg.owner, f"{done}/{total} tasks verified independently")
 
@@ -479,8 +485,10 @@ def single_instance(lock_path: Path, stale_s: float = 900.0):
     except FileExistsError:
         raise RuntimeError(f"another reconciler holds {lock_path}")
     try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+        try:
+            os.write(fd, str(os.getpid()).encode())
+        finally:
+            os.close(fd)
         yield
     finally:
         with contextlib.suppress(OSError):
@@ -492,13 +500,15 @@ def tick(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> dict:
     out: Dict[str, Any] = {"resumed": resume_expired(cfg, ports, path=path)}
     out["discovered"] = discover(ports, path=path)
     results: List[dict] = []
+    tried: List[int] = []  # a task re-queued by an attempt waits for the next tick
     left = cfg.tick_token_budget
     for _ in range(cfg.max_tasks_per_tick):
         if left <= 0:
             break
-        task = claim_next(cfg, ports, path=path)
+        task = claim_next(cfg, ports, path=path, exclude=tried)
         if task is None:
             break
+        tried.append(task["id"])
         res = run_task(task, cfg, ports, tick_budget_left=left, path=path)
         left -= int(res.get("tokens") or 0)
         results.append(res)

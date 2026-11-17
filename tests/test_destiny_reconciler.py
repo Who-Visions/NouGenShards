@@ -77,7 +77,7 @@ def test_discover_is_idempotent_and_skips_unverifiable(env):
 
 def test_happy_path_links_evidence_and_keeps_destiny_open(env):
     c = Clock()
-    ports, log = make_ports(c, destinies=[dest(1)])
+    ports, log = make_ports(c, destinies=[dest(1, status="dormant")])
     out = dr.tick(dr.Config(), ports)
     r = out["results"][0]
     assert r["outcome"] == "done" and r["attempts"] == 1
@@ -376,3 +376,24 @@ def test_db_override_ignored_in_tenant_context(env, monkeypatch):
     monkeypatch.setattr(core, "is_tenant_context", lambda: True)
     monkeypatch.setattr(core, "active_vault_dir", lambda: env / "tenant-vault")
     assert dr.db_path() == env / "tenant-vault" / "reconciler.db"
+
+
+def test_requeued_task_is_not_retried_inside_the_same_tick(env):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[dest(1)],
+                          verify=lambda t, r: {"passed": False, "evidence": "red", "verifier": "judge"})
+    out = dr.tick(dr.Config(max_attempts=4, max_tasks_per_tick=10), ports)
+    assert len(out["results"]) == 1  # one attempt per task per tick
+    assert dr.status()["tasks"] == {"queued": 1}
+
+
+def test_active_destiny_gets_no_redundant_active_update(env):
+    c = Clock()
+    ports, log = make_ports(c, destinies=[dest(1, status="active")])
+    dr.tick(dr.Config(), ports)
+    assert log["updates"] == []
+
+
+def test_supersede_zero_is_refused(env):
+    out = destiny.create_destiny("Zero", "supersede id zero", supersedes=0)
+    assert "error" in out and destiny.unfinished_destinies()["total"] == 0

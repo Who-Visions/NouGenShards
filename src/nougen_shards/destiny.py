@@ -202,7 +202,7 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
         provenance = json.dumps(provenance)
     now = _now()
     with _connect() as conn:
-        if supersedes:
+        if supersedes is not None:
             # Refuse before inserting: superseding a missing or terminal destiny
             # used to insert the new row anyway and leave a dangling supersedes
             # pointer (elevation-atlas 903).
@@ -222,7 +222,7 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
         did = cur.lastrowid
         conn.execute("INSERT INTO destiny_events (destiny_id, from_status, to_status, actor, evidence, created_utc) VALUES (?,?,?,?,?,?)",
                      (did, None, status, actor, "created", now))
-        if supersedes:
+        if supersedes is not None:
             _transition(conn, supersedes, "superseded", actor, f"superseded by destiny {did}", now)
             conn.execute("UPDATE destinies SET superseded_by=?, updated_utc=? WHERE id=?", (did, now, supersedes))
         row = conn.execute("SELECT * FROM destinies WHERE id=?", (did,)).fetchone()
