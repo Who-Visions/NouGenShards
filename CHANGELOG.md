@@ -10,6 +10,7 @@ All notable changes to NouGenShards will be documented in this file.
 
 ### Fixed
 - **`vault_put` on headless Linux (leg 20261116T165939Z)**: `keymaker._protect()` failed closed with `RuntimeError` whenever the `keyring` package was absent (or its backend unusable) and the plaintext escape hatch was unset, so every `vault_put` on the HF Space errored with "Error executing tool vault_put" while `vault_list` and shard writes kept working. The write path now falls back to machine-local AES-256-GCM (`enc1:` rows, 32-byte key in a 0600 file in the vault dir itself, tenant-scoped), so the secret still lands encrypted and round-trips through `get_secret`/`vault_list`. Plaintext is still only stored with explicit `NOUGEN_ALLOW_PLAINTEXT_VAULT=1`.
+- **Codex P2 follow-ups on the `enc1:` fallback (same leg)**: (1) `_read_secret_row()` now decrypts under the key file beside the store the row was read from, so an `enc1:` row adopted from a diverged store no longer fails authentication against the active vault's key; (2) the local key is published atomically (temp file + hard link, never overwriting a competing writer's key) and a not-yet-populated key file is retried briefly, so concurrent first writes can no longer fail `vault_put` with `RuntimeError`.
 
 ## [1.3.1] - 2026-08-20
 ### Added

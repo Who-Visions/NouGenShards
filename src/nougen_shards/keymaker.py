@@ -233,7 +233,53 @@ def _as_dpapi_blob(stored: str) -> Optional[bytes]:
     return raw if raw[:8] == _DPAPI_MAGIC else None
 
 
-def _local_enc_key(create: bool = True) -> bytes:
+def _publish_local_enc_key(path: Path, encoded: bytes) -> bool:
+    """Atomically publish a minted local vault key at `path`.
+
+    The key is written to a temp file in the same directory and hard-linked
+    into place, so the key file is never visible half-written and a competing
+    writer's key is never overwritten (the link fails when the target
+    exists). Returns True when this call published the key, False when
+    another writer won the race. On filesystems without hard links, falls
+    back to O_EXCL create + write; readers retry a not-yet-populated file
+    (see _local_enc_key), so that window cannot fail vault_put either.
+    """
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{_LOCAL_ENC_KEY_FILENAME}.", dir=str(path.parent)
+    )
+    tmp = Path(tmp_name)
+    try:
+        os.write(fd, encoded)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        # No hard links on this filesystem: create the key file directly.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, encoded)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _local_enc_key(create: bool = True, key_dir: Optional[Path] = None) -> bytes:
     """Load-or-create the machine-local AES key for the enc1 fallback.
 
     The key file lives in the active secrets vault dir (tenant-scoped via
@@ -241,20 +287,43 @@ def _local_enc_key(create: bool = True) -> bytes:
     owner's. Created 0600; a pre-existing world-readable file is repaired
     to 0600 on read. With create=False a missing key raises OSError instead
     of minting one (reads must never invent a key they cannot decrypt with).
+
+    `key_dir` overrides the directory the key is READ from (decrypting a row
+    that lives in another store — see _read_secret_row). It is ignored on the
+    create path: a key is only ever minted under the active vault, never
+    written into a foreign store. Publication is atomic (see
+    _publish_local_enc_key), and a not-yet-populated file is retried briefly
+    before it fails loudly — a persistently short file is a broken vault,
+    not an absent secret.
     """
     import secrets as _secrets
+    import time
 
-    path = vault_dir() / _LOCAL_ENC_KEY_FILENAME
-    for _attempt in range(2):
+    if create:
+        key_dir = None  # never mint a key outside the active vault
+    path = (key_dir or vault_dir()) / _LOCAL_ENC_KEY_FILENAME
+    for _attempt in range(3):
         if path.is_file():
             try:
                 raw = base64.b64decode(path.read_text("utf-8").strip(), validate=True)
             except Exception as exc:
+                # Unreadable right now: a concurrent writer may be mid-publish.
+                if _attempt < 2:
+                    time.sleep(0.05)
+                    continue
                 raise RuntimeError(
-                    f"local vault key at {path} is not valid base64") from exc
+                    f"local vault key at {path} is not valid base64"
+                ) from exc
             if len(raw) != _LOCAL_ENC_KEY_BYTES:
+                # Empty/short file: a concurrent writer may be mid-publish —
+                # wait briefly and re-read. A file that stays short is
+                # genuinely corrupt and still fails loudly below.
+                if _attempt < 2:
+                    time.sleep(0.05)
+                    continue
                 raise RuntimeError(
-                    f"local vault key at {path} is not {_LOCAL_ENC_KEY_BYTES} bytes")
+                    f"local vault key at {path} is not {_LOCAL_ENC_KEY_BYTES} bytes"
+                )
             if os.name != "nt":
                 try:
                     if stat.S_IMODE(os.stat(path).st_mode) != 0o600:
@@ -266,22 +335,15 @@ def _local_enc_key(create: bool = True) -> bytes:
             raise OSError(f"local vault key not found at {path}")
         raw = _secrets.token_bytes(_LOCAL_ENC_KEY_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # O_EXCL so two lanes racing the first write cannot interleave keys;
-        # the loser re-reads the winner's key on the next attempt.
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            continue
-        try:
-            os.write(fd, base64.b64encode(raw).decode("ascii").encode("ascii"))
-        finally:
-            os.close(fd)
-        if os.name != "nt":
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-        return raw
+        encoded = base64.b64encode(raw).decode("ascii").encode("ascii")
+        if _publish_local_enc_key(path, encoded):
+            if os.name != "nt":
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            return raw
+        # Another writer published first; loop and re-read their key.
     raise RuntimeError(f"could not establish local vault key at {path}")
 
 
@@ -305,14 +367,16 @@ def _local_encrypt(value: str) -> str:
     return _LOCAL_ENC_PREFIX + base64.b64encode(nonce + blob).decode("ascii")
 
 
-def _local_decrypt(stored: str) -> str:
+def _local_decrypt(stored: str, key_dir: Optional[Path] = None) -> str:
     """Decrypt an enc1: row with the machine-local vault key.
 
+    `key_dir` is the vault directory holding the row's key file (the store
+    the row was read from); without it the active vault's key is used.
     Raises OSError (the type _read_secret_row already handles) on a missing
     key, a corrupt row, or a failed authentication tag — a row copied into a
     vault whose key differs reads as absent, never as a leak.
     """
-    key = _local_enc_key(create=False)
+    key = _local_enc_key(create=False, key_dir=key_dir)
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as exc:
@@ -330,8 +394,11 @@ def _local_decrypt(stored: str) -> str:
             f"local vault row failed authentication: {type(exc).__name__}") from exc
 
 
-def _unprotect(stored: str) -> str:
+def _unprotect(stored: str, key_dir: Optional[Path] = None) -> str:
     """Decrypts a stored value; passes through legacy plaintext rows untouched.
+
+    `key_dir` overrides where an enc1: row's key file is read from (the store
+    the row came from); the other layers ignore it.
 
     Peels EVERY DPAPI layer, not just one. A value that is re-protected -- by a
     migration, a re-ingest, or a second pass of the ingest tool -- ends up
@@ -357,7 +424,7 @@ def _unprotect(stored: str) -> str:
             current = _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
         return current
     if stored.startswith(_LOCAL_ENC_PREFIX):
-        return _local_decrypt(stored)
+        return _local_decrypt(stored, key_dir=key_dir)
     if stored.startswith(_KEYRING_PREFIX):
         ref = stored[len(_KEYRING_PREFIX):]
         value = _keyring_get(ref)
@@ -1042,7 +1109,10 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
                 (key,)).fetchone()
         finally:
             conn.close()
-        return _unprotect(str(row[0])) if row else None
+        # The row's key file lives beside the store it was read from, not
+        # necessarily beside the active vault (an adopted/diverged store) —
+        # decrypt under the source vault's key, never the active one.
+        return _unprotect(str(row[0]), key_dir=db_path.parent) if row else None
     except (sqlite3.Error, OSError, ValueError):
         return None
 

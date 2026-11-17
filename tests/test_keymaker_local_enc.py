@@ -8,10 +8,14 @@ escape hatch is unset. The fix is a machine-local AES-256-GCM fallback
 encrypted instead of raising. These tests pin the round-trip on a host
 with no keyring at all.
 """
+import base64
 import os
+import secrets
 import sqlite3
 import stat
 import sys
+import threading
+import time
 
 import pytest
 
@@ -142,3 +146,99 @@ def test_enc_key_differs_per_vault(km_no_keyring, tmp_path, monkeypatch):
     km.ingest_secret("TEST_LOCAL_ENC_KEY", "vault-b-value")
     key_b = (km.vault_dir() / km._LOCAL_ENC_KEY_FILENAME).read_bytes()
     assert key_a != key_b
+
+
+def test_read_secret_row_uses_source_vault_key(km_no_keyring, tmp_path, monkeypatch):
+    """Codex P2 (finding 1): an enc1: row read from a foreign store decrypts
+    under that store's key file, not the active vault's. Before the fix the
+    read used the active vault's key, so the row failed authentication
+    against the wrong key and came back None."""
+    km = km_no_keyring
+    # Vault B mints its own key and holds the secret under it.
+    vault_b = tmp_path / "vault-b"
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_b))
+    monkeypatch.setattr(km, "VAULT_DIR", vault_b, raising=False)
+    monkeypatch.setattr(km, "DB_PATH", vault_b / km.DB_FILENAME, raising=False)
+    km.ingest_secret("TEST_FOREIGN_KEY", "vault-b-value")
+    assert km.get_secret("TEST_FOREIGN_KEY") == "vault-b-value"
+
+    # Active vault is now a fresh vault A with its own key: the same row,
+    # read from B's store by path, must still decrypt — under B's key.
+    vault_a = tmp_path / "vault-a"
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_a))
+    monkeypatch.setattr(km, "VAULT_DIR", vault_a, raising=False)
+    monkeypatch.setattr(km, "DB_PATH", vault_a / km.DB_FILENAME, raising=False)
+    km.ingest_secret("TEST_OTHER_KEY", "vault-a-value")
+    assert km.get_secret("TEST_OTHER_KEY") == "vault-a-value"
+    assert (
+        km._read_secret_row(vault_b / km.DB_FILENAME, "TEST_FOREIGN_KEY")
+        == "vault-b-value"
+    )
+
+    # And the reverse: with B active again, A's row still reads by path.
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_b))
+    monkeypatch.setattr(km, "VAULT_DIR", vault_b, raising=False)
+    monkeypatch.setattr(km, "DB_PATH", vault_b / km.DB_FILENAME, raising=False)
+    assert (
+        km._read_secret_row(vault_a / km.DB_FILENAME, "TEST_OTHER_KEY")
+        == "vault-a-value"
+    )
+
+
+def test_concurrent_first_key_creation(km_no_keyring, tmp_path, monkeypatch):
+    """Codex P2 (finding 2): concurrent first writes to a fresh vault must
+    not fail vault_put — exactly one key is published, atomically, and every
+    caller ends up with the same key."""
+    km = km_no_keyring
+    vault = tmp_path / "vault-race"
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault))
+    monkeypatch.setattr(km, "VAULT_DIR", vault, raising=False)
+    monkeypatch.setattr(km, "DB_PATH", vault / km.DB_FILENAME, raising=False)
+
+    barrier = threading.Barrier(8)
+    results, errors = [], []
+
+    def _mint():
+        try:
+            barrier.wait(timeout=10)
+            results.append(km._local_enc_key(create=True))
+        except Exception as exc:  # noqa: BLE001 - collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_mint) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not errors
+    assert len(results) == 8
+    assert len(set(results)) == 1  # one key, shared by every caller
+    km.ingest_secret("TEST_RACE_KEY", "race-value")
+    assert km.get_secret("TEST_RACE_KEY") == "race-value"
+
+
+def test_local_enc_key_retries_not_yet_populated_file(
+    km_no_keyring, tmp_path, monkeypatch
+):
+    """Codex P2 (finding 2), read side: a key file that is momentarily empty
+    because a concurrent writer is mid-publish is retried, not raised."""
+    km = km_no_keyring
+    vault = tmp_path / "vault-retry"
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault))
+    monkeypatch.setattr(km, "VAULT_DIR", vault, raising=False)
+    monkeypatch.setattr(km, "DB_PATH", vault / km.DB_FILENAME, raising=False)
+    vault.mkdir(parents=True, exist_ok=True)
+    key_file = vault / km._LOCAL_ENC_KEY_FILENAME
+    key_file.write_text("", "utf-8")  # empty: a writer is mid-publish
+    real = base64.b64encode(secrets.token_bytes(km._LOCAL_ENC_KEY_BYTES)).decode("ascii")
+
+    def _finish_publish():
+        time.sleep(0.01)
+        key_file.write_text(real, "utf-8")
+
+    publisher = threading.Thread(target=_finish_publish)
+    publisher.start()
+    try:
+        assert km._local_enc_key(create=False) == base64.b64decode(real)
+    finally:
+        publisher.join(timeout=10)
