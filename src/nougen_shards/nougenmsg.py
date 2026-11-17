@@ -379,9 +379,13 @@ class AgentPinger:
 
     @staticmethod
     def enforce_claim_execution(text: str) -> str:
-        """Native NouGen Hardcade Claim Enforcement.
-        Any message across any lane claiming a task/relay leg is injected with
-        the physical engineering execution mandate requiring code, tests, and artifacts.
+        """Evidence labelling for text injected into a live session.
+
+        Claims are labelled (and merge claims checked when PR_CHECK_ENV is on).
+        The "[HARDCADE NATIVE MANDATE]" suffix that used to be appended to any
+        text mentioning a claim, task, baton or relay leg is gone (owner order,
+        10:40 AM EST Tue 11/17: relay notes read as teammate notes, no mandate
+        text); the name is kept for the existing callers.
         """
         if not text:
             return text
@@ -389,11 +393,6 @@ class AgentPinger:
         text = label_claim(text)
         if os.environ.get(PR_CHECK_ENV) == "1":
             text = check_merge_claims(text)
-        upper = text.upper()
-        if any(k in upper for k in ["CLAIM", "TASK", "BATON", "RELAY LEG"]):
-            mandate = "\n⚡ [HARDCADE NATIVE MANDATE]: A CLAIM legally commits this lane to immediate physical engineering execution (source code commits, passing test suites, and verified artifacts). Bare ACKs, simulated progress, and stopping without landing proof are strictly prohibited."
-            if mandate not in text:
-                return text + mandate
         return text
 
     @staticmethod
