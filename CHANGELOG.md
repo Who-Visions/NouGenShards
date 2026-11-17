@@ -8,6 +8,10 @@ All notable changes to NouGenShards will be documented in this file.
 - **`voice_persona`** (#612): character briefs bound to `persona.py`.
 - **Elevation Atlas** (`docs/elevation-atlas.md`): a 1000-step, repository-grounded elevation roadmap in ten zones (memory physics, capture, retrieval, graph, temporal/Griot, federation, truth/canon, security, scale, autonomous memory). Every step carries a status: ✅ only when a file and function implement it, 🟡 for partial with the gap named, ⬜ for missing with a landing spot. Steps cross-reference #551 and #550. It includes a ground-truth table that corrects the draft plan against main @ ae40d10, and the first five verified moves.
 
+### Fixed
+- **`vault_put` on headless Linux (leg 20261116T165939Z)**: `keymaker._protect()` failed closed with `RuntimeError` whenever the `keyring` package was absent (or its backend unusable) and the plaintext escape hatch was unset, so every `vault_put` on the HF Space errored with "Error executing tool vault_put" while `vault_list` and shard writes kept working. The write path now falls back to machine-local AES-256-GCM (`enc1:` rows, 32-byte key in a 0600 file in the vault dir itself, tenant-scoped), so the secret still lands encrypted and round-trips through `get_secret`/`vault_list`. Plaintext is still only stored with explicit `NOUGEN_ALLOW_PLAINTEXT_VAULT=1`.
+- **Codex P2 follow-ups on the `enc1:` fallback (same leg)**: (1) `_read_secret_row()` now decrypts under the key file beside the store the row was read from, so an `enc1:` row adopted from a diverged store no longer fails authentication against the active vault's key; (2) the local key is published atomically (temp file + hard link, never overwriting a competing writer's key) and a not-yet-populated key file is retried briefly, so concurrent first writes can no longer fail `vault_put` with `RuntimeError`.
+
 ## [1.3.1] - 2026-08-20
 ### Added
 - **Dynamic Reasoning & Live Token Stream**: `OllamaClient` and `OpenAIClient` stream reasoning/thinking tokens live in dimmed ANSI styling with unbuffered real-time stdout delivery.

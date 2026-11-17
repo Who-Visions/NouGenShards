@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -352,3 +353,35 @@ def test_tenant_messages_never_touch_host_sockets(monkeypatch, tmp_path):
         assert Path(out["file"]).is_relative_to(_tenant_vault())
     finally:
         core.reset_active_vault(tokens)
+
+
+# --- 5. vault_put on headless Linux (leg 20261116T165939Z) -------------------
+def test_owner_vault_put_round_trips_without_keyring(client, monkeypatch):
+    """Leg 20261116T165939Z: vault_put failed server-side on the HF Space
+    (Linux, no `keyring` package, no plaintext hatch) with "Error executing
+    tool vault_put". The write must land encrypted via the local enc1
+    fallback and verify — not raise. Uses a clearly-marked TEST-ONLY key;
+    no real secret is stored."""
+    monkeypatch.delenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", raising=False)
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    r = client.post("/mcp/", headers=OWNER_AUTH, json=_rpc(
+        "tools/call", {"name": "vault_put",
+                       "arguments": {"key": "TEST_VAULT_PUT_PROBE",
+                                     "value": "probe-value-36-chars-abcdefghij"}}))
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert not result.get("isError"), result
+    payload = json.loads(_text(result))
+    assert payload["key"] == "TEST_VAULT_PUT_PROBE"
+    assert payload["stored"] is True
+    assert len(payload["fingerprint"]) == 12
+    assert "probe-value-36-chars" not in _text(result)
+    # vault_list proves the entry landed (names + fingerprints only).
+    # NOTE: the MCP layer unrolls a list return into one content block per
+    # element, so parse each block separately instead of the joined text.
+    r = client.post("/mcp/", headers=OWNER_AUTH, json=_rpc(
+        "tools/call", {"name": "vault_list", "arguments": {}}))
+    assert r.status_code == 200, r.text
+    rows = [json.loads(c["text"]) for c in r.json()["result"]["content"]]
+    names = [row["key"] for row in rows]
+    assert "TEST_VAULT_PUT_PROBE" in names
