@@ -70,7 +70,7 @@ def test_discover_is_idempotent_and_skips_unverifiable(env):
                           intents=[{"ref": "55@db8", "text": "ship the gate", "destiny_id": 1}])
     first = dr.discover(ports)
     second = dr.discover(ports)
-    assert first == {"added": 3, "skipped_no_verification": 1}
+    assert first == {"added": 3, "skipped_no_verification": 1, "skipped_no_destiny": 0}
     assert second["added"] == 0
     assert dr.status()["tasks"] == {"queued": 3}
 
@@ -237,17 +237,84 @@ def test_blade_timeout_routes_via_phoebus_and_cools_down(env):
     assert calls[0] == "blade"  # cooldown elapsed, blade is tried first again
 
 
-def test_all_routes_down_requeues_without_burning_an_attempt(env):
+def test_destiny_less_intent_is_skipped_not_queued(env):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[],
+                          intents=[{"ref": "1@db1", "text": "orphan intent", "destiny_id": None},
+                                   {"ref": "2@db1", "text": "placed intent", "destiny_id": 7}])
+    out = dr.discover(ports)
+    assert out == {"added": 1, "skipped_no_verification": 0, "skipped_no_destiny": 1}
+    assert dr.status()["tasks"] == {"queued": 1}
+
+
+def test_all_routes_down_burns_an_attempt_and_is_bounded(env):
     c = Clock()
 
     def execute(*a):
         raise dr.RouteTimeout("down")
 
     ports, _ = make_ports(c, destinies=[dest(1)], execute=execute)
-    out = dr.tick(dr.Config(max_tasks_per_tick=1), ports)
+    cfg = dr.Config(max_attempts=3, max_tasks_per_tick=1)
+    out = dr.tick(cfg, ports)
     assert out["results"][0]["outcome"] == "all_routes_down"
-    row = dr.status()
-    assert row["tasks"] == {"queued": 1}
+    assert out["results"][0]["attempts"] == 1
+    assert dr.status()["tasks"] == {"queued": 1}
+    assert dr.status()["attempt_outcomes"] == {"all_routes_down": 1, "route_timeout": 2}
+    for _ in range(2):
+        dr.tick(cfg, ports)
+    assert dr.status()["tasks"] == {"failed": 1}
+    assert dr.status()["attempt_outcomes"] == {"all_routes_down": 3, "route_timeout": 2}
+
+
+def test_crash_between_publish_and_done_publishes_once(env):
+    c = Clock()
+    ports, log = make_ports(c, destinies=[dest(1)])
+    seen: dict = {}
+
+    def dedup(kind):
+        def f(task, payload):
+            key = payload.get("idempotency_key")
+            assert key == dr.task_key(1, "do the thing")
+            if key in seen.setdefault(kind, {}):
+                return seen[kind][key]
+            ref = f"{kind}{len(seen[kind])}"
+            seen[kind][key] = ref
+            log["evidence" if kind == "shard" else "relay"].append(payload)
+            if kind == "leg" and len(seen["leg"]) == 1 and not seen.get("crashed"):
+                seen["crashed"] = True
+                raise KeyboardInterrupt  # crash after the leg is published, before DONE
+            return ref
+        return f
+
+    ports.record_evidence = dedup("shard")
+    ports.publish_relay = dedup("leg")
+    with pytest.raises(KeyboardInterrupt):
+        dr.tick(dr.Config(lease_s=60), ports)
+    assert dr.status()["tasks"] == {"verifying": 1}
+    c.t += 61
+    out = dr.tick(dr.Config(lease_s=60), ports)
+    assert out["resumed"] == 1
+    assert out["results"][0]["outcome"] == "done"
+    assert len(log["relay"]) == 1 and len(log["evidence"]) == 1  # no double-publish
+
+
+def test_lease_heartbeat_keeps_long_execute_owned(env):
+    c = Clock()
+    holder = {}
+
+    def execute(task, agent, route, ctx, strat):
+        c.t += 1000  # outlives the 60s lease in fake-clock terms
+        time.sleep(0.3)  # heartbeat (0.05s interval) renews the lease meanwhile
+        holder["resumed"] = dr.resume_expired(dr.Config(), holder["ports"])
+        holder["second"] = dr.claim_next(dr.Config(owner="w2"), holder["ports"])
+        return {"output": "ok", "tokens": 1}
+
+    ports, log = make_ports(c, destinies=[dest(1)], execute=execute)
+    holder["ports"] = ports
+    out = dr.tick(dr.Config(owner="w1", lease_s=60, lease_heartbeat_s=0.05), ports)
+    assert holder["resumed"] == 0
+    assert holder["second"] is None
+    assert out["results"][0]["outcome"] == "done"
 
 
 def test_crash_resume_requeues_and_counts_the_attempt(env):
@@ -412,6 +479,16 @@ def test_active_destiny_gets_no_redundant_active_update(env):
 def test_supersede_zero_is_refused(env):
     out = destiny.create_destiny("Zero", "supersede id zero", supersedes=0)
     assert "error" in out and destiny.unfinished_destinies()["total"] == 0
+
+
+def test_supersede_refused_transition_rolls_back_new_destiny(env, monkeypatch):
+    d = destiny.create_destiny("Live", "stay open", status="active")
+    monkeypatch.setattr(destiny, "_transition",
+                        lambda *a, **k: {"error": "illegal transition active -> superseded"})
+    out = destiny.create_destiny("Next", "replace live", supersedes=d["id"])
+    assert "error" in out
+    assert destiny.unfinished_destinies()["total"] == 1  # the refused row never landed
+    assert destiny.get_destiny(d["id"])["status"] == "active"
 
 
 def test_negative_token_report_cannot_refund_budget(env):
