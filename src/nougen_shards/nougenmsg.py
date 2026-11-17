@@ -2420,13 +2420,17 @@ _TARGET_CACHE_PROBED = target_resolver.TableCache(
 
 
 def resolve_target(raw: Any) -> "target_resolver.Resolution":
-    lr = target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
-    if lr.ok:
-        lt = _TARGET_CACHE_LOCAL.get()
-        sn = lt.get("self")
-        if all(d.node == sn for d in lr.deliveries):
-            return lr
-    return target_resolver.resolve_live(raw, _TARGET_CACHE_PROBED)
+    """Resolve against the registry table, without the TCP probe.
+
+    The probe dials each peer's NouGenMsg receiver (port 8766 over mDNS), but
+    remote delivery goes over SSH (emit_node). On 11/17 the probe called blade
+    unreachable while ``ssh blade`` answered, so '@blade' was refused after the
+    rollout of #1100 and the node was rolled back. A peer that really cannot be
+    reached is reported by the send itself (route_failed / the bus error), never
+    silently dropped and never broadcast. The probed view stays in
+    nougenmsg_peers' target_table for operators.
+    """
+    return target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
 
 
 def target_refusal(raw: Any) -> Optional[Dict[str, Any]]:

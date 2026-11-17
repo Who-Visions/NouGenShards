@@ -471,3 +471,18 @@ def test_send_resolved_sends_a_presence_lane_to_its_node_only(monkeypatch):
     assert out["resolution"]["deliveries"][0]["node"] == "whoart"
     refused = bus.NouGenMsgBus.send_resolved("@nobody-here", "hi")
     assert refused["status"] == "not_resolvable" and sent == [("whoart", "deskapp")] and fleet == []
+
+
+def test_send_path_does_not_refuse_a_peer_on_a_failed_tcp_probe(monkeypatch):
+    """11/17 rollout regression: the 8766 probe failed for blade while SSH (the
+    transport) worked, so '@blade' was refused. Send-time resolution must not use it."""
+    from nougen_shards import nougenmsg as bus
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+    monkeypatch.setenv("NOUGEN_MSG_RESOLVE_PROBE", "1")
+    monkeypatch.setattr(bus.NouGenMsgBus, "_probe_nodes", staticmethod(
+        lambda curr: {"nodes_reachable": ["phoebus", "whoart"], "nodes_unreachable": ["blade"]}))
+    bus.clear_target_cache()
+    r = bus.resolve_target("@blade")
+    assert r.ok and [d.node for d in r.deliveries] == ["blade"]
+    assert not bus.resolve_target("@nobody-here").ok
