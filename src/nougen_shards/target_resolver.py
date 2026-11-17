@@ -355,32 +355,39 @@ class TableCache:
         builder: Callable[[], dict],
         ttl_s: Optional[Callable[[], float]] = None,
         clock: Callable[[], float] = time.monotonic,
+        key_fn: Optional[Callable[[], object]] = None,
     ):
         self._builder = builder
         self._ttl_s = ttl_s or cache_ttl_s
         self._clock = clock
+        self._key_fn = key_fn
         self._lock = threading.Lock()
         self._table: Optional[dict] = None
         self._built_at: float = 0.0
+        self._key: object = None
 
     def get(self, force: bool = False) -> dict:
         """The table, rebuilt when older than the TTL (0 = every call). `force` rebuilds
         unless the table is under a second old, so a burst of unknown targets cannot
-        turn into a burst of probes."""
+        turn into a burst of probes. A changed identity key rebuilds too: a table
+        built for one tenant must never serve another."""
         with self._lock:
             now = self._clock()
             ttl = self._ttl_s()
+            key = self._key_fn() if self._key_fn is not None else None
             age = now - self._built_at
             stale = ttl <= 0 or age >= ttl
-            if self._table is None or stale or (force and age >= MIN_FORCE_AGE_S):
+            if self._table is None or stale or key != self._key or (force and age >= MIN_FORCE_AGE_S):
                 self._table = self._builder()
                 self._built_at = now
+                self._key = key
             return self._table
 
     def clear(self) -> None:
         with self._lock:
             self._table = None
             self._built_at = 0.0
+            self._key = None
 
 
 def resolve_live(raw: str, cache: TableCache) -> Resolution:

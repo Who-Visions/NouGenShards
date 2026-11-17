@@ -371,6 +371,38 @@ class TestTenantIsolation:
         t = tenant_bus.build_target_table()
         assert set(t["lanes"].get("deskapp", {})) == {"phoebus"}
 
+    def test_target_cache_is_keyed_by_identity(self, monkeypatch, tmp_path):
+        """#1104 follow-up: a tenant must never reuse an owner-populated cache.
+
+        The target caches are module-level, but the tenant context is a
+        ContextVar, so one process can serve owner then tenant in sequence.
+        Without identity keying, the tenant reuses the owner's table until the
+        TTL expires. Proven against the old code: the tenant table still lists
+        blade/whoart.
+        """
+        from nougen_shards import core, nougenmsg as bus
+        monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+        monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+        monkeypatch.setenv("NOUGEN_MSG_LOCAL_LANES", "")
+        # The conftest isolation fixture sets the resolve TTL to 0 (every get
+        # rebuilds); a cache test sets its own TTL so the table actually holds
+        # across the identity switch below.
+        monkeypatch.setenv("NOUGEN_MSG_RESOLVE_TTL_S", "60")
+        bus.clear_target_cache()
+        owner_table = bus._TARGET_CACHE_LOCAL.get()
+        assert set(owner_table["nodes"]) >= {"phoebus", "blade", "whoart"}
+        vault = tmp_path / "tenant-a"
+        vault.mkdir()
+        token = core.bind_active_vault(vault, "tenant-a")
+        try:
+            tenant_table = bus._TARGET_CACHE_LOCAL.get()
+            assert set(tenant_table["nodes"]) == {"phoebus"}
+            assert "blade" not in json.dumps(tenant_table)
+            assert "whoart" not in json.dumps(tenant_table)
+        finally:
+            core.reset_active_vault(token)
+            bus.clear_target_cache()
+
     def test_spoofed_lane_name_rejected(self, monkeypatch):
         # Scope-independent: a lane name must never collide with a known node,
         # alias, group, or self-alias, even when the claim itself is well-formed.

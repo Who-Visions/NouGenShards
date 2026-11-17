@@ -2400,8 +2400,23 @@ def build_target_table(
     }
 
 
-_TARGET_CACHE_LOCAL = target_resolver.TableCache(lambda: build_target_table(probe=False))
-_TARGET_CACHE_PROBED = target_resolver.TableCache(lambda: build_target_table(probe=True))
+def _target_table_identity() -> tuple:
+    """Identity key for the module-level target-table caches.
+
+    The caches are module-level, but the tenant context is a ContextVar
+    (core.bind_active_vault), so one process can serve owner then tenant (or
+    two tenants) in sequence. Without the key, the second identity reuses the
+    first identity's table until the TTL expires. The key is the full identity
+    tuple, so any switch rebuilds the table instead.
+    """
+    from . import core
+    return (core.is_tenant_context(), core.active_tenant_id(), str(core.active_vault_dir()))
+
+
+_TARGET_CACHE_LOCAL = target_resolver.TableCache(
+    lambda: build_target_table(probe=False), key_fn=_target_table_identity)
+_TARGET_CACHE_PROBED = target_resolver.TableCache(
+    lambda: build_target_table(probe=True), key_fn=_target_table_identity)
 
 
 def resolve_target(raw: Any) -> "target_resolver.Resolution":
