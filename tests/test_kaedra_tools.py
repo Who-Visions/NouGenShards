@@ -253,20 +253,21 @@ def test_nougenmsg_send_dispatches_to_bus(monkeypatch):
     from nougen_shards.nougenmsg import NouGenMsgBus
     dispatched = {}
 
-    def fake_live_ping(target, text, node=None, origin=None):
-        dispatched["target"] = target
-        dispatched["text"] = text
-        dispatched["node"] = node
-        dispatched["origin"] = origin
-        return {"status": "delivered"}
+    def fake_send_resolved(target, text, origin=None, audience=None, background=False):
+        dispatched.update(target=target, text=text, origin=origin)
+        return {"results": {"blade": "ok"}}
 
-    monkeypatch.setattr(NouGenMsgBus, "live_ping", fake_live_ping)
+    monkeypatch.setattr(NouGenMsgBus, "send_resolved", staticmethod(fake_send_resolved))
     out = kt.dispatch("nougenmsg_send", {"target": "@blade:antigravity", "message": "status report"})
     assert out["delivered"] is True
-    assert dispatched["target"] == "antigravity"
-    assert dispatched["node"] == "blade"
+    assert dispatched["target"] == "@blade:antigravity"
     assert dispatched["text"] == "status report"
     assert dispatched["origin"]["original_sender"] == "kaedra"
+
+
+def test_nougenmsg_send_refuses_unknown_target():
+    out = kt.dispatch("nougenmsg_send", {"target": "@nobody-here", "message": "x"})
+    assert "error" in out and "resolvable" in out
 
 
 def test_loop_falls_back_to_workers_ai_on_local_error(monkeypatch):

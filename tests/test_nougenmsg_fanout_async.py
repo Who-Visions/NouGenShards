@@ -66,7 +66,7 @@ def test_node_tools_request_background_fanout():
     tree = ast.parse(APP.read_text(encoding="utf-8"))
     for name in ("nougenmsg", "fleet_send"):
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
-        calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and ast.unparse(c.func).endswith("emit_fleet")]
+        calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and ast.unparse(c.func).endswith(("emit_fleet", "send_resolved"))]
         assert calls and all(any(k.arg == "background" for k in c.keywords) for c in calls), name
 
 

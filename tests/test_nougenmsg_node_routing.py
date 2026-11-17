@@ -94,11 +94,13 @@ def test_forwarded_preserves_origin_envelope_and_dedups_retries(server, monkeypa
 def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
     node, port = server
     calls = []
+    peers = []
 
     class FakeBus:
         @staticmethod
-        def emit_fleet(text: str, target: str = "all", origin=None, background: bool = False):
+        def emit_fleet(text: str, target: str = "all", origin=None, background: bool = False, nodes=None):
             calls.append((text, target, origin, background))
+            peers.append(nodes)
             return {"phoebus": "ok", "blade": {"queued": True}}
 
     monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
@@ -107,6 +109,8 @@ def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
     assert body["delivered"] is True
     assert body["routed"] is True
     assert calls == [("ping", "all", {"original_sender": "probe"}, True)]
+    # The group is expanded from the registry at send time, not from a literal list.
+    assert peers == [["blade", "whoart"]]
 
 
 def test_cross_node_route_error_returns_502_and_releases_claim(server, monkeypatch):

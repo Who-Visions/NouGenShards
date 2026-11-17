@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
+from . import target_resolver
 
 # Every child (ssh, scp) spawns windowless: a console child of a console-less
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
@@ -906,6 +907,11 @@ class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
 
     _SAFE_IDENT = re.compile(r"^[A-Za-z0-9_.:@-]{1,64}$")
+    # The lanes this code has a delivery handler for, and the ones that take a ':<model>'
+    # suffix. These name code paths on a node, not fleet members: nodes, app lanes and
+    # groups come from the live table (build_target_table), never from a list here.
+    MODEL_LANES = ("ollama", "openrouter")
+    LOCAL_FAMILIES = ("claude", "all", "agents", "antigravity", "codex", *MODEL_LANES)
 
     @staticmethod
     def parse_destination(target_str: str) -> Tuple[str, str]:
@@ -924,11 +930,11 @@ class NouGenMsgBus:
 
         coach_routes, machine_routes = fleet_identity_maps()
         known_nodes = {local_node(), *configured_fleet_nodes(), 'local', 'fleet', *coach_routes, *machine_routes, *_known_fleet_hosts()}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
+        known_agents = set(NouGenMsgBus.LOCAL_FAMILIES)
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
-        model_lanes = {'ollama', 'openrouter'}
+        model_lanes = set(NouGenMsgBus.MODEL_LANES)
 
         if ':' in raw:
             parts = raw.split(':', 1)
@@ -1066,7 +1072,12 @@ class NouGenMsgBus:
             if family != current_node:
                 return {"skipped": f"addressed to {family}, not this node ({current_node or 'unknown'})"}
             family, model = "agents", None
-        elif family not in ("claude", "all", "agents", "antigravity", "codex", "ollama", "openrouter"):
+        elif family not in cls.LOCAL_FAMILIES:
+            if _is_local_inbox_lane(family):
+                # A lane the live table puts on this node with no pinger behind it (a
+                # connector lane such as 'chatgpt-app', seen sending here): it reads
+                # this node's inbox, so the message is dropped there for it.
+                return {family: _drop_lane_inbox(family, text, envelope)}
             return {"error": f"unrecognized target {target!r}; nothing delivered"}
 
         if family in ["claude", "all", "agents"]:
@@ -1341,8 +1352,12 @@ class NouGenMsgBus:
     def emit_fleet(cls, text: str, target: str = "all",
                    origin: Optional[Dict[str, Any]] = None,
                    audience: Optional[str] = None,
-                   background: bool = False) -> Dict[str, Any]:
+                   background: bool = False,
+                   nodes: Optional[List[str]] = None) -> Dict[str, Any]:
         """Dispatches message across all nodes in the fleet (persona header applied once, here).
+
+        nodes: the peers to reach, when the caller resolved the group from the live
+        table (resolve_target); None keeps the env-configured peer list.
 
         background=True delivers locally, then hands the SSH fan-out to a daemon thread and
         reports each peer as {"queued": True}. The MCP node tools use it: peers are reached
@@ -1359,7 +1374,10 @@ class NouGenMsgBus:
         fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
-        nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
+        if nodes is not None:
+            nodes = sorted({str(n) for n in nodes} - {curr})
+        else:
+            nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
         if background and nodes:
             def _fan_out(peers=tuple(nodes)):
                 for n in peers:
@@ -1398,6 +1416,59 @@ class NouGenMsgBus:
         return results
 
     @classmethod
+    def send_resolved(cls, target: str, text: str,
+                      origin: Optional[Dict[str, Any]] = None,
+                      audience: Optional[str] = None,
+                      background: bool = False) -> Dict[str, Any]:
+        """Resolve ``target`` against the live table and send to exactly what it names.
+
+        The one dispatch for the CLI, the MCP tools and app.py. An unknown or
+        unreachable target returns the refusal and sends nothing; a group is the
+        only fan-out; every other delivery goes to its own (node, lane) once, so a
+        lane resolved to another node is never re-read as "everyone here".
+        """
+        res = resolve_target(target)
+        if not res.ok:
+            return {"delivered": False, "status": "not_resolvable", "reason": res.reason,
+                    "error": res.error, "resolvable": res.resolvable,
+                    "target": str(target)[:80]}
+        curr = get_current_node()
+        here = {curr, _self_node_name(), "local"}
+        if res.kind == "group":
+            peers = sorted({d.node for d in res.deliveries} - here)
+            results = cls.emit_fleet(text=text, target="all", origin=origin, audience=audience,
+                                     background=background, nodes=peers)
+            return {"resolution": res.as_dict(), "results": results}
+        routes, seen = [], set()
+        for d in res.deliveries:
+            node = curr if d.node in here else d.node
+            # No lane means the node itself: the receiving node reads its own name as
+            # "this node's agent lanes" (live_ping), exactly as a bare '@<node>' did.
+            route = (node, d.lane or d.node)
+            if route not in seen:
+                seen.add(route)
+                routes.append(route)
+        results: Dict[str, Any] = {}
+        remote = [r for r in routes if r[0] != curr]
+        for node, agent in routes:
+            if node == curr:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        if background and remote:
+            def _fan_out(todo=tuple(remote)):
+                for node, agent in todo:
+                    try:
+                        cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            threading.Thread(target=_fan_out, daemon=True).start()
+            for node, _ in remote:
+                results[node] = {"queued": True}
+        else:
+            for node, agent in remote:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        return {"resolution": res.as_dict(), "results": results}
+
+    @classmethod
     def list_peers(cls) -> Dict[str, Any]:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
@@ -1428,6 +1499,13 @@ class NouGenMsgBus:
         except Exception:
             pass
 
+        probed = cls._probe_nodes(curr)
+        try:
+            # The live table every send path resolves '@name' against, built from this
+            # same probe: what is listed here is what a send would reach right now.
+            table = target_table_summary(reachability=probed)
+        except Exception as exc:  # pylint: disable=broad-except
+            table = {"error": str(exc)}
         inbox_gemini = _agy_inbox_dirs()[0]
         inbox_codex = _codex_inbox_dirs()[0]
 
@@ -1442,7 +1520,8 @@ class NouGenMsgBus:
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
             "antigravity_stale_registry": stale_agy,
-            **cls._probe_nodes(curr),
+            **probed,
+            "target_table": table,
         }
 
     @staticmethod
@@ -1989,3 +2068,366 @@ class NouGenMsgBus:
 
         return agents
 
+
+# --- Target resolution: one live table, one resolver, every send path -----------------
+# Nothing below names a node or a lane. Nodes come from the local registry files and
+# env, lanes from this node's handlers, live sessions and the presence file, groups
+# from the same data. See target_resolver.py for the matching rules.
+_LANE_PRESENCE_LOCK = threading.Lock()
+
+
+def lane_presence_path() -> Path:
+    p = os.environ.get("NOUGEN_LANE_PRESENCE_FILE")
+    return Path(p) if p and not _tenant_scope() else Path(_home()) / "lane_presence.json"
+
+
+def lane_presence_ttl_s() -> float:
+    try:
+        v = float(os.environ.get("NOUGEN_MSG_LANE_TTL_S", "604800"))
+    except Exception:
+        return 604800.0
+    # Default a week: connector lanes send rarely, and a lane seen once still
+    # reads its inbox on that node. Capped at 30 days.
+    return max(1.0, min(2592000.0, v))
+
+
+def _registry_node_names() -> set:
+    s = set()
+    r = target_resolver.NAME_RE
+    for n in _known_fleet_hosts():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    for n in configured_fleet_nodes():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    for n in fleet_identity_maps()[0].values():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    sn = _self_node_name()
+    if r.fullmatch(sn.lower()):
+        s.add(sn.lower())
+    return s
+
+
+def _self_node_name() -> str:
+    n = get_current_node()
+    return local_node() if not n or n == "standalone" else n
+
+
+def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
+    lane, node = lane.strip().lower(), node.strip().lower()
+    r = target_resolver.NAME_RE
+    if not r.fullmatch(lane) or not r.fullmatch(node):
+        return False
+    reg = _registry_node_names()
+    if node not in reg:
+        return False
+    a2n, _ = fleet_identity_maps()
+    if (
+        lane in reg
+        or lane in a2n
+        or lane in target_resolver.GROUP_KEYWORDS
+        or lane in target_resolver.SELF_ALIASES
+    ):
+        return False
+    now = now or time.time()
+    ttl = lane_presence_ttl_s()
+    path = lane_presence_path()
+    with _LANE_PRESENCE_LOCK:
+        data = {"lanes": {}}
+        try:
+            if path.exists():
+                with path.open() as f:
+                    ld = json.load(f)
+                    if isinstance(ld, dict) and isinstance(ld.get("lanes"), dict):
+                        data = ld
+        except Exception:
+            pass
+        lanes = data.setdefault("lanes", {})
+        ln = lanes.setdefault(lane, {})
+        if ln.get(node, 0) and now - ln[node] < 30:
+            return True
+        ln[node] = now
+        cut = now - ttl
+        for lname in list(lanes):
+            for n in list(lanes[lname]):
+                if lanes[lname][n] < cut:
+                    del lanes[lname][n]
+            if not lanes[lname]:
+                del lanes[lname]
+        if len(lanes) > 256:
+            lts = [(max(v.values()), k) for k, v in lanes.items() if v]
+            lts.sort()
+            for _, k in lts[: len(lanes) - 256]:
+                del lanes[k]
+        try:
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            with tmp.open("w") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except OSError:
+            return False
+    return True
+
+
+def read_lane_presence(now: Optional[float] = None) -> Dict[str, Dict[str, float]]:
+    now = now or time.time()
+    ttl = lane_presence_ttl_s()
+    path = lane_presence_path()
+    reg = _registry_node_names()
+    out: Dict[str, Dict[str, float]] = {}
+    r = target_resolver.NAME_RE
+    a2n, _ = fleet_identity_maps()
+    try:
+        if path.exists():
+            with path.open() as f:
+                ld = json.load(f)
+                if isinstance(ld, dict) and isinstance(ld.get("lanes"), dict):
+                    for lname, ns in ld["lanes"].items():
+                        if (
+                            not r.fullmatch(lname)
+                            or lname in reg
+                            or lname in a2n
+                            or lname in target_resolver.GROUP_KEYWORDS
+                            or lname in target_resolver.SELF_ALIASES
+                        ):
+                            continue
+                        lr = {}
+                        for n, ts in ns.items():
+                            if not r.fullmatch(n) or n not in reg:
+                                continue
+                            age = now - ts
+                            if age <= ttl:
+                                lr[n] = age
+                        if lr:
+                            out[lname] = lr
+    except Exception:
+        pass
+    return out
+
+
+def _is_local_inbox_lane(family: str) -> bool:
+    """Whether the live table hosts ``family`` on this node via presence, config or a
+    live session (never a handler family, never a node or group name)."""
+    try:
+        table = _TARGET_CACHE_LOCAL.get()
+    except Exception:  # pylint: disable=broad-except
+        return False
+    name = str(family or "").strip().lower()
+    if not target_resolver.NAME_RE.fullmatch(name):
+        return False
+    host = table.get("lanes", {}).get(name, {}).get(table.get("self"))
+    return bool(host) and host.get("via") in ("presence", "config", "session")
+
+
+def _drop_lane_inbox(lane: str, text: str, envelope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Write one message for ``lane`` into this node's inbox. The file name is built
+    from a timestamp and a random id only; the lane name is data inside the file."""
+    dirs = _agy_inbox_dirs()  # owner: [gemini, agy]; tenant: [its own]. The node reads agy.
+    inbox = Path(dirs[1] if len(dirs) > 1 else dirs[0])
+    message_id = uuid.uuid4().hex
+    record = {
+        "type": "live_message", "target": lane, "text": str(text),
+        "sender": (envelope or {}).get("original_sender") or "nougenmsg-bus",
+        "origin_envelope": envelope or {}, "timestamp": time.time(), "message_id": message_id,
+    }
+    try:
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / "msg_{}_{}.json".format(int(time.time() * 1000), message_id[:12])
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(record), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return {"delivered": False, "via": "inbox", "error": type(exc).__name__}
+    return {"delivered": True, "via": "inbox", "message_id": message_id}
+
+
+def build_target_table(
+    probe: bool = True, extra_local_lanes: tuple = (), reachability: Optional[Dict[str, Any]] = None
+) -> dict:
+    self_n = _self_node_name()
+    reg = _registry_node_names()
+    a2n, n2a = fleet_identity_maps()
+    r = target_resolver.NAME_RE
+    nodes = {
+        n: {"reachable": None, "aliases": sorted(a for a, nn in a2n.items() if nn == n and r.fullmatch(a))}
+        for n in sorted(reg)
+    }
+    nodes.setdefault(self_n, {"aliases": []})["reachable"] = True
+    if _tenant_scope():
+        for n in nodes:
+            if n != self_n:
+                nodes[n]["reachable"] = None
+    else:
+        if reachability is not None:
+            R, U = (
+                set(reachability.get("nodes_reachable", [])),
+                set(reachability.get("nodes_unreachable", [])),
+            )
+            for n in nodes:
+                if n == self_n:
+                    continue
+                nodes[n]["reachable"] = True if n in R else False if n in U else None
+        elif probe:
+            pe = os.environ.get("NOUGEN_MSG_RESOLVE_PROBE", "").lower()
+            if pe not in ("0", "false", "no", "off"):
+                try:
+                    pr = NouGenMsgBus._probe_nodes(self_n)
+                    R, U = set(pr.get("nodes_reachable", [])), set(pr.get("nodes_unreachable", []))
+                    for n in nodes:
+                        if n == self_n:
+                            continue
+                        nodes[n]["reachable"] = True if n in R else False if n in U else None
+                except Exception:
+                    for n in nodes:
+                        if n != self_n:
+                            nodes[n]["reachable"] = None
+    lanes: Dict[str, Dict[str, Dict]] = {}
+    for f in NouGenMsgBus.LOCAL_FAMILIES:
+        if f != "all" and r.fullmatch(f):
+            lanes[f] = {self_n: {"via": "handler"}}
+    for lname in list(extra_local_lanes) + [
+        x.strip() for x in os.environ.get("NOUGEN_MSG_LOCAL_LANES", "").split(",") if x.strip()
+    ]:
+        lname = lname.strip().lower()
+        if not r.fullmatch(lname):
+            continue
+        if lname not in lanes:
+            lanes[lname] = {self_n: {"via": "config"}}
+    try:
+        sess = AgentPinger.list_sessions()
+    except Exception:
+        sess = []
+    for s in sess:
+        if not s.get("live"):
+            continue
+        ag = s.get("agent", "").strip().lower()
+        if not ag or not r.fullmatch(ag):
+            continue
+        sid = s.get("session_id")
+        if not sid:
+            continue
+        # A handler lane keeps via "handler" (it exists on every node running this code);
+        # live sessions are listed beside it so a session id is addressable.
+        host = lanes.setdefault(ag, {}).setdefault(self_n, {"via": "session"})
+        ids = host.setdefault("sessions", [])
+        if sid not in ids:
+            ids.append(str(sid))
+    for lname, ns in read_lane_presence().items():
+        if lanes.get(lname, {}).get(self_n, {}).get("via") == "handler":
+            # A handler lane exists on every node, so its bare name means this node;
+            # another node's copy is addressed as '<node>/<lane>'.
+            continue
+        if lname in lanes:
+            for n, age in ns.items():
+                if n not in lanes[lname]:
+                    lanes[lname][n] = {"via": "presence", "age_s": round(age, 1)}
+        else:
+            lanes[lname] = {n: {"via": "presence", "age_s": round(age, 1)} for n, age in ns.items()}
+    flanes = {
+        lname: n
+        for lname, n in lanes.items()
+        if r.fullmatch(lname)
+        and lname not in reg
+        and lname not in a2n
+        and lname not in target_resolver.GROUP_KEYWORDS
+        and lname not in target_resolver.SELF_ALIASES
+    }
+    ml = sorted(lname for lname in NouGenMsgBus.MODEL_LANES if r.fullmatch(lname))
+    groups = {}
+    for kw in target_resolver.GROUP_KEYWORDS:
+        nl = sorted(reg)
+        if self_n in nl:
+            nl.remove(self_n)
+            nl.insert(0, self_n)
+        groups[kw] = nl
+    fh = _load_fleet_hosts()
+    if isinstance(fh.get("groups"), dict):
+        for gn, mem in fh["groups"].items():
+            gnl = gn.lower()
+            if (
+                not r.fullmatch(gnl)
+                or gnl in reg
+                or gnl in a2n
+                or gnl in target_resolver.GROUP_KEYWORDS
+                or gnl in flanes
+            ):
+                continue
+            fm = [m for m in mem if m in reg]
+            if fm:
+                groups[gnl] = sorted(fm)
+    return {
+        "self": self_n,
+        "nodes": nodes,
+        "lanes": flanes,
+        "model_lanes": ml,
+        "groups": groups,
+        "built_at": time.time(),
+    }
+
+
+_TARGET_CACHE_LOCAL = target_resolver.TableCache(lambda: build_target_table(probe=False))
+_TARGET_CACHE_PROBED = target_resolver.TableCache(lambda: build_target_table(probe=True))
+
+
+def resolve_target(raw: Any) -> "target_resolver.Resolution":
+    lr = target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
+    if lr.ok:
+        lt = _TARGET_CACHE_LOCAL.get()
+        sn = lt.get("self")
+        if all(d.node == sn for d in lr.deliveries):
+            return lr
+    return target_resolver.resolve_live(raw, _TARGET_CACHE_PROBED)
+
+
+def target_refusal(raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        r = resolve_target(raw)
+    except Exception:
+        return None
+    if r.ok:
+        return None
+    return {
+        "delivered": False,
+        "status": "not_resolvable",
+        "reason": r.reason,
+        "error": r.error,
+        "target": str(raw)[:80],
+        "resolvable": r.resolvable,
+    }
+
+
+def target_unknown(raw: Any) -> Optional[Dict[str, Any]]:
+    """Refusal for a target that names nothing in the live table, else None.
+
+    The gate for send paths whose transport reports an unreachable peer itself (the
+    CLI and the MCP tools): it reads the unprobed table, so it costs no network call
+    and never refuses a known node for being slow to answer a probe.
+    """
+    try:
+        r = target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    if r.ok:
+        return None
+    return {
+        "delivered": False,
+        "status": "not_resolvable",
+        "reason": r.reason,
+        "error": f"unrecognized target {str(raw)[:80]!r}; nothing delivered. {r.error}",
+        "resolvable": r.resolvable,
+    }
+
+
+def target_table_summary(reachability: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    t = (
+        build_target_table(reachability=reachability)
+        if reachability is not None
+        else _TARGET_CACHE_PROBED.get()
+    )
+    return target_resolver.summarise(t)
+
+
+def clear_target_cache() -> None:
+    _TARGET_CACHE_LOCAL.clear()
+    _TARGET_CACHE_PROBED.clear()

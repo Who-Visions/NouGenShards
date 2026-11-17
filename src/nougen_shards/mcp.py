@@ -1162,11 +1162,14 @@ def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = Non
             message '<node>-<lane>'; defaults to NOUGEN_LANE / NOUGEN_AGENT.
     """
     import json
-    from .nougenmsg import NouGenMsgBus
+    from .nougenmsg import NouGenMsgBus, target_unknown
     try:
+        refusal = target_unknown(target)
+        if refusal:
+            return json.dumps(refusal, indent=2)
         origin = {"lane": lane} if lane else None
-        res = NouGenMsgBus.emit_fleet(text=text, target=target, origin=origin,
-                                      audience=audience, background=True)
+        res = NouGenMsgBus.send_resolved(target, text, origin=origin,
+                                         audience=audience, background=True)
         return json.dumps(res, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
