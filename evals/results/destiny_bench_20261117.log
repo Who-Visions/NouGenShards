@@ -1,4 +1,4 @@
-NouGen vault resolved to C:\Users\super\AppData\Local\Temp\bench_vault_no_memory_5dcipn9c via NOUGEN_VAULT_DIR
+NouGen vault resolved to %USERPROFILE%\AppData\Local\Temp\bench_vault_no_memory_5dcipn9c via NOUGEN_VAULT_DIR
 [no_memory] tick 11: {'blocked': 4, 'failed': 81, 'queued': 15} tokens=281678
 [no_memory] tick 12: {'blocked': 4, 'failed': 91, 'queued': 5} tokens=298550
 [no_memory] tick 13: {'blocked': 4, 'failed': 96} tokens=304328
