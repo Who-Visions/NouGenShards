@@ -11,6 +11,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 _EXPORTS = {
     "capture": ("core", "capture"),
     "retrieve": ("core", "retrieve"),
+    "lane_health": ("core", "lane_health"),
     "mark_shard": ("core", "mark_shard"),
     "compile_recall_packet": ("core", "compile_recall_packet"),
     "federated_retrieve": ("federation", "federated_retrieve"),
