@@ -247,13 +247,19 @@ def lane_health() -> dict:
                     degraded.append(key)
             else:
                 try:
+                    # Probe the FTS5 index itself (external-content COUNT(*) only reads shards).
+                    conn.execute(
+                        "SELECT rowid FROM shards_fts "
+                        "WHERE shards_fts MATCH 'a*' LIMIT 1").fetchone()
                     count = conn.execute(
-                        "SELECT COUNT(*) FROM shards_fts").fetchone()[0]
+                        "SELECT COUNT(*) FROM shards_fts_docsize").fetchone()[0]
                     entry["fts_rows"] = int(count)
                     fts_rows += int(count)
                 except sqlite3.Error:
                     entry["fts_rows"] = 0
                     fts_present_all = False
+                    if key not in degraded:
+                        degraded.append(key)
         except (sqlite3.Error, OSError) as exc:
             entry.update({"readable": False,
                           "error": f"{type(exc).__name__}: {exc}"})
@@ -282,7 +288,10 @@ def lane_health() -> dict:
         embedding_status = {"provider": "unknown", "model": "",
                             "ollama_reachable": False,
                             "error": f"{type(exc).__name__}: {exc}"}
-    if embedding_status.get("provider") == "none" and "embedding" not in degraded:
+    prov = embedding_status.get("provider")
+    if (prov == "none"
+            or (prov == "ollama" and not embedding_status.get("ollama_reachable", True))
+            or embedding_status.get("error")) and "embedding" not in degraded:
         degraded.append("embedding")
 
     vector_cache: dict = {"present": False, "files": 0, "stale_dbs": []}

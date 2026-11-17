@@ -30,6 +30,10 @@ def vault(monkeypatch):
             shards, "get_db_path",
             lambda index: temp_path / f"test_shards_{index}.db")
         monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "0")
+        from nougen_shards import embed_providers
+        monkeypatch.setattr(
+            embed_providers, "provider_status",
+            lambda: {"provider": "stub", "model": "stub", "ollama_reachable": True})
         shards._INITIALIZED_DBS.clear()
         shards.init_db(1)
         yield temp_path
