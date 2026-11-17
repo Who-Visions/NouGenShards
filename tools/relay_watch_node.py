@@ -178,7 +178,7 @@ def prime_cursor(root: Path) -> Seen:
     none or it predates version 2. A version-1 cursor was truncated by the old
     lexicographic cap, so diffing against it would replay thousands of legs."""
     seen, version = load_seen(), cursor_version()
-    if seen and version >= CURSOR_VERSION:
+    if version >= CURSOR_VERSION:  # a valid v2 cursor, even an empty one, is initialised
         return seen
     for leg_id in sorted(legs(root)):
         seen.add(leg_id)
@@ -218,15 +218,13 @@ def addresses(record: dict) -> set:
 
 
 def addressed_here(record: dict, node: str, lanes: set) -> bool:
-    """Open legs are for this node when they name it, one of its lanes, or
-    everyone; a leg with no address at all is a broadcast."""
+    """Open legs are for this node when their explicit address names it, one of
+    its lanes, or everyone; a leg with no explicit address is a broadcast."""
     mine = ({node} if node else set()) | set(lanes) | BROADCAST_NAMES
     explicit = addresses(record)
-    mentioned = {n for n in (_norm_name(t) for t in _AT_TOKEN.findall(
-        str(record.get("goal") or ""))) if n}
-    if (explicit | mentioned) & mine:
-        return True
-    return not explicit
+    if explicit:  # only structured fields and '-> @x' decide; prose mentions never do
+        return bool(explicit & mine)
+    return True
 
 
 def leg_time(leg_id: str, record: dict):

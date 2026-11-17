@@ -217,3 +217,20 @@ def test_version1_cursor_is_migrated_silently(w):
     again = mod.prime_cursor(w.root)  # restart on a v2 cursor: no re-prime
     assert mod.run_pass(w.root, again, "phoebus", set(), now=w.now,
                         announcer=lambda *a: None)["announced"] == 1
+
+
+def test_prose_mention_does_not_override_explicit_address(w):
+    mod = w.mod
+    assert not mod.addressed_here({"goal": "-> @blade; do not ask @phoebus"}, "phoebus", set())
+    assert mod.addressed_here({"goal": "-> @blade @phoebus"}, "phoebus", set())
+    assert mod.addressed_here({"goal": "ask @phoebus about @db7"}, "phoebus", set())
+
+
+def test_empty_v2_cursor_is_not_reprimed(w):
+    mod = w.mod
+    mod.save_seen(mod.Seen())  # valid v2 cursor, empty (watcher started on an empty clone)
+    recent = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(w.now - 60))
+    w.put(f"{recent}__a__while_down", status="open", goal="-> @phoebus x", machine="m", agent="a")
+    seen = mod.prime_cursor(w.root)
+    counts = mod.run_pass(w.root, seen, "phoebus", set(), now=w.now, announcer=lambda *a: None)
+    assert counts["announced"] == 1
