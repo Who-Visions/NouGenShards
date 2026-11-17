@@ -303,6 +303,133 @@ class TestHTTPHandler:
         assert status == 422 and "@chatgpt-app" in body["resolvable"]
 
 
+class TestTenantIsolation:
+    """#1100 follow-up: a tenant resolves only its own node.
+
+    The resolver's None-means-reachable contract is owner behaviour
+    (test_group_all_fleet): an unprobed owner node is reachable until a probe
+    says otherwise. Under tenant scope the table must never contain another
+    node at all, so None can never leak a cross-tenant @all/@fleet/
+    @<other-node> target, and presence claims must stay on the tenant's node.
+    """
+
+    @pytest.fixture()
+    def tenant_bus(self, monkeypatch, tmp_path):
+        from nougen_shards import core, nougenmsg as bus
+        monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+        monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+        monkeypatch.setenv("NOUGEN_MSG_LOCAL_LANES", "")
+        vault = tmp_path / "tenant-a"
+        vault.mkdir()
+        token = core.bind_active_vault(vault, "tenant-a")
+        bus.clear_target_cache()
+        yield bus
+        bus.clear_target_cache()
+        core.reset_active_vault(token)
+
+    def test_tenant_table_has_only_self(self, tenant_bus):
+        t = tenant_bus.build_target_table()
+        assert t["self"] == "phoebus"
+        assert set(t["nodes"]) == {"phoebus"}
+        assert t["nodes"]["phoebus"]["reachable"] is True
+        assert t["groups"]["all"] == ["phoebus"]
+        assert t["groups"]["fleet"] == ["phoebus"]
+        assert "blade" not in json.dumps(t) and "whoart" not in json.dumps(t)
+
+    def test_tenant_cannot_resolve_other_nodes_or_groups(self, tenant_bus):
+        t = tenant_bus.build_target_table()
+        for target in ("@blade", "@whoart", "blade", "whoart",
+                       "@blade:claude", "blade/deskapp"):
+            r = resolve(target, t)
+            assert not r.ok and r.deliveries == [], target
+            assert "@blade" not in r.resolvable and "@whoart" not in r.resolvable
+        # @all/@fleet still resolve, but only to the tenant's own node.
+        for target in ("@all", "@fleet"):
+            r = resolve(target, t)
+            assert r.ok and [d.node for d in r.deliveries] == ["phoebus"], target
+
+    def test_tenant_presence_cannot_plant_remote_lane(self, tenant_bus):
+        assert tenant_bus.note_lane_seen("deskapp", "whoart") is False
+        assert tenant_bus.note_lane_seen("deskapp", "blade") is False
+        # A tenant-scoped registry ({self}) must not let a fleet node's name
+        # in as a lane: the collision check is against the FULL registry.
+        assert tenant_bus.note_lane_seen("whoart", "phoebus") is False
+        assert tenant_bus.note_lane_seen("all", "phoebus") is False
+        assert tenant_bus.note_lane_seen("deskapp", "phoebus") is True
+        tenant_bus.clear_target_cache()
+        t = tenant_bus.build_target_table()
+        assert set(t["lanes"].get("deskapp", {})) == {"phoebus"}
+        r = resolve("@deskapp", t)
+        assert r.ok and [(d.node, d.lane) for d in r.deliveries] == [("phoebus", "deskapp")]
+
+    def test_tenant_stale_presence_from_other_nodes_is_dropped(self, tenant_bus, tmp_path):
+        now = time.time()
+        (tmp_path / "tenant-a" / "lane_presence.json").write_text(json.dumps(
+            {"lanes": {"deskapp": {"whoart": now, "phoebus": now}}}))
+        tenant_bus.clear_target_cache()
+        assert tenant_bus.read_lane_presence(now=now) == {"deskapp": {"phoebus": 0.0}}
+        t = tenant_bus.build_target_table()
+        assert set(t["lanes"].get("deskapp", {})) == {"phoebus"}
+
+    def test_target_cache_is_keyed_by_identity(self, monkeypatch, tmp_path):
+        """#1104 follow-up: a tenant must never reuse an owner-populated cache.
+
+        The target caches are module-level, but the tenant context is a
+        ContextVar, so one process can serve owner then tenant in sequence.
+        Without identity keying, the tenant reuses the owner's table until the
+        TTL expires. Proven against the old code: the tenant table still lists
+        blade/whoart.
+        """
+        from nougen_shards import core, nougenmsg as bus
+        monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+        monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+        monkeypatch.setenv("NOUGEN_MSG_LOCAL_LANES", "")
+        # The conftest isolation fixture sets the resolve TTL to 0 (every get
+        # rebuilds); a cache test sets its own TTL so the table actually holds
+        # across the identity switch below.
+        monkeypatch.setenv("NOUGEN_MSG_RESOLVE_TTL_S", "60")
+        bus.clear_target_cache()
+        owner_table = bus._TARGET_CACHE_LOCAL.get()
+        assert set(owner_table["nodes"]) >= {"phoebus", "blade", "whoart"}
+        vault = tmp_path / "tenant-a"
+        vault.mkdir()
+        token = core.bind_active_vault(vault, "tenant-a")
+        try:
+            tenant_table = bus._TARGET_CACHE_LOCAL.get()
+            assert set(tenant_table["nodes"]) == {"phoebus"}
+            assert "blade" not in json.dumps(tenant_table)
+            assert "whoart" not in json.dumps(tenant_table)
+        finally:
+            core.reset_active_vault(token)
+            bus.clear_target_cache()
+
+    def test_spoofed_lane_name_rejected(self, monkeypatch):
+        # Scope-independent: a lane name must never collide with a known node,
+        # alias, group, or self-alias, even when the claim itself is well-formed.
+        from nougen_shards import nougenmsg as bus
+        monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+        monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+        for spoof in ("whoart", "blade", "phoebus", "all", "fleet",
+                      "local", "self", "hyperion", "apollo"):
+            assert bus.note_lane_seen(spoof, "phoebus") is False, spoof
+        assert bus.note_lane_seen("chatgpt-app", "phoebus") is True
+
+    def test_read_presence_drops_spoofed_entries(self, monkeypatch, tmp_path):
+        from nougen_shards import nougenmsg as bus
+        monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+        monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")
+        now = time.time()
+        path = tmp_path / "lane_presence.json"
+        monkeypatch.setenv("NOUGEN_LANE_PRESENCE_FILE", str(path))
+        path.write_text(json.dumps({"lanes": {
+            "whoart": {"phoebus": now},  # a node name posing as a lane
+            "deskapp": {"whoart": now, "evil.example": now},  # unknown host dropped
+            "real-lane": {"whoart": now},  # legit entry survives
+        }}))
+        assert bus.read_lane_presence(now=now) == {
+            "deskapp": {"whoart": 0.0}, "real-lane": {"whoart": 0.0}}
+
+
 def test_bus_delivers_presence_lane_to_local_inbox(monkeypatch, tmp_path):
     """The MCP/CLI path (NouGenMsgBus.live_ping) reaches a connector lane present here."""
     from nougen_shards import nougenmsg as bus

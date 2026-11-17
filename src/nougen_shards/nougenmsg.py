@@ -2091,7 +2091,12 @@ def lane_presence_ttl_s() -> float:
     return max(1.0, min(2592000.0, v))
 
 
-def _registry_node_names() -> set:
+def _full_registry_node_names() -> set:
+    """Every node this box knows: fleet map, NOUGEN_PEER_NODES, nodes.json, self.
+
+    Unscoped on purpose: lane names must never collide with ANY known node,
+    even where the scoped view below hides the rest of the fleet.
+    """
     s = set()
     r = target_resolver.NAME_RE
     for n in _known_fleet_hosts():
@@ -2109,12 +2114,35 @@ def _registry_node_names() -> set:
     return s
 
 
+def _registry_node_names() -> set:
+    """Nodes visible to the current identity.
+
+    Owner: the full registry. Tenant: only this node — a tenant must never
+    resolve, group, or plant presence for another node, and the registry
+    sources (NOUGEN_PEER_NODES env, nodes.json) are process-wide, not
+    tenant-scoped, so scoping happens here, at the point of use.
+    """
+    if _tenant_scope():
+        sn = _self_node_name()
+        return {sn.lower()} if target_resolver.NAME_RE.fullmatch(sn.lower()) else set()
+    return _full_registry_node_names()
+
+
 def _self_node_name() -> str:
     n = get_current_node()
     return local_node() if not n or n == "standalone" else n
 
 
 def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
+    """Record that ``lane`` was seen on ``node``.
+
+    A presence claim is only as trustworthy as its name: the lane must match
+    NAME_RE and must not collide with any known node name, alias, group, or
+    self-alias (checked against the FULL registry, so a tenant-scoped view
+    cannot smuggle a fleet node's name in as a lane). The node must be in the
+    caller's scoped registry, so a tenant can only plant presence on its own
+    node, never on another tenant's or the owner's.
+    """
     lane, node = lane.strip().lower(), node.strip().lower()
     r = target_resolver.NAME_RE
     if not r.fullmatch(lane) or not r.fullmatch(node):
@@ -2124,7 +2152,7 @@ def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
         return False
     a2n, _ = fleet_identity_maps()
     if (
-        lane in reg
+        lane in _full_registry_node_names()
         or lane in a2n
         or lane in target_resolver.GROUP_KEYWORDS
         or lane in target_resolver.SELF_ALIASES
@@ -2175,6 +2203,9 @@ def read_lane_presence(now: Optional[float] = None) -> Dict[str, Dict[str, float
     ttl = lane_presence_ttl_s()
     path = lane_presence_path()
     reg = _registry_node_names()
+    # Lane names are checked against the FULL registry: a stale or spoofed
+    # entry naming a fleet node as a lane is dropped even under tenant scope.
+    full_reg = _full_registry_node_names()
     out: Dict[str, Dict[str, float]] = {}
     r = target_resolver.NAME_RE
     a2n, _ = fleet_identity_maps()
@@ -2186,7 +2217,7 @@ def read_lane_presence(now: Optional[float] = None) -> Dict[str, Dict[str, float
                     for lname, ns in ld["lanes"].items():
                         if (
                             not r.fullmatch(lname)
-                            or lname in reg
+                            or lname in full_reg
                             or lname in a2n
                             or lname in target_resolver.GROUP_KEYWORDS
                             or lname in target_resolver.SELF_ALIASES
@@ -2254,11 +2285,11 @@ def build_target_table(
         for n in sorted(reg)
     }
     nodes.setdefault(self_n, {"aliases": []})["reachable"] = True
-    if _tenant_scope():
-        for n in nodes:
-            if n != self_n:
-                nodes[n]["reachable"] = None
-    else:
+    # Tenant scope needs no reachable=None block: _registry_node_names() already
+    # returns only this node for a tenant, so no other node is in the table at
+    # all — None-means-reachable in the resolver can never leak a cross-tenant
+    # @all/@fleet/@<other-node> target. Owner tables keep the None contract.
+    if not _tenant_scope():
         if reachability is not None:
             R, U = (
                 set(reachability.get("nodes_reachable", [])),
@@ -2335,6 +2366,9 @@ def build_target_table(
     }
     ml = sorted(lname for lname in NouGenMsgBus.MODEL_LANES if r.fullmatch(lname))
     groups = {}
+    # Groups expand from the scoped registry: a tenant's @all/@fleet is only
+    # this node, never the owner's fleet; fleet-host groups are filtered the
+    # same way below.
     for kw in target_resolver.GROUP_KEYWORDS:
         nl = sorted(reg)
         if self_n in nl:
@@ -2366,8 +2400,23 @@ def build_target_table(
     }
 
 
-_TARGET_CACHE_LOCAL = target_resolver.TableCache(lambda: build_target_table(probe=False))
-_TARGET_CACHE_PROBED = target_resolver.TableCache(lambda: build_target_table(probe=True))
+def _target_table_identity() -> tuple:
+    """Identity key for the module-level target-table caches.
+
+    The caches are module-level, but the tenant context is a ContextVar
+    (core.bind_active_vault), so one process can serve owner then tenant (or
+    two tenants) in sequence. Without the key, the second identity reuses the
+    first identity's table until the TTL expires. The key is the full identity
+    tuple, so any switch rebuilds the table instead.
+    """
+    from . import core
+    return (core.is_tenant_context(), core.active_tenant_id(), str(core.active_vault_dir()))
+
+
+_TARGET_CACHE_LOCAL = target_resolver.TableCache(
+    lambda: build_target_table(probe=False), key_fn=_target_table_identity)
+_TARGET_CACHE_PROBED = target_resolver.TableCache(
+    lambda: build_target_table(probe=True), key_fn=_target_table_identity)
 
 
 def resolve_target(raw: Any) -> "target_resolver.Resolution":
