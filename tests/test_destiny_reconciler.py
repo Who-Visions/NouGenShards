@@ -310,6 +310,16 @@ def test_supersede_terminal_destiny_is_refused(env):
     out = destiny.create_destiny("New", "replace a fulfilled one", supersedes=d["id"])
     assert "error" in out
     assert destiny.get_destiny(d["id"])["superseded_by"] is None
-    ok = destiny.create_destiny("Live", "x", status="active")
+    ok = destiny.create_destiny("Live", "stay open", status="active")
     out2 = destiny.create_destiny("Next", "replace live", supersedes=ok["id"])
     assert "error" not in out2 and destiny.get_destiny(ok["id"])["status"] == "superseded"
+
+
+def test_store_ports_discover_and_refuse_unsupplied_spend_ports(env):
+    destiny.create_destiny("Real", "from the store", status="active", verification="a check",
+                           required_events=["one"])
+    ports = dr.store_ports()
+    assert dr.discover(ports)["added"] == 1
+    with pytest.raises(NotImplementedError):
+        ports.execute({}, dr.Agent("a"), "blade", {}, "baseline")
+    assert dr.main(["status"]) == 0

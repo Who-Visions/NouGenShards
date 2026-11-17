@@ -34,7 +34,7 @@ import os
 import re
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -456,6 +456,8 @@ def tick(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> dict:
     results: List[dict] = []
     left = cfg.tick_token_budget
     for _ in range(cfg.max_tasks_per_tick):
+        if left <= 0:
+            break
         task = claim_next(cfg, ports, path=path)
         if task is None:
             break
@@ -474,3 +476,63 @@ def status(*, path: Optional[Path] = None) -> dict:
         counts = {r["state"]: r["n"] for r in conn.execute("SELECT state, COUNT(*) n FROM tasks GROUP BY state")}
         oc = {r["outcome"]: r["n"] for r in conn.execute("SELECT outcome, COUNT(*) n FROM attempts GROUP BY outcome")}
     return {"tasks": counts, "attempt_outcomes": oc}
+
+
+# --------------------------------------------------------------------------
+# default store-backed ports + CLI
+# --------------------------------------------------------------------------
+def store_ports(**overrides: Any) -> Ports:
+    """Ports backed by the real destiny store. ``execute``, ``verify``, ``agents``,
+    ``record_evidence`` and ``publish_relay`` have no safe default (they spend
+    budget or publish), so they must come from the caller via ``overrides``."""
+    from . import destiny
+
+    def _no(name):
+        def f(*a, **k):
+            raise NotImplementedError(f"port {name!r} must be supplied by the caller")
+        return f
+
+    def _list():
+        out = destiny.unfinished_destinies(limit=200)
+        return [destiny.get_destiny(d["id"]) | {"required_events": d.get("required_events")}
+                for d in out.get("destinies", [])]
+
+    base = dict(
+        list_destinies=_list,
+        list_intents=lambda: [],
+        recall=lambda q, n: {"tier": "none", "reason": "no recall port supplied", "shards": []},
+        execute=_no("execute"), verify=_no("verify"), agents=lambda: [],
+        record_evidence=_no("record_evidence"), publish_relay=_no("publish_relay"),
+        link_destiny=lambda did, kind, ref, role: destiny.link(did, kind, ref, role),
+        update_destiny=lambda did, st, actor, ev: destiny.update_status(did, st, actor=actor, evidence=ev),
+    )
+    base.update(overrides)
+    return Ports(**base)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="destiny_reconciler")
+    ap.add_argument("cmd", choices=["status", "discover", "tick"])
+    ap.add_argument("--ports", help="module:factory returning a Ports (required for tick)")
+    a = ap.parse_args(argv)
+    if a.cmd == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
+    if a.cmd == "discover":
+        print(json.dumps(discover(store_ports()), indent=2))
+        return 0
+    if not a.ports:
+        print("tick needs --ports module:factory (executor/verifier have no safe default)")
+        return 2
+    import importlib
+    mod, _, fn = a.ports.partition(":")
+    ports = getattr(importlib.import_module(mod), fn)()
+    lock = db_path().with_suffix(".lock")
+    with single_instance(lock):
+        print(json.dumps(tick(Config(), ports), indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
