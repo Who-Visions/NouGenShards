@@ -772,14 +772,21 @@ def init_db(index: int = 1):  # noqa: C901
 
 
         # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+        # Tokenizer is env-selectable (P1: NOUGEN_FTS_TOKENIZER, default
+        # trigram) so the trigram-vs-plain comparison can build a plain
+        # vault without code edits. Vault-creation-time choice: the
+        # CREATE below is IF NOT EXISTS, so an existing table keeps its
+        # original tokenizer and a mismatch is logged, never silently
+        # rebuilt (a rebuild would re-tokenize every row on open).
+        fts_tokenizer = _fts_tokenizer()
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
                     title,
                     content,
                     content='shards',
                     content_rowid='id',
-                    tokenize='trigram'
+                    tokenize='{fts_tokenizer}'
                 );
             """)
         except sqlite3.OperationalError:
@@ -788,9 +795,20 @@ def init_db(index: int = 1):  # noqa: C901
                     title,
                     content,
                     content='shards',
-                    content_rowid='id'
+                    content_rowid='id',
+                    tokenize='unicode61'
                 );
             """)
+        _fts_sql_row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='shards_fts'"
+        ).fetchone()
+        if _fts_sql_row and _fts_sql_row[0]:
+            _fts_sql = str(_fts_sql_row[0]).lower()
+            if ("trigram" in _fts_sql) != (fts_tokenizer == "trigram"):
+                logger.warning(
+                    "NOUGEN_FTS_TOKENIZER=%r does not match the existing "
+                    "shards_fts table (kept as created); rebuild the vault "
+                    "to change tokenizers", fts_tokenizer)
 
         # Sync triggers (Module 18: Reconstruct Coherence).
         # The FTS index must stay coherent on every write, not just inserts. Without
@@ -1917,6 +1935,66 @@ def _bm25_half_score() -> float:
     return DEFAULT_BM25_HALF_SCORE
 
 
+#: FTS5 tokenizer for the shards_fts table (P1). ``trigram`` is the live
+#: default (fuzzy/substring recall); ``unicode61`` is the plain tokenizer
+#: used by the trigram-vs-plain comparison in tools/fts_bench.py. This is a
+#: VAULT-CREATION-TIME choice: an existing FTS table keeps its original
+#: tokenizer (init_db logs a warning on mismatch) -- flipping the env on a
+#: live vault does not rebuild the index.
+DEFAULT_FTS_TOKENIZER = "trigram"
+FTS_TOKENIZERS = ("trigram", "unicode61")
+
+
+def _fts_tokenizer() -> str:
+    """Resolve the FTS5 tokenizer: env first, logged fallback.
+
+    Env: NOUGEN_FTS_TOKENIZER (``trigram`` | ``unicode61``).
+    """
+    raw = os.environ.get("NOUGEN_FTS_TOKENIZER", "").strip().lower()
+    if not raw:
+        return DEFAULT_FTS_TOKENIZER
+    if raw in FTS_TOKENIZERS:
+        return raw
+    logger.warning("NOUGEN_FTS_TOKENIZER=%r is not one of %s; falling back to %s",
+                   raw, FTS_TOKENIZERS, DEFAULT_FTS_TOKENIZER)
+    return DEFAULT_FTS_TOKENIZER
+
+
+#: BM25 column weights for the FTS MATCH queries in _keyword_retrieve (P1).
+#: Defaults (5.0 title / 1.0 body) are the live behaviour measured by the
+#: audit; the env knobs exist so weight experiments run without code edits
+#: and are judged by measured delta only (tools/fts_bench.py).
+DEFAULT_FTS_BM25_TITLE_WEIGHT = 5.0
+DEFAULT_FTS_BM25_BODY_WEIGHT = 1.0
+
+
+def _fts_bm25_weights() -> tuple:
+    """Resolve the FTS BM25 (title, body) weights: env first, logged fallback.
+
+    Env: NOUGEN_FTS_BM25_TITLE_WEIGHT, NOUGEN_FTS_BM25_BODY_WEIGHT.
+    Each must be a finite number >= 0; anything else falls back to default.
+    """
+    weights = []
+    for env, default in (
+        ("NOUGEN_FTS_BM25_TITLE_WEIGHT", DEFAULT_FTS_BM25_TITLE_WEIGHT),
+        ("NOUGEN_FTS_BM25_BODY_WEIGHT", DEFAULT_FTS_BM25_BODY_WEIGHT),
+    ):
+        raw = os.environ.get(env, "")
+        if raw.strip():
+            try:
+                val = float(raw)
+                if math.isfinite(val) and val >= 0:
+                    weights.append(val)
+                    continue
+                logger.warning("%s=%r must be a finite number >= 0; "
+                               "falling back to %s", env, raw, default)
+            except ValueError:
+                logger.warning("%s=%r is not a number; falling back to %s",
+                               env, raw, default)
+        weights.append(default)
+    return (weights[0], weights[1])
+
+
 def _domain_affinity_boost() -> float:
     """Resolve the implicit-domain affinity boost: env first, logged fallback."""
     raw = os.environ.get("NOUGEN_DOMAIN_BOOST")
@@ -2337,6 +2415,10 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
 
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
+    # BM25 column weights (P1 env knobs, defaults 5.0 title / 1.0 body).
+    # Resolved once per call; the values are validated floats, so formatting
+    # them into the MATCH SQL is safe (bm25() takes literals, not params).
+    _fts_title_w, _fts_body_w = _fts_bm25_weights()
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
 
@@ -2394,7 +2476,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         cursor = conn.execute(f"""
                             SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
-                                   bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
+                                   bm25(shards_fts, {_fts_title_w:.6g}, {_fts_body_w:.6g}) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
@@ -2429,7 +2511,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         extra = conn.execute(f"""
                             SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
-                                   bm25(shards_fts, 5.0, 1.0) as bm25_score
+                                   bm25(shards_fts, {_fts_title_w:.6g}, {_fts_body_w:.6g}) as bm25_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {r_dom}{not_in}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?

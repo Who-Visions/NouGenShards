@@ -1,0 +1,591 @@
+{
+  "meta": {
+    "name": "p1-fts-seed-corpus-v1",
+    "seed": 20261116,
+    "generator": "seeded random.Random(20261116); 6 topics x 10 shards; content = intro + 2 pool sentences + unique detail sentence + closer; body queries = 5 words from the detail sentence",
+    "n_shards": 60,
+    "n_queries": 28,
+    "topics": [
+      "embed",
+      "gateway",
+      "journal",
+      "relay",
+      "snapshot",
+      "tenant"
+    ],
+    "body_chars": {
+      "min": 448,
+      "max": 518,
+      "mean": 480.2
+    },
+    "title_chars": {
+      "min": 17,
+      "max": 27
+    },
+    "sha256": "628602e072c11a29ae2b14c46291d113a27a92ee013b1bbceeb9330fcc452a10"
+  },
+  "shards": [
+    {
+      "topic": "relay",
+      "title": "relay leg claim protocol",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. A leg is claimed by one lane, executed, and acknowledged with a receipt. A leg that times out is retried once, then parked for the operator. The gateway signs each leg before it leaves the sending node. Shard relay-0 records the tunnel probe for this cycle, including tunnel probe handling, tunnel probe checks, and the tunnel probe log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay leg ack receipt",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. The gateway signs each leg before it leaves the sending node. Tunnel health is probed every minute from both ends of the link. Acknowledgements carry the commit hash of the work they close. Shard relay-1 records the failover switch for this cycle, including failover switch handling, failover switch checks, and the failover switch log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay routing table",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. Acknowledgements carry the commit hash of the work they close. Routing prefers the lane with the warmest cache and the shortest queue. A leg that times out is retried once, then parked for the operator. Shard relay-2 records the waypoint beacon for this cycle, including waypoint beacon handling, waypoint beacon checks, and the waypoint beacon log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "gateway tunnel watchdog",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. A leg that times out is retried once, then parked for the operator. A leg is claimed by one lane, executed, and acknowledged with a receipt. Tunnel health is probed every minute from both ends of the link. Shard relay-3 records the retry budget for this cycle, including retry budget handling, retry budget checks, and the retry budget log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay leg retry budget",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. Tunnel health is probed every minute from both ends of the link. The gateway signs each leg before it leaves the sending node. Routing prefers the lane with the warmest cache and the shortest queue. Shard relay-4 records the latency envelope for this cycle, including latency envelope handling, latency envelope checks, and the latency envelope log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "tunnel probe schedule",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. Routing prefers the lane with the warmest cache and the shortest queue. Acknowledgements carry the commit hash of the work they close. A leg is claimed by one lane, executed, and acknowledged with a receipt. Shard relay-5 records the receipt ledger for this cycle, including receipt ledger handling, receipt ledger checks, and the receipt ledger log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay handoff manifest",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. A leg is claimed by one lane, executed, and acknowledged with a receipt. A leg that times out is retried once, then parked for the operator. The gateway signs each leg before it leaves the sending node. Shard relay-6 records the claim token for this cycle, including claim token handling, claim token checks, and the claim token log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "leg receipt ledger",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. The gateway signs each leg before it leaves the sending node. Tunnel health is probed every minute from both ends of the link. Acknowledgements carry the commit hash of the work they close. Shard relay-7 records the deadline clock for this cycle, including deadline clock handling, deadline clock checks, and the deadline clock log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay quorum vote",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. Acknowledgements carry the commit hash of the work they close. Routing prefers the lane with the warmest cache and the shortest queue. A leg that times out is retried once, then parked for the operator. Shard relay-8 records the handoff manifest for this cycle, including handoff manifest handling, handoff manifest checks, and the handoff manifest log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "relay",
+      "title": "relay failover switch",
+      "content": "Relay legs carry work between fleet lanes over the gateway tunnel. A leg that times out is retried once, then parked for the operator. A leg is claimed by one lane, executed, and acknowledged with a receipt. Tunnel health is probed every minute from both ends of the link. Shard relay-9 records the quorum vote for this cycle, including quorum vote handling, quorum vote checks, and the quorum vote log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant onboarding flow",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Tenant vaults live under the tenant root and never share a directory. Owner-only tools stay denied to tenants by label, not by config. Recall and search must never read a sibling or owner vault. Shard tenant-0 records the label audit for this cycle, including label audit handling, label audit checks, and the label audit log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant directory layout",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Recall and search must never read a sibling or owner vault. Directory layout separates shards, secrets, relay legs, and inboxes. Onboarding mints a token scoped to the tenant root only. Shard tenant-1 records the sibling guard for this cycle, including sibling guard handling, sibling guard checks, and the sibling guard log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant scope labels",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Onboarding mints a token scoped to the tenant root only. A tenant token gets the full tool surface bound to its own root. Owner-only tools stay denied to tenants by label, not by config. Shard tenant-2 records the token mint for this cycle, including token mint handling, token mint checks, and the token mint log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant token minting",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Owner-only tools stay denied to tenants by label, not by config. Tenant vaults live under the tenant root and never share a directory. Directory layout separates shards, secrets, relay legs, and inboxes. Shard tenant-3 records the onboarding flow for this cycle, including onboarding flow handling, onboarding flow checks, and the onboarding flow log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant sibling guard",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Directory layout separates shards, secrets, relay legs, and inboxes. Recall and search must never read a sibling or owner vault. A tenant token gets the full tool surface bound to its own root. Shard tenant-4 records the directory layout for this cycle, including directory layout handling, directory layout checks, and the directory layout log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant owner floor",
+      "content": "Each tenant runs its own node with its own vault and relay identity. A tenant token gets the full tool surface bound to its own root. Onboarding mints a token scoped to the tenant root only. Tenant vaults live under the tenant root and never share a directory. Shard tenant-5 records the isolation drill for this cycle, including isolation drill handling, isolation drill checks, and the isolation drill log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant vault root",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Tenant vaults live under the tenant root and never share a directory. Owner-only tools stay denied to tenants by label, not by config. Recall and search must never read a sibling or owner vault. Shard tenant-6 records the secret fence for this cycle, including secret fence handling, secret fence checks, and the secret fence log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant secret fence",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Recall and search must never read a sibling or owner vault. Directory layout separates shards, secrets, relay legs, and inboxes. Onboarding mints a token scoped to the tenant root only. Shard tenant-7 records the owner floor for this cycle, including owner floor handling, owner floor checks, and the owner floor log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant label audit",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Onboarding mints a token scoped to the tenant root only. A tenant token gets the full tool surface bound to its own root. Owner-only tools stay denied to tenants by label, not by config. Shard tenant-8 records the vault root for this cycle, including vault root handling, vault root checks, and the vault root log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "tenant",
+      "title": "tenant isolation drill",
+      "content": "Each tenant runs its own node with its own vault and relay identity. Owner-only tools stay denied to tenants by label, not by config. Tenant vaults live under the tenant root and never share a directory. Directory layout separates shards, secrets, relay legs, and inboxes. Shard tenant-9 records the scope label for this cycle, including scope label handling, scope label checks, and the scope label log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot manifest checksum",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Checksums are verified on read, not just on write. Retention keeps more than one generation so one bad publish cannot strand us. Older snapshots are pruned only after the cutover succeeds. Shard snapshot-0 records the integrity sweep for this cycle, including integrity sweep handling, integrity sweep checks, and the integrity sweep log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "restore drill procedure",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Older snapshots are pruned only after the cutover succeeds. A sha256 manifest is written before the LATEST pointer moves. The publish path copies live files through the SQLite backup API. Shard snapshot-1 records the balance snapshot for this cycle, including balance snapshot handling, balance snapshot checks, and the balance snapshot log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot retention window",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. The publish path copies live files through the SQLite backup API. Restore is a drill, not a hope: it is rehearsed against a scratch vault. Retention keeps more than one generation so one bad publish cannot strand us. Shard snapshot-2 records the manifest checksum for this cycle, including manifest checksum handling, manifest checksum checks, and the manifest checksum log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "backup window schedule",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Retention keeps more than one generation so one bad publish cannot strand us. Checksums are verified on read, not just on write. A sha256 manifest is written before the LATEST pointer moves. Shard snapshot-3 records the snapshot audit for this cycle, including snapshot audit handling, snapshot audit checks, and the snapshot audit log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot cutover pointer",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. A sha256 manifest is written before the LATEST pointer moves. Older snapshots are pruned only after the cutover succeeds. Restore is a drill, not a hope: it is rehearsed against a scratch vault. Shard snapshot-4 records the backup window for this cycle, including backup window handling, backup window checks, and the backup window log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot prune schedule",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Restore is a drill, not a hope: it is rehearsed against a scratch vault. The publish path copies live files through the SQLite backup API. Checksums are verified on read, not just on write. Shard snapshot-5 records the cutover pointer for this cycle, including cutover pointer handling, cutover pointer checks, and the cutover pointer log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot integrity sweep",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Checksums are verified on read, not just on write. Retention keeps more than one generation so one bad publish cannot strand us. Older snapshots are pruned only after the cutover succeeds. Shard snapshot-6 records the prune schedule for this cycle, including prune schedule handling, prune schedule checks, and the prune schedule log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot rollback rehearsal",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Older snapshots are pruned only after the cutover succeeds. A sha256 manifest is written before the LATEST pointer moves. The publish path copies live files through the SQLite backup API. Shard snapshot-7 records the restore drill for this cycle, including restore drill handling, restore drill checks, and the restore drill log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "snapshot audit trail",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. The publish path copies live files through the SQLite backup API. Restore is a drill, not a hope: it is rehearsed against a scratch vault. Retention keeps more than one generation so one bad publish cannot strand us. Shard snapshot-8 records the retention window for this cycle, including retention window handling, retention window checks, and the retention window log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "snapshot",
+      "title": "balance snapshot audit",
+      "content": "Snapshots publish whole vault files so a reader only ever sees a complete set. Retention keeps more than one generation so one bad publish cannot strand us. Checksums are verified on read, not just on write. A sha256 manifest is written before the LATEST pointer moves. Shard snapshot-9 records the rollback rehearsal for this cycle, including rollback rehearsal handling, rollback rehearsal checks, and the rollback rehearsal log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "embedding backfill batch",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. Backfill sweeps the stragglers in batches of sixty-four. The sidecar cache is tenant-local inside the vault directory. Capture embeds locally with nomic-embed-text and never blocks on a miss. Shard embed-0 records the capture timeout for this cycle, including capture timeout handling, capture timeout checks, and the capture timeout log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "embedding dimension check",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. Capture embeds locally with nomic-embed-text and never blocks on a miss. Dimension mismatches are detected and skipped, never silently mixed. The vector cache is per-database and rebuilds on signature change. Shard embed-1 records the reembed sweep for this cycle, including reembed sweep handling, reembed sweep checks, and the reembed sweep log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "capture embed timeout",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. The vector cache is per-database and rebuilds on signature change. A missed embed degrades to keyword-only and is counted, not hidden. The sidecar cache is tenant-local inside the vault directory. Shard embed-2 records the dimension check for this cycle, including dimension check handling, dimension check checks, and the dimension check log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "vector cache signature",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. The sidecar cache is tenant-local inside the vault directory. Backfill sweeps the stragglers in batches of sixty-four. Dimension mismatches are detected and skipped, never silently mixed. Shard embed-3 records the backfill batch for this cycle, including backfill batch handling, backfill batch checks, and the backfill batch log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "embedding miss counter",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. Dimension mismatches are detected and skipped, never silently mixed. Capture embeds locally with nomic-embed-text and never blocks on a miss. A missed embed degrades to keyword-only and is counted, not hidden. Shard embed-4 records the matrix reload for this cycle, including matrix reload handling, matrix reload checks, and the matrix reload log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "vector sidecar pair",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. A missed embed degrades to keyword-only and is counted, not hidden. The vector cache is per-database and rebuilds on signature change. Backfill sweeps the stragglers in batches of sixty-four. Shard embed-5 records the cache signature for this cycle, including cache signature handling, cache signature checks, and the cache signature log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "vector matrix reload",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. Backfill sweeps the stragglers in batches of sixty-four. The sidecar cache is tenant-local inside the vault directory. Capture embeds locally with nomic-embed-text and never blocks on a miss. Shard embed-6 records the stale row for this cycle, including stale row handling, stale row checks, and the stale row log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "embedding stale row",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. Capture embeds locally with nomic-embed-text and never blocks on a miss. Dimension mismatches are detected and skipped, never silently mixed. The vector cache is per-database and rebuilds on signature change. Shard embed-7 records the vector lane for this cycle, including vector lane handling, vector lane checks, and the vector lane log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "embedding reembed sweep",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. The vector cache is per-database and rebuilds on signature change. A missed embed degrades to keyword-only and is counted, not hidden. The sidecar cache is tenant-local inside the vault directory. Shard embed-8 records the sidecar pair for this cycle, including sidecar pair handling, sidecar pair checks, and the sidecar pair log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "embed",
+      "title": "vector lane budget",
+      "content": "Embeddings are born at capture so every shard is recallable from birth. The sidecar cache is tenant-local inside the vault directory. Backfill sweeps the stragglers in batches of sixty-four. Dimension mismatches are detected and skipped, never silently mixed. Shard embed-9 records the miss counter for this cycle, including miss counter handling, miss counter checks, and the miss counter log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal replay idempotency",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. Each event carries a sequence number and an idempotency key. One authoritative writer owns each namespace; readers never write. Conflicts are flagged for the operator, never resolved silently. Shard journal-0 records the divergent edit for this cycle, including divergent edit handling, divergent edit checks, and the divergent edit log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal sequence numbers",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. Conflicts are flagged for the operator, never resolved silently. The journal is the truth and the database is compiled from it. A torn write is detected by checksum before replay continues. Shard journal-1 records the writer lease for this cycle, including writer lease handling, writer lease checks, and the writer lease log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "replication conflict policy",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. A torn write is detected by checksum before replay continues. Replay applies an event twice with the same result as once. One authoritative writer owns each namespace; readers never write. Shard journal-2 records the journal compaction for this cycle, including journal compaction handling, journal compaction checks, and the journal compaction log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal writer lease",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. One authoritative writer owns each namespace; readers never write. Each event carries a sequence number and an idempotency key. The journal is the truth and the database is compiled from it. Shard journal-3 records the append gate for this cycle, including append gate handling, append gate checks, and the append gate log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal event checksum",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. The journal is the truth and the database is compiled from it. Conflicts are flagged for the operator, never resolved silently. Replay applies an event twice with the same result as once. Shard journal-4 records the replay cursor for this cycle, including replay cursor handling, replay cursor checks, and the replay cursor log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal compaction plan",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. Replay applies an event twice with the same result as once. A torn write is detected by checksum before replay continues. Each event carries a sequence number and an idempotency key. Shard journal-5 records the replay idempotency for this cycle, including replay idempotency handling, replay idempotency checks, and the replay idempotency log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal replay cursor",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. Each event carries a sequence number and an idempotency key. One authoritative writer owns each namespace; readers never write. Conflicts are flagged for the operator, never resolved silently. Shard journal-6 records the merge rule for this cycle, including merge rule handling, merge rule checks, and the merge rule log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal append gate",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. Conflicts are flagged for the operator, never resolved silently. The journal is the truth and the database is compiled from it. A torn write is detected by checksum before replay continues. Shard journal-7 records the sequence number for this cycle, including sequence number handling, sequence number checks, and the sequence number log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal divergent edit",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. A torn write is detected by checksum before replay continues. Replay applies an event twice with the same result as once. One authoritative writer owns each namespace; readers never write. Shard journal-8 records the conflict policy for this cycle, including conflict policy handling, conflict policy checks, and the conflict policy log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "journal",
+      "title": "journal merge rule",
+      "content": "The replication journal is append-only: immutable events, replayed idempotently. One authoritative writer owns each namespace; readers never write. Each event carries a sequence number and an idempotency key. The journal is the truth and the database is compiled from it. Shard journal-9 records the event checksum for this cycle, including event checksum handling, event checksum checks, and the event checksum log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway token rotation",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Health reports degraded lanes instead of asserting absence. Auth probes run from an outpost that holds no owner credential. Tokens rotate on a schedule and the old one is revoked, not left warm. Shard gateway-0 records the tunnel health for this cycle, including tunnel health handling, tunnel health checks, and the tunnel health log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway auth probe outpost",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Tokens rotate on a schedule and the old one is revoked, not left warm. Rotation drills are rehearsed so a real rotation is boring. The gateway never trusts a bearer token alone for replication. Shard gateway-1 records the heartbeat watch for this cycle, including heartbeat watch handling, heartbeat watch checks, and the heartbeat watch log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway health reporting",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. The gateway never trusts a bearer token alone for replication. A failed probe pages the operator with the exact failing check. Auth probes run from an outpost that holds no owner credential. Shard gateway-2 records the token rotation for this cycle, including token rotation handling, token rotation checks, and the token rotation log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway rotation drill",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Auth probes run from an outpost that holds no owner credential. Health reports degraded lanes instead of asserting absence. Rotation drills are rehearsed so a real rotation is boring. Shard gateway-3 records the auth probe for this cycle, including auth probe handling, auth probe checks, and the auth probe log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway probe outpost",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Rotation drills are rehearsed so a real rotation is boring. Tokens rotate on a schedule and the old one is revoked, not left warm. A failed probe pages the operator with the exact failing check. Shard gateway-4 records the revocation list for this cycle, including revocation list handling, revocation list checks, and the revocation list log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway revocation list",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. A failed probe pages the operator with the exact failing check. The gateway never trusts a bearer token alone for replication. Health reports degraded lanes instead of asserting absence. Shard gateway-5 records the rotation drill for this cycle, including rotation drill handling, rotation drill checks, and the rotation drill log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway edge guard",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Health reports degraded lanes instead of asserting absence. Auth probes run from an outpost that holds no owner credential. Tokens rotate on a schedule and the old one is revoked, not left warm. Shard gateway-6 records the credential fence for this cycle, including credential fence handling, credential fence checks, and the credential fence log. The lane records the outcome in the grid before it reports back.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway credential fence",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Tokens rotate on a schedule and the old one is revoked, not left warm. Rotation drills are rehearsed so a real rotation is boring. The gateway never trusts a bearer token alone for replication. Shard gateway-7 records the edge guard for this cycle, including edge guard handling, edge guard checks, and the edge guard log. A second lane verifies the same result before the receipt is signed.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway heartbeat watch",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. The gateway never trusts a bearer token alone for replication. A failed probe pages the operator with the exact failing check. Auth probes run from an outpost that holds no owner credential. Shard gateway-8 records the health report for this cycle, including health report handling, health report checks, and the health report log. The operator reviews the drill output before the next window opens.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    },
+    {
+      "topic": "gateway",
+      "title": "gateway tunnel health",
+      "content": "The gateway guards the fleet edge: tokens rotate, probes run, health is honest. Auth probes run from an outpost that holds no owner credential. Health reports degraded lanes instead of asserting absence. Rotation drills are rehearsed so a real rotation is boring. Shard gateway-9 records the probe outpost for this cycle, including probe outpost handling, probe outpost checks, and the probe outpost log. Nothing here is merged, published, or deployed without the operator word.",
+      "event_type": "P1_SEED",
+      "domain_key": "global"
+    }
+  ],
+  "queries": [
+    {
+      "tier": "title",
+      "query": "relay leg claim protocol",
+      "target_title": "relay leg claim protocol"
+    },
+    {
+      "tier": "title",
+      "query": "tunnel probe schedule",
+      "target_title": "tunnel probe schedule"
+    },
+    {
+      "tier": "body",
+      "query": "waypoint beacon handling checks log",
+      "target_title": "relay routing table"
+    },
+    {
+      "tier": "body",
+      "query": "deadline clock handling checks log",
+      "target_title": "leg receipt ledger"
+    },
+    {
+      "tier": "title",
+      "query": "tenant onboarding flow",
+      "target_title": "tenant onboarding flow"
+    },
+    {
+      "tier": "title",
+      "query": "tenant owner floor",
+      "target_title": "tenant owner floor"
+    },
+    {
+      "tier": "body",
+      "query": "token mint handling checks log",
+      "target_title": "tenant scope labels"
+    },
+    {
+      "tier": "body",
+      "query": "owner floor handling checks log",
+      "target_title": "tenant secret fence"
+    },
+    {
+      "tier": "title",
+      "query": "snapshot manifest checksum",
+      "target_title": "snapshot manifest checksum"
+    },
+    {
+      "tier": "title",
+      "query": "snapshot prune schedule",
+      "target_title": "snapshot prune schedule"
+    },
+    {
+      "tier": "body",
+      "query": "manifest checksum handling checks log",
+      "target_title": "snapshot retention window"
+    },
+    {
+      "tier": "body",
+      "query": "restore drill handling checks log",
+      "target_title": "snapshot rollback rehearsal"
+    },
+    {
+      "tier": "title",
+      "query": "embedding backfill batch",
+      "target_title": "embedding backfill batch"
+    },
+    {
+      "tier": "title",
+      "query": "vector sidecar pair",
+      "target_title": "vector sidecar pair"
+    },
+    {
+      "tier": "body",
+      "query": "dimension check handling checks log",
+      "target_title": "capture embed timeout"
+    },
+    {
+      "tier": "body",
+      "query": "vector lane handling checks log",
+      "target_title": "embedding stale row"
+    },
+    {
+      "tier": "title",
+      "query": "journal replay idempotency",
+      "target_title": "journal replay idempotency"
+    },
+    {
+      "tier": "title",
+      "query": "journal compaction plan",
+      "target_title": "journal compaction plan"
+    },
+    {
+      "tier": "body",
+      "query": "journal compaction handling checks log",
+      "target_title": "replication conflict policy"
+    },
+    {
+      "tier": "body",
+      "query": "sequence number handling checks log",
+      "target_title": "journal append gate"
+    },
+    {
+      "tier": "title",
+      "query": "gateway token rotation",
+      "target_title": "gateway token rotation"
+    },
+    {
+      "tier": "title",
+      "query": "gateway revocation list",
+      "target_title": "gateway revocation list"
+    },
+    {
+      "tier": "body",
+      "query": "token rotation handling checks log",
+      "target_title": "gateway health reporting"
+    },
+    {
+      "tier": "body",
+      "query": "edge guard handling checks log",
+      "target_title": "gateway credential fence"
+    },
+    {
+      "tier": "negative",
+      "query": "flibberty quasar zxqwv",
+      "target_title": null
+    },
+    {
+      "tier": "negative",
+      "query": "nonsense blorp wumpus",
+      "target_title": null
+    },
+    {
+      "tier": "negative",
+      "query": "zzqxjj undefined token",
+      "target_title": null
+    },
+    {
+      "tier": "negative",
+      "query": "frobnicate wobble gibberish",
+      "target_title": null
+    }
+  ]
+}
