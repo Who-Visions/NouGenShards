@@ -85,6 +85,27 @@ def _home() -> str:
     return os.path.expanduser(os.path.join("~", ".nougen"))
 
 
+def _agy_live_pipe() -> str:
+    """Windows named pipe of the live Antigravity session.
+
+    ``NOUGEN_AGY_PIPE`` replaces it; the test suite points it at a pipe nobody
+    listens on, so a test that pings Antigravity cannot reach a live session.
+    """
+    return os.environ.get("NOUGEN_AGY_PIPE", "").strip() or r"\\.\pipe\LOCAL\agy-msg-antigravity"
+
+
+def _agy_live_socket_glob() -> str:
+    """POSIX sockets of live Antigravity sessions, as a glob pattern.
+
+    ``NOUGEN_AGY_SOCK_DIR`` replaces ``/tmp/agy-socks``; the test suite points
+    it at an empty directory. Redirecting the inbox files alone is not enough:
+    a payload sent to a live socket is written into the operator's real inbox
+    by the session on the other end.
+    """
+    base = os.environ.get("NOUGEN_AGY_SOCK_DIR", "").strip() or "/tmp/agy-socks"
+    return os.path.join(base, "*.sock")
+
+
 def _tenant_scope() -> bool:
     """True when serving a tenant: file inboxes under its own root only, no machine pipes."""
     from . import core
@@ -655,7 +676,7 @@ class AgentPinger:
             pass
         elif os.name == "nt":
             try:
-                pipe_path = r"\\.\pipe\LOCAL\agy-msg-antigravity"
+                pipe_path = _agy_live_pipe()
                 pipe_payload = (json.dumps(payload) + "\n").encode("utf-8")
                 bytes_sent = AgentPinger._write_windows_named_pipe(pipe_path, pipe_payload)
                 pipe_delivered = bytes_sent > 0
@@ -664,7 +685,7 @@ class AgentPinger:
         else:
             try:
                 import glob, socket
-                for sock in glob.glob("/tmp/agy-socks/*.sock"):
+                for sock in glob.glob(_agy_live_socket_glob()):
                     try:
                         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                         try:
