@@ -75,7 +75,7 @@ def test_changing_the_file_changes_the_id(tmp_path):
         # Isolate HOME: importing the node resolves a secret, and the legacy-store
         # scan walks the real home directory, which blocks on protected folders.
         "HOME": str(tmp_path),
-        "USERPROFILE": os.environ.get("USERPROFILE", str(tmp_path)),
+        "USERPROFILE": str(tmp_path),
         "HOMEDRIVE": os.environ.get("HOMEDRIVE", "C:"),
         "HOMEPATH": os.environ.get("HOMEPATH", "\\Users"),
         "SystemRoot": os.environ.get("SystemRoot", "C:\\Windows"),
