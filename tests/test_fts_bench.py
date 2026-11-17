@@ -14,15 +14,24 @@ keyword lanes are measured here (vector + hybrid need --embed).
 """
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import nougen_shards.core as core
-from tools.fts_bench import _pct, _recall_metrics, load_corpus, measure_sizes
+from tools.fts_bench import (
+    _fts_merged_query,
+    _pct,
+    _recall_metrics,
+    _worker_query,
+    load_corpus,
+    measure_sizes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIRST_SHARDS = load_corpus()["shards"][:6]
@@ -201,3 +210,65 @@ def test_cli_explain_only_audits_live_queries(vault):
         "domain_utility", "title_nocase", "file_hash_lookup"}
     fts_plan = next(p for p in audit["plans"] if p["name"] == "fts_and_match")
     assert any("VIRTUAL TABLE INDEX" in line for line in fts_plan["plan"])
+
+
+def test_fts_merged_query_falls_back_per_db(monkeypatch, tmp_path):
+    """OR fallback is per DB: one DB's AND hit must not hide another's OR hits.
+
+    DB1 holds a shard matching both query terms; DB2 holds one matching a
+    single term. The merged result must contain both titles (Codex P2 on
+    #1101: the old global fallback broke out after DB1's AND hit, so DB2's
+    OR-only hit was silently dropped).
+    """
+    db_a, db_b = tmp_path / "a", tmp_path / "b"
+    for d in (db_a, db_b):
+        d.mkdir()
+    monkeypatch.setattr(core, "GLOBAL_DIR", db_a)
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "0")
+    assert core.capture(
+        "TEST", "zebra quokka plains",
+        "The zebra quokka marsupial hops across the red plain at dawn.",
+        domain_key="global")
+    core.close_readonly_pool()
+    monkeypatch.setattr(core, "GLOBAL_DIR", db_b)
+    assert core.capture(
+        "TEST", "zebra meadow dawn",
+        "The zebra grazes on the open meadow in the morning light.",
+        domain_key="global")
+    core.close_readonly_pool()
+    combined = tmp_path / "combined"
+    combined.mkdir()
+    db_a_file = next(db_a.glob("nougen_shards_*.db"))
+    db_b_file = next(db_b.glob("nougen_shards_*.db"))
+    shutil.copy(db_a_file, combined / "nougen_shards_1.db")
+    shutil.copy(db_b_file, combined / "nougen_shards_2.db")
+    db_files = sorted(combined.glob("nougen_shards_*.db"))
+    assert len(db_files) == 2
+    and_expr = core._build_fts_match_query("zebra quokka")
+    or_expr = core._build_fts_match_query("zebra quokka", joiner=" OR ")
+    assert and_expr and or_expr and and_expr != or_expr
+    merged = _fts_merged_query(db_files, and_expr, or_expr, 5.0, 1.0, 10)
+    assert set(merged) == {"zebra quokka plains", "zebra meadow dawn"}
+
+
+def test_worker_query_negatives_probe_embed_lanes(vault, monkeypatch, capsys):
+    """Negatives count vector/hybrid too -- stubbed lanes, no Ollama needed.
+
+    The old negatives loop never called the embedding lanes, so their
+    reported 0 was unmeasured (Codex P2 on #1101). With the vector lane
+    stubbed non-empty and hybrid stubbed empty, the report must say
+    vector=4, hybrid=0 across the 4 negative queries.
+    """
+    monkeypatch.setattr(core, "_embed_query", lambda q: np.zeros(3))
+    monkeypatch.setattr(
+        core, "_vector_retrieve",
+        lambda emb, limit=10, domain_key="global": [{"title": "fake vector"}])
+    monkeypatch.setattr(
+        core, "retrieve",
+        lambda q, limit=10, domain_key="global": [])
+    _worker_query(str(vault), repeats=1, weights=(5.0, 1.0), embed=True)
+    report = json.loads(capsys.readouterr().out.strip())
+    assert set(report["negatives_nonempty"]) == {
+        "fts_direct", "keyword", "vector", "hybrid"}
+    assert report["negatives_nonempty"]["vector"] == 4
+    assert report["negatives_nonempty"]["hybrid"] == 0

@@ -229,6 +229,28 @@ def _fts_direct_query(db_file, match_expr, title_w, body_w, limit):
         conn.close()
 
 
+def _fts_merged_query(db_files, and_expr, or_expr, title_w, body_w, limit=10):
+    """Merge ranked FTS hits across DBs, with the AND->OR fallback per DB.
+
+    Production `_keyword_retrieve` retries OR inside each DB's scan: one
+    DB's AND hit must not suppress another DB's OR-only hits. The bench
+    mirrors that here -- the fallback decision is per DB file, not global
+    across the vault. Returns {title: best (lowest) bm25 score}.
+    """
+    merged = {}
+    for db_file in db_files:
+        for expr in [and_expr] + ([or_expr] if or_expr != and_expr else []):
+            if expr is None:
+                continue
+            rows = _fts_direct_query(db_file, expr, title_w, body_w, limit)
+            if rows:
+                for title, score in rows:
+                    if title not in merged or score < merged[title]:
+                        merged[title] = score
+                break
+    return merged
+
+
 def _worker_query(vault_dir, repeats, weights, embed):
     """Time the lanes over the corpus query set; print a lane report JSON."""
     from nougen_shards import core  # noqa: PLC0415 (env set by parent)
@@ -253,17 +275,8 @@ def _worker_query(vault_dir, repeats, weights, embed):
             and_expr = core._build_fts_match_query(q["query"])
             or_expr = core._build_fts_match_query(q["query"], joiner=" OR ")
             t0 = time.perf_counter()
-            merged = {}
-            for expr in [and_expr] + ([or_expr] if or_expr != and_expr else []):
-                if expr is None:
-                    continue
-                for db_file in db_files:
-                    for title, score in _fts_direct_query(
-                            db_file, expr, title_w, body_w, 10):
-                        if title not in merged or score < merged[title]:
-                            merged[title] = score
-                if merged:
-                    break
+            merged = _fts_merged_query(
+                db_files, and_expr, or_expr, title_w, body_w, 10)
             ranked = [t for t, _ in sorted(merged.items(), key=lambda kv: kv[1])][:10]
             lanes["fts_direct"]["lat_ms"].append((time.perf_counter() - t0) * 1000)
             lanes["fts_direct"]["ranked"].append(ranked)
@@ -291,18 +304,23 @@ def _worker_query(vault_dir, repeats, weights, embed):
                 lanes["hybrid"]["ranked"].append([r["title"] for r in hyb])
 
     # Negatives: count non-empty returns per lane (reported, not asserted).
+    # Every lane in `lanes` is probed here -- vector/hybrid included when
+    # --embed is on, so their counts are measured, not assumed zero.
     for q in negatives:
         if core._keyword_retrieve(q["query"], limit=10, domain_key="global"):
             neg_nonempty["keyword"] += 1
-        merged = {}
-        expr = core._build_fts_match_query(q["query"])
-        if expr:
-            for db_file in db_files:
-                for title, score in _fts_direct_query(
-                        db_file, expr, title_w, body_w, 10):
-                    merged[title] = score
-        if merged:
+        and_expr = core._build_fts_match_query(q["query"])
+        or_expr = core._build_fts_match_query(q["query"], joiner=" OR ")
+        if _fts_merged_query(db_files, and_expr, or_expr, title_w, body_w, 10):
             neg_nonempty["fts_direct"] += 1
+        if embed:
+            emb = core._embed_query(q["query"])
+            if emb is None:
+                raise RuntimeError("query embedding failed (is Ollama up?)")
+            if core._vector_retrieve(emb, limit=10, domain_key="global"):
+                neg_nonempty["vector"] += 1
+            if core.retrieve(q["query"], limit=10, domain_key="global"):
+                neg_nonempty["hybrid"] += 1
 
     targets = [q["target_title"] for q in queries]
     tiers = {"title": [i for i, q in enumerate(queries) if q["tier"] == "title"],
