@@ -180,6 +180,15 @@ def isolated_msg_home(tmp_path_factory, monkeypatch):
     # runtime root must not override the throwaway home during tests.
     monkeypatch.delenv("NOUGEN_ROOT", raising=False)
     monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
+    # Files are not the only way out. ping_antigravity also sends the payload to
+    # every live session socket (/tmp/agy-socks/*.sock) or the Windows named
+    # pipe, and the session on the other end writes it into the real inbox. On
+    # 2026-11-17 that is how `ollama:model"; rm -rf /` and "OR Key missing"
+    # kept reaching live sessions during test runs, with the files isolated.
+    socks = home / "agy-socks"
+    socks.mkdir(exist_ok=True)
+    monkeypatch.setenv("NOUGEN_AGY_SOCK_DIR", str(socks))
+    monkeypatch.setenv("NOUGEN_AGY_PIPE", r"\\.\pipe\LOCAL\nougen-tests-no-listener")
     yield home
 
 
