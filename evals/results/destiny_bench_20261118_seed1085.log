@@ -1,0 +1,27 @@
+NouGen vault resolved to C:\Users\super\AppData\Local\Temp\bench_vault_prompt_only_fuar9uq2 via NOUGEN_VAULT_DIR
+[prompt_only] tick 11: {'done': 100} tokens=172875
+[prompt_only] tick 12: {'done': 100} tokens=172875
+NouGen vault resolved to C:\Users\super\AppData\Local\Temp\bench_vault_shards_first_9qhh2q5p via NOUGEN_VAULT_DIR
+embed provider: ollama 'nomic-embed-text' stopped answering; switched to in-process onnx (sentence-transformers/all-MiniLM-L6-v2, 384-d). Vectors stored at 768-d will not match until `nougen embed backfill --reembed`.
+[shards_first] tick 11: {'done': 100} tokens=33725
+[shards_first] tick 12: {'done': 100} tokens=33725
+[
+ {
+  "arm": "prompt_only",
+  "success_rate": 1.0,
+  "tokens_total": 172875,
+  "tokens_per_success": 1729,
+  "recovery_rate": 1.0,
+  "rollback_violations": 0,
+  "error": null
+ },
+ {
+  "arm": "shards_first",
+  "success_rate": 1.0,
+  "tokens_total": 33725,
+  "tokens_per_success": 337,
+  "recovery_rate": 1.0,
+  "rollback_violations": 0,
+  "error": null
+ }
+]
