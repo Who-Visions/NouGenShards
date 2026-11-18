@@ -1,0 +1,28 @@
+# Read-only shards replica: search/recall over a SNAPSHOT of the vaults.
+# - Vaults come from ./snapshot.sh, mounted :ro. Live ~/.nougen/shards is never mounted.
+# - No Keymaker inside (macOS Keychain is unreachable from Linux). Put only
+#   NGS_NODE_TOKEN in a local, gitignored replica.env.
+# - Memory capped: phoebus is a 16GB box already deep in swap.
+services:
+  shards-replica:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: nougenshards-replica:local
+    container_name: shards-replica
+    ports:
+      - "127.0.0.1:7870:7860"
+    env_file:
+      - path: ./replica.env
+        required: false
+    environment:
+      NOUGEN_HOME: /tmp/nougen
+      NOUGEN_VAULT_DIR: /vault
+      NOUGEN_WARMUP: "0"
+      NOUGEN_COVERAGE_FEDERATED: "0"
+    volumes:
+      - ${REPLICA_DIR:-${HOME}/.nougen/replica/shards}:/vault:ro
+    tmpfs:
+      - /tmp
+    mem_limit: 1g
+    restart: unless-stopped
