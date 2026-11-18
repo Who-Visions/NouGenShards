@@ -23,4 +23,4 @@ Readings:
   unverified task.
 
 Claim limits: one reconciler loop on small local models, one fact-recall task family, 3 seeds.
-This shows nothing about general capability. Raw data: `destiny_bench_20261118_seed*.json`/`.log`.
+This shows nothing about general capability. Raw data: `destiny_bench_20261118_seed*.json` (stderr logs omitted: they contained local paths).
