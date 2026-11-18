@@ -763,11 +763,11 @@ export function find_best_model_from_list(models: string[]): string {
   }
 
   // 3. Official Gemma 4 QAT/edge/workstation defaults.
-  // Mirrors the Python find_best_model_from_list preference order. Cloud leads:
-  // before this was ordered, 31b-cloud fell through to tier 4 and lost to 12b.
+  // Mirrors the Python find_best_model_from_list preference order. Ollama cloud
+  // models (31b-cloud) are paid since 2026-11-18 and are no longer in the default.
   const gemma4_tags = (
     process.env.NOUGEN_GEMMA4_PREFERENCE ??
-    "gemma4:31b-cloud,gemma4:e4b,gemma4:e4b-it-qat," +
+    "gemma4:e4b,gemma4:e4b-it-qat," +
       "gemma4:12b,gemma4:12b-it-qat," +
       "gemma4:e2b,gemma4:e2b-it-qat,gemma4:latest"
   )
@@ -785,6 +785,7 @@ export function find_best_model_from_list(models: string[]): string {
   // 4. Generic fallback to any Gemma family, else the first available model.
   for (const prefix of ["gemma4:", "gemma:"]) {
     for (const model of models) {
+      if (model.toLowerCase().includes("cloud")) continue;
       if (model.toLowerCase().startsWith(prefix) || model.toLowerCase().includes(prefix)) {
         return model;
       }

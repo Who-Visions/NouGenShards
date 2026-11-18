@@ -1348,13 +1348,15 @@ def _llm_density(content: str) -> Optional[float]:
             preferred = [
                 m.strip()
                 for m in os.getenv(
-                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
+                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-it-qat,gemma4:e4b-it-qat"
                 ).split(",")
                 if m.strip()
             ]
+            # Ollama cloud models are paid since 2026-11-18: never picked by default.
+            local_models = [m for m in models if "cloud" not in str(m)]
             best_model = next(
                 (p for p in preferred if p in models),
-                models[0] if models else None,
+                local_models[0] if local_models else None,
             )
             if best_model:
                 prompt = (

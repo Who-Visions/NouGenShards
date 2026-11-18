@@ -12,6 +12,9 @@ import argparse
 import datetime
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model_route  # noqa: E402
+
 OLLAMA_URL = os.environ.get("NOUGEN_OLLAMA_URL", "http://127.0.0.1:11434")
 
 
@@ -33,34 +36,29 @@ def _resolve_model():
         with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=5) as r:
             models = [m["name"] for m in json.loads(r.read())["models"]]
         prefs = [m.strip() for m in os.environ.get(
-            "NOUGEN_MODEL_PREFS", "gemma4:31b-cloud,gemma4:e4b,gemma4:e2b"
+            "NOUGEN_MODEL_PREFS", "nvidia:auto,gemma4:e4b-it-qat,gemma4:e2b-it-qat"
         ).split(",") if m.strip()]
-        for pref in prefs:
-            if pref in models:
-                return pref
+        picked = model_route.pick(prefs, models)
+        if picked:
+            return picked
         # 12b is reserved for explicit deep local reasoning and must never win
-        # auto-selection; alphabetical order is not a routing policy.
-        gemma = sorted(m for m in models if "gemma" in m.lower() and "12b" not in m)
+        # auto-selection; alphabetical order is not a routing policy. Ollama
+        # cloud models are paid since 2026-11-18 and never auto-selected.
+        local = [m for m in models if "cloud" not in m]
+        gemma = sorted(m for m in local if "gemma" in m.lower() and "12b" not in m)
         if gemma:
             return gemma[-1]
-        if models:
-            return models[0]
+        if local:
+            return local[0]
     except Exception as e:
         print(f"model probe failed: {e}", file=sys.stderr)
     # Last resort only: every probe above failed. Configurable so a box
     # with a different fleet does not need a code change.
-    return os.environ.get("NOUGEN_FALLBACK_MODEL", "gemma4:31b-cloud")
+    return os.environ.get("NOUGEN_FALLBACK_MODEL", model_route.NVIDIA_DEFAULT)
 
 
 def chat(model, prompt, timeout=900):
-    payload = json.dumps({
-        "model": model, "stream": False,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=payload, method="POST",
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())["message"]["content"]
+    return model_route.chat(model, prompt, OLLAMA_URL, timeout=timeout)
 
 
 def main():
