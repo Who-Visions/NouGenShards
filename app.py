@@ -2394,6 +2394,8 @@ async def recall_endpoint(
     if local_only:
         search_req = SearchRequest(query=body.query, limit=body.limit)
         results = search(search_req, response, _tenant)
+        if isinstance(results, Response):
+            return results
         return {
             "query": body.query,
             "hits": results,
@@ -2404,13 +2406,21 @@ async def recall_endpoint(
     v1 = _federation_v1()
     if v1 is None:
         return _federation_v1_gone("/v1/recall (scope != local)")
-    load_vault_peers, FederationClient, FederationService = v1
-    token = NODE_TOKEN or ""
-    peers = load_vault_peers()
-    client = FederationClient(token=token)
-    service = FederationService(peers=peers, client=client)
-    result = await service.recall(body.query, body.limit, x_nougen_correlation_id)
-    return asdict(result)
+    try:
+        hard_gate = _recall_guard_enter()
+    except core.SearchBusy as busy:
+        return _recall_busy_response(busy)
+    try:
+        load_vault_peers, FederationClient, FederationService = v1
+        token = NODE_TOKEN or ""
+        peers = load_vault_peers()
+        client = FederationClient(token=token)
+        service = FederationService(peers=peers, client=client)
+        result = await service.recall(body.query, body.limit, x_nougen_correlation_id)
+        return asdict(result)
+    finally:
+        if hard_gate is not None:
+            hard_gate.leave()
 
 
 @app.post("/capture")

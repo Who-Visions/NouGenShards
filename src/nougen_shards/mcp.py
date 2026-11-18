@@ -133,6 +133,20 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
                 f"in db {result['db_index']}).")
     return f"Shard NOT captured: {result.get('error', 'unknown reason')}"
 
+def _run_admitted_recall(fn):
+    """Run an MCP recall tool inside core.admitted_search() when the memory guard is on."""
+    from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
+
+    try:
+        with _core.admitted_search():
+            return fn()
+    except _core.SearchBusy as busy:
+        return (
+            f"Recall busy: admission cap reached "
+            f"(retry_after={busy.retry_after:.1f}s, active={busy.active}, waiting={busy.waiting})."
+        )
+
+
 @mcp.tool()
 def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
                   agent: Optional[str] = None, user: Optional[str] = None,
@@ -146,6 +160,16 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         query: The search term or context you are trying to match.
         limit: Max number of results to return.
     """
+    return _run_admitted_recall(lambda: _recall_memory_impl(
+        query=query, limit=limit, session_id=session_id,
+        agent=agent, user=user, machine=machine, project=project, as_of=as_of,
+    ))
+
+
+def _recall_memory_impl(query: str, limit: int = 3, session_id: Optional[str] = None,
+                        agent: Optional[str] = None, user: Optional[str] = None,
+                        machine: Optional[str] = None, project: Optional[str] = None,
+                        as_of: Optional[str] = None) -> str:
     # sweep_report is how a lane dropped by the recall deadline becomes visible.
     # Without it this tool answered "No relevant shards found" for a timed-out
     # sweep — a positive claim about the substrate that the substrate never
@@ -232,6 +256,14 @@ def recall_window(when: str = "", query: str = "", limit: int = 20, tz: str = ""
         until: End of the era, inclusive of the period named ('2026-03' = through March 31).
         start: Alias of since. end: alias of until.
     """
+    return _run_admitted_recall(lambda: _recall_window_impl(
+        when=when, query=query, limit=limit, tz=tz,
+        since=since, until=until, start=start, end=end,
+    ))
+
+
+def _recall_window_impl(when: str = "", query: str = "", limit: int = 20, tz: str = "",
+                        since: str = "", until: str = "", start: str = "", end: str = "") -> str:
     from nougen_shards import timewindow as _tw, window as _window  # pylint: disable=import-outside-toplevel
     zone = tz or None
     since, until = since or start, until or end
@@ -276,7 +308,9 @@ def recall_layered(query: str, token_budget: int = 1200) -> str:
         token_budget: Approximate token cap for the whole packet.
     """
     from nougen_shards import core as _core, distill as _distill  # pylint: disable=import-outside-toplevel
-    return _distill.layered_context(query, lambda q, **kw: _core.retrieve(q, limit=8), token_budget=token_budget)
+    return _run_admitted_recall(
+        lambda: _distill.layered_context(query, lambda q, **kw: _core.retrieve(q, limit=8), token_budget=token_budget)
+    )
 
 
 @mcp.tool()
@@ -329,14 +363,16 @@ def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = N
         limit: Max number of neighbours to return.
     """
     from . import graph  # pylint: disable=import-outside-toplevel
-    related = graph.related_shards(shard_id, db_index, relation, limit)
-    if not related:
-        return "No related shards found in the mesh."
-    output = ["=== GRAPH MEMORY: RELATED SHARDS ==="]
-    for r in related:
-        output.append(
-            f"[{r['direction']}|{r['relation']}] #{r['id']} {r['title']}\n{r['content'][:160]}")
-    return "\n".join(output)
+    def _run():
+        related = graph.related_shards(shard_id, db_index, relation, limit)
+        if not related:
+            return "No related shards found in the mesh."
+        output = ["=== GRAPH MEMORY: RELATED SHARDS ==="]
+        for r in related:
+            output.append(
+                f"[{r['direction']}|{r['relation']}] #{r['id']} {r['title']}\n{r['content'][:160]}")
+        return "\n".join(output)
+    return _run_admitted_recall(_run)
 
 # --- Attention Layer (Context) ---
 
