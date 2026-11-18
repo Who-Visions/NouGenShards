@@ -600,6 +600,30 @@ def sqlite_timeout_s(default: float | None = None) -> float:
 
 # Persistent read-only connection pool keyed by thread ID and DB index/path
 _RO_POOL_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_SET = False
+
+
+def _apply_sqlite_heap_limit(conn: sqlite3.Connection) -> None:
+    """Cap SQLite's process-wide heap once (NOUGEN_SQLITE_SOFT_HEAP_MB, default 512).
+
+    SQLite page caches, sorters and FTS buffers are native memory that Python's
+    allocator and tracemalloc never see. On the WhoArt node (2026-11-18) commit
+    grew by about 1-3 GB per 60 recalls with flat Python object counts, and more
+    pooled connections made it worse. soft_heap_limit is process-wide: once it is
+    reached SQLite recycles cache pages instead of allocating more. 0 disables it.
+    """
+    global _SQLITE_HEAP_LIMIT_SET  # pylint: disable=global-statement
+    if _SQLITE_HEAP_LIMIT_SET:
+        return
+    try:
+        mb = int(os.environ.get("NOUGEN_SQLITE_SOFT_HEAP_MB", "512"))
+    except ValueError:
+        mb = 512
+    try:
+        conn.execute(f"PRAGMA soft_heap_limit={max(0, mb) * 1024 * 1024};")
+    except sqlite3.DatabaseError:
+        pass
+    _SQLITE_HEAP_LIMIT_SET = True
 _RO_CONN_POOL: dict[tuple[int, str], sqlite3.Connection] = {}
 
 
@@ -637,6 +661,7 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
     conn.execute("PRAGMA query_only=ON;")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
 
     with _RO_POOL_LOCK:
         # Connections are keyed by thread id, but a thread-per-request server
@@ -731,6 +756,7 @@ def get_connection(index: int):
     cache_kb = get_scaled_sqlite_cache_size(64000)
     conn.execute(f"PRAGMA cache_size={cache_kb};")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
     return conn
 
 
@@ -4057,11 +4083,15 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
 
     def scan(i: int) -> list:
         rows: list = []
-        conn = None
         try:
             if not get_db_path(i).exists():
                 return rows
-            conn = get_connection(i)
+            # Pooled read-only handle, like the keyword and vector lanes. A fresh
+            # get_connection() per DB per recall allocated and freed a full page
+            # cache (up to 64 MB) and an mmap window nine times on every search;
+            # on Windows that churn stays committed and the :4444 node grew by
+            # GBs per hour with no Python-object growth (whoart, 2026-11-18).
+            conn = get_readonly_connection(i)
             for row in conn.execute(f"""
                     SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                            s.embedding, s.tags, s.domain_key, s.density_score
@@ -4075,9 +4105,6 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         except (sqlite3.DatabaseError, OSError) as exc:
             _note_retrieval_db_failure(i, exc)
             logger.error("title lane: grid DB %s unreadable, skipping it: %s: %s", i, type(exc).__name__, exc)
-        finally:  # get_connection opens a fresh handle per call; an unclosed one locks the file on Windows
-            if conn is not None:
-                conn.close()
         return rows
 
     out: list = []
@@ -4153,17 +4180,15 @@ def _learned_times(items: list) -> dict:
             by_db.setdefault(it["_db_index"], []).append(it.get("id"))
     out = {}
     for db, ids in by_db.items():
-        conn = None
         try:
-            conn = get_connection(db)
+            # Pooled read-only handle: this runs on every recall, and a fresh
+            # get_connection() per DB re-allocated a full page cache each time.
+            conn = get_readonly_connection(db)
             marks = ",".join("?" * len(ids))
             for sid, learned in conn.execute(f"SELECT id, learned_utc FROM shards WHERE id IN ({marks})", ids):
                 out[(db, sid)] = learned
         except (sqlite3.DatabaseError, OSError):
             continue
-        finally:
-            if conn is not None:
-                conn.close()
     return out
 
 
