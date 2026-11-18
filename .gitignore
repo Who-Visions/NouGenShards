@@ -15,7 +15,8 @@ mcp.config.json
 # `.env` does not match dotted-prefix variants like `.nougen.local.env`.
 *.local.env
 .nougen-hooks/
-.claude/
+.claude/*
+!.claude/settings.json
 secrets/
 .mcp-locks/
 

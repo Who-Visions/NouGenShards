@@ -1,0 +1,5 @@
+{
+  "full": [
+    ["python", "-m", "pytest", "tests", "-q", "-x"]
+  ]
+}
