@@ -600,6 +600,35 @@ def sqlite_timeout_s(default: float | None = None) -> float:
 
 # Persistent read-only connection pool keyed by thread ID and DB index/path
 _RO_POOL_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_SET = False
+
+
+def _apply_sqlite_heap_limit(conn: sqlite3.Connection) -> None:
+    """Cap SQLite's process-wide heap once (NOUGEN_SQLITE_SOFT_HEAP_MB, default 512).
+
+    SQLite page caches, sorters and FTS buffers are native memory that Python's
+    allocator and tracemalloc never see. On the WhoArt node (2026-11-18) 240
+    recalls took commit from 2.2 to 7.4 GB (peak 8.7 GB) with flat Python object
+    counts; with this limit the same run held flat near 2.8 GB. soft_heap_limit
+    is process-wide: at the limit SQLite recycles cache pages instead of
+    allocating more. 0 disables it.
+    """
+    global _SQLITE_HEAP_LIMIT_SET  # pylint: disable=global-statement
+    if _SQLITE_HEAP_LIMIT_SET:
+        return
+    with _SQLITE_HEAP_LIMIT_LOCK:
+        if _SQLITE_HEAP_LIMIT_SET:
+            return
+        try:
+            mb = int(os.environ.get("NOUGEN_SQLITE_SOFT_HEAP_MB", "512"))
+        except ValueError:
+            mb = 512
+        try:
+            conn.execute(f"PRAGMA soft_heap_limit={max(0, mb) * 1024 * 1024};")
+        except sqlite3.DatabaseError:
+            pass
+        _SQLITE_HEAP_LIMIT_SET = True
 _RO_CONN_POOL: dict[tuple[int, str], sqlite3.Connection] = {}
 
 
@@ -637,6 +666,7 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
     conn.execute("PRAGMA query_only=ON;")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
 
     with _RO_POOL_LOCK:
         # Connections are keyed by thread id, but a thread-per-request server
@@ -731,6 +761,7 @@ def get_connection(index: int):
     cache_kb = get_scaled_sqlite_cache_size(64000)
     conn.execute(f"PRAGMA cache_size={cache_kb};")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
     return conn
 
 
