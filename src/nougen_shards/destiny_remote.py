@@ -23,6 +23,7 @@ never printed or stored in the outbox.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -49,6 +50,45 @@ def outbox_path() -> Path:
 
 def norm_title(title: str) -> str:
     return re.sub(r"\s+", " ", (title or "").strip().lower())
+
+
+def clean_title(title: str) -> str:
+    """Title as stored: whitespace collapsed, case kept."""
+    return " ".join((title or "").split())
+
+
+@contextlib.contextmanager
+def _outbox_lock():
+    """Exclusive lock shared by queue() and flush_outbox(), on macOS, Linux and Windows nodes.
+    Held for the whole flush, so a write queued meanwhile waits and is never overwritten."""
+    path = outbox_path().with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.2)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _key() -> str:
@@ -135,6 +175,7 @@ class RemoteDestiny:
     def create_destiny(self, title: str, goal: str, *, branch=None, trigger=None,
                        required_events=None, forbidden_outcomes=None, acceptable_variance=None,
                        verification=None, status="dormant", actor=None, **_unused) -> Dict[str, Any]:
+        title = clean_title(title)
         existing = self._find_by_title(title)
         if existing:
             return {"error": f"a destiny with this title already exists at the authority: #{existing['id']}",
@@ -180,14 +221,24 @@ class RemoteDestiny:
         return {"error": "evolve report is local-only; unset NOUGEN_DESTINY_AUTHORITY to run it"}
 
     def _find_by_title(self, title: str) -> Optional[dict]:
+        """An existing destiny whose title matches after whitespace and case are normalized.
+        The authority's search is a literal substring match, so a stored title with odd
+        internal spacing is only found by its own spelling or by a single word of it: the
+        collapsed title, the raw title and the longest word are all tried."""
         want = norm_title(title)
-        try:
-            found = self.search_destinies(" ".join((title or "").split()), limit=50, include_finished=True)
-        except AuthorityUnreachable:
-            return None
-        for d in (found or {}).get("destinies", []) or []:
-            if norm_title(d.get("title", "")) == want:
-                return d
+        words = sorted(set(clean_title(title).split()), key=len, reverse=True)
+        queries = []
+        for q in (clean_title(title), (title or "").strip(), words[0] if words else ""):
+            if q and q not in queries:
+                queries.append(q)
+        for q in queries:
+            try:
+                found = self.search_destinies(q, limit=200, include_finished=True)
+            except AuthorityUnreachable:
+                return None
+            for d in (found or {}).get("destinies", []) or []:
+                if norm_title(d.get("title", "")) == want:
+                    return d
         return None
 
 
@@ -204,12 +255,19 @@ def queue(tool: str, arguments: dict, idem: Optional[str] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rec = {"queued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "tool": tool,
            "arguments": arguments, "idem": idem}
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec) + "\n")
+    with _outbox_lock():
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
 
 
 def flush_outbox(remote: RemoteDestiny) -> Dict[str, Any]:
-    """Replay queued writes in order. Stops at the first unreachable error and keeps the rest."""
+    """Replay queued writes in order. Stops at the first unreachable error and keeps the rest.
+    Holds the outbox lock throughout, so nothing queued during the flush is lost."""
+    with _outbox_lock():
+        return _flush_locked(remote)
+
+
+def _flush_locked(remote: RemoteDestiny) -> Dict[str, Any]:
     path = outbox_path()
     if not path.exists():
         return {"sent": 0, "skipped": 0, "left": 0}

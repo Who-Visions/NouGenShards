@@ -119,6 +119,46 @@ def test_flush_keeps_the_rest_when_the_authority_goes_down(outbox):
     assert len(outbox.read_text().splitlines()) == 2
 
 
+def test_duplicate_found_even_when_stored_title_has_odd_internal_spacing(outbox):
+    gw = FakeGateway()
+    gw.rows[1] = {"id": 1, "title": "Same   Title", "goal": "g", "status": "dormant", "branch": "U0", "links": []}
+    r = dr.RemoteDestiny("u", transport=gw)
+    again = r.create_destiny("Same Title", "g2")
+    assert again.get("existing_id") == 1
+    assert len(gw.rows) == 1
+
+
+def test_create_stores_the_title_with_whitespace_collapsed(outbox):
+    gw = FakeGateway()
+    r = dr.RemoteDestiny("u", transport=gw)
+    r.create_destiny("  Spaced    out   title ", "g")
+    assert gw.rows[1]["title"] == "Spaced out title"
+
+
+def test_write_queued_during_a_flush_is_not_lost(outbox):
+    import threading
+    gw = FakeGateway()
+    r = dr.RemoteDestiny("u", transport=None)
+    late = {}
+
+    def transport(body):
+        # While the flush is mid-call, another process queues a write.
+        if "t" not in late:
+            late["t"] = threading.Thread(target=dr.queue, args=(
+                "link_destiny", {"destiny_id": 1, "kind": "shard", "ref": "late", "role": "evidence"}))
+            late["t"].start()
+        return gw(body)
+
+    r._transport = transport
+    dr.queue("link_destiny", {"destiny_id": 1, "kind": "shard", "ref": "early", "role": "evidence"})
+    gw.rows[1] = {"id": 1, "title": "t", "goal": "g", "status": "dormant", "branch": "U0", "links": []}
+    res = dr.flush_outbox(r)
+    late["t"].join(timeout=5)
+    assert res["sent"] == 1
+    remaining = [json.loads(x) for x in outbox.read_text().splitlines()]
+    assert [x["arguments"]["ref"] for x in remaining] == ["late"]
+
+
 def test_tool_error_from_the_authority_is_returned_not_raised():
     gw = FakeGateway()
     r = dr.RemoteDestiny("u", transport=gw)
