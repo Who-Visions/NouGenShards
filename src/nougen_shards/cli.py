@@ -107,9 +107,24 @@ def cmd_destiny(args):
     """Destiny store: prospective memory and goal graph for the NouGen grid."""
     action = getattr(args, "destiny_action", "list")
     is_json = getattr(args, "json", False)
+    # One authoritative store (issue #1085): NOUGEN_DESTINY_AUTHORITY routes every destiny
+    # command to the fleet gateway; unset keeps the local destinies.db as before.
+    from . import destiny_remote
+    store = destiny_remote.backend()
+    if not is_json and destiny_remote.authority_url():
+        print(f"(destiny authority: {destiny_remote.authority_url()})")
+
+    if action == "flush":
+        if not destiny_remote.authority_url():
+            print("NOUGEN_DESTINY_AUTHORITY is not set; there is no authority to flush to.")
+            return
+        res = destiny_remote.flush_outbox(store)
+        print(json.dumps(res, indent=2) if is_json else
+              f"Outbox: {res['sent']} sent, {res['skipped']} already there, {res['left']} still queued.")
+        return
 
     if action == "create":
-        res = destiny.create_destiny(
+        res = store.create_destiny(
             title=args.title,
             goal=args.goal,
             branch=getattr(args, "branch", None),
@@ -139,7 +154,7 @@ def cmd_destiny(args):
                     print(f"  • Verification: {res['verification']}")
 
     elif action == "get":
-        res = destiny.get_destiny(args.id)
+        res = store.get_destiny(args.id)
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -163,7 +178,7 @@ def cmd_destiny(args):
                         print(f"    - {ev['created_utc']}: {ev['from_status']} -> {ev['to_status']} by {ev['actor'] or 'unknown'} ({ev['evidence']})")
 
     elif action == "update":
-        res = destiny.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
+        res = store.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -173,7 +188,7 @@ def cmd_destiny(args):
                 print(f"✨ Destiny #{res['id']} updated to {res['status']}")
 
     elif action == "link":
-        res = destiny.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
+        res = store.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -183,7 +198,7 @@ def cmd_destiny(args):
                 print(f"✨ Linked {args.kind} '{args.ref}' to Destiny #{args.id} as {args.role}")
 
     elif action == "search":
-        res = destiny.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
+        res = store.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -193,7 +208,7 @@ def cmd_destiny(args):
                 print(f"    Goal: {d['goal'][:100]}")
 
     elif action == "evolve":
-        res = destiny.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
+        res = store.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -204,7 +219,7 @@ def cmd_destiny(args):
                 print(f"  • #{ev['destiny_id']} '{ev['title']}' -> {ev['to_status']} ({ev['evidence']})")
 
     else:  # list / unfinished
-        res = destiny.unfinished_destinies(
+        res = store.unfinished_destinies(
             status=getattr(args, "status", None),
             trigger=getattr(args, "trigger", None),
             branch=getattr(args, "branch", None),
@@ -2996,6 +3011,10 @@ def get_parser():
     p_destiny_create.add_argument("--status", choices=["dormant", "active"], default="dormant")
     p_destiny_create.add_argument("--actor", default=None)
     p_destiny_create.add_argument("--json", action="store_true")
+
+    p_destiny_flush = destiny_sub.add_parser(
+        "flush", help="Replay destiny writes queued while NOUGEN_DESTINY_AUTHORITY was unreachable")
+    p_destiny_flush.add_argument("--json", action="store_true")
 
     p_destiny_get = destiny_sub.add_parser("get", help="Get destiny by ID")
     p_destiny_get.add_argument("id", type=int, help="Destiny ID")
