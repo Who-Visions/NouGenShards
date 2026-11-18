@@ -58,7 +58,7 @@ def chat(model: str, prompt: str, ollama_url: str, timeout: float = 600,
         name = model[len(NVIDIA_PREFIX):]
         detail = _client().chat_detail(None if name in ("", "auto") else name,
                                        [{"role": "user", "content": prompt}],
-                                       max_tokens=max_tokens)
+                                       max_tokens=max_tokens, timeout=timeout)
         if not detail["content"]:
             raise RuntimeError(f"no NVIDIA model answered: {detail['errors']}")
         return detail["content"]

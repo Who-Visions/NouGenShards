@@ -28,20 +28,22 @@ def test_chat_nvidia_goes_to_nim(monkeypatch):
     calls = {}
 
     class Fake:
-        def chat_detail(self, model, messages, max_tokens=1024):
+        def chat_detail(self, model, messages, max_tokens=1024, timeout=None):
             calls["model"] = model
+            calls["timeout"] = timeout
             return {"content": "ok", "errors": {}}
 
     monkeypatch.setattr(model_route, "_client", lambda: Fake())
-    assert model_route.chat("nvidia:auto", "hi", "http://unused") == "ok"
+    assert model_route.chat("nvidia:auto", "hi", "http://unused", timeout=900) == "ok"
     assert calls["model"] is None
+    assert calls["timeout"] == 900  # the tool's own limit reaches NVIDIA, not the 60 s default
     model_route.chat("nvidia:nvidia/nemotron-3-ultra-550b-a55b", "hi", "http://unused")
     assert calls["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_chat_nvidia_no_answer_raises(monkeypatch):
     class Fake:
-        def chat_detail(self, model, messages, max_tokens=1024):
+        def chat_detail(self, model, messages, max_tokens=1024, timeout=None):
             return {"content": "", "errors": {"x": "503"}}
 
     monkeypatch.setattr(model_route, "_client", lambda: Fake())

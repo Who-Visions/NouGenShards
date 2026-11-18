@@ -113,8 +113,11 @@ class NvidiaNimClient(LLMClient):
         return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
 
     def chat_detail(self, model: Optional[str], messages: list, max_tokens: int = 1024,
-                    fallbacks: Optional[Iterable[str]] = None) -> Dict[str, object]:
-        """Run the model chain and return content, model, token counts, and errors."""
+                    fallbacks: Optional[Iterable[str]] = None,
+                    timeout: Optional[float] = None) -> Dict[str, object]:
+        """Run the model chain and return content, model, token counts, and errors.
+
+        ``timeout`` is per model attempt; None uses NOUGEN_NVIDIA_TIMEOUT (60 s)."""
         if not self.api_key:
             self.last_errors = {KEY_NAME: "missing"}
             self.last_model = None
@@ -131,7 +134,7 @@ class NvidiaNimClient(LLMClient):
         for name in chain:
             body = {"model": name, "messages": messages,
                     "max_tokens": max(max_tokens, _MIN_MAX_TOKENS)}
-            status, data = self._request("/chat/completions", body)
+            status, data = self._request("/chat/completions", body, timeout=timeout)
             if status == 200 and data:
                 msg = (data.get("choices") or [{}])[0].get("message") or {}
                 content = (msg.get("content") or "").strip()
