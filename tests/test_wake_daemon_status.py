@@ -1,5 +1,7 @@
 """wake_daemon settings resolve from env, and app.py's status tool only reads what exists."""
 import ast
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -57,8 +59,15 @@ def test_loop_uses_env_settings_when_args_omitted(monkeypatch, tmp_path):
     monkeypatch.setenv(wake_daemon.ENV_POLL_INTERVAL_S, "0.01")
     clock = [1000.0]
     sleeps = []
+    me = threading.get_ident()
+    real_sleep = time.sleep
 
     def fake_sleep(seconds):
+        # wake_daemon.time IS the global time module, so this patch is seen by every thread in the
+        # worker. Count only this test's own sleeps; a background thread left by an earlier test
+        # (seen sleeping 0.02 under load) keeps the real sleep and stays out of the record.
+        if threading.get_ident() != me:
+            return real_sleep(seconds)
         sleeps.append(seconds)
         clock[0] += seconds
 
