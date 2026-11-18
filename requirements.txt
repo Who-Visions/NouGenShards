@@ -256,7 +256,7 @@ sqlalchemy==2.1.6
     # via nougen-shards (pyproject.toml)
 sse-starlette==3.6.0
     # via mcp
-starlette==1.7.0
+starlette==1.10.0
     # via
     #   fastapi
     #   gradio
