@@ -34,10 +34,17 @@ def test_the_suite_points_both_endpoints_away_from_live_sessions(isolated_msg_ho
 @pytest.mark.skipif(os.name == "nt", reason="POSIX socket transport")
 def test_ping_antigravity_searches_only_the_isolated_socket_dir(isolated_msg_home, monkeypatch):
     searched = []
+    found = []
+    # Saved before patching: real_glob is the same module object nougenmsg imported, so calling
+    # real_glob.glob from inside the wrapper would call the wrapper again and recurse. The
+    # transport swallows that RecursionError, which would leave this test green for nothing.
+    original_glob = real_glob.glob
 
     def recording_glob(pattern, *args, **kwargs):
         searched.append(pattern)
-        return real_glob.glob(pattern, *args, **kwargs)
+        hits = original_glob(pattern, *args, **kwargs)
+        found.append(hits)
+        return hits
 
     monkeypatch.setattr(real_glob, "glob", recording_glob)
     result = AgentPinger.ping_antigravity("isolation probe")
@@ -45,6 +52,8 @@ def test_ping_antigravity_searches_only_the_isolated_socket_dir(isolated_msg_hom
     assert result["status"] == "dropped"
     assert searched, "ping_antigravity no longer looks for session sockets"
     assert all(p.startswith(str(isolated_msg_home)) for p in searched)
+    # Every search really ran (one result per search) and found no socket to send to.
+    assert len(found) == len(searched) and all(hits == [] for hits in found)
     # The inbox copies stayed inside the throwaway home too.
     assert result["files"]
     assert all(f.startswith(str(isolated_msg_home)) for f in result["files"])
