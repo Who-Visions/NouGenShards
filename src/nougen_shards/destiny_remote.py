@@ -1,13 +1,13 @@
 """One authoritative destiny store for the fleet, reached over the shard gateway.
 
 Why: every node's CLI wrote to its own ``destinies.db`` while the fleet connector
-read whichever node answered behind shards.nougenai.com, so destiny #6 on phoebus
+read whichever node answered behind the shard gateway, so destiny #6 on phoebus
 and destiny #6 in the fleet were different records and other lanes never saw
 phoebus's destinies (issue #1085).
 
 Shape (the DNS primary / git origin pattern): one store is authoritative; every
 other node writes through to it and reads from it. When ``NOUGEN_DESTINY_AUTHORITY``
-names the gateway (for example ``https://shards.nougenai.com/mcp/``), the CLI's
+names the gateway's MCP URL (it ends in ``/mcp/``), the CLI's
 destiny commands go there through the gateway's MCP tools. When it is unset,
 nothing changes: the local store is used as before.
 
