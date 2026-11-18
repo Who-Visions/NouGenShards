@@ -5073,9 +5073,15 @@ class SearchAdmission:
             self._local.stack = []
         self._local.stack.append(token)
 
-    def leave(self) -> None:
+    def pop_token(self) -> Optional[int]:
+        """Pop the current thread's admission token so another thread may release it."""
         stack = getattr(self._local, "stack", None)
-        token = stack.pop() if stack else None
+        return stack.pop() if stack else None
+
+    def leave(self, token: Optional[int] = None) -> None:
+        if token is None:
+            stack = getattr(self._local, "stack", None)
+            token = stack.pop() if stack else None
         with self._cond:
             if token is None or token not in self._start_times:
                 logger.warning("SearchAdmission.leave() called without matching enter()")

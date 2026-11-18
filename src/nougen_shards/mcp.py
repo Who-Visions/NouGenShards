@@ -133,18 +133,57 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
                 f"in db {result['db_index']}).")
     return f"Shard NOT captured: {result.get('error', 'unknown reason')}"
 
-def _run_admitted_recall(fn):
-    """Run an MCP recall tool inside core.admitted_search() when the memory guard is on."""
-    from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
+def _release_mcp_gate_when_done(gate, lane_futures: list) -> None:
+    """Release the SearchAdmission slot only after straggler lane futures finish."""
+    pending = [f for f in lane_futures if not f.done()]
+    if not pending:
+        gate.leave()
+        return
+
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    import threading  # pylint: disable=import-outside-toplevel
+
+    slot_token = gate.pop_token()
+
+    def _wait_then_release():
+        try:
+            concurrent.futures.wait(pending)
+        finally:
+            gate.leave(slot_token)
 
     try:
-        with _core.admitted_search():
-            return fn()
+        threading.Thread(
+            target=_wait_then_release,
+            name="mcp-recall-slot-release",
+            daemon=True,
+        ).start()
+    except Exception:
+        gate.leave(slot_token)
+
+
+def _run_admitted_recall(fn, lane_futures: Optional[list] = None):
+    """Run an MCP recall tool inside SearchAdmission when the memory guard is on."""
+    from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
+
+    if _core._SEARCH_ADMITTED.get() or not _core.recall_memory_guard_enabled():  # pylint: disable=protected-access
+        return fn()
+    gate = _core.search_admission()
+    try:
+        gate.enter()
     except _core.SearchBusy as busy:
         return (
             f"Recall busy: admission cap reached "
             f"(retry_after={busy.retry_after:.1f}s, active={busy.active}, waiting={busy.waiting})."
         )
+    token = _core._SEARCH_ADMITTED.set(True)  # pylint: disable=protected-access
+    try:
+        return fn()
+    finally:
+        _core._SEARCH_ADMITTED.reset(token)  # pylint: disable=protected-access
+        if lane_futures:
+            _release_mcp_gate_when_done(gate, lane_futures)
+        else:
+            gate.leave()
 
 
 @mcp.tool()
@@ -160,16 +199,22 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         query: The search term or context you are trying to match.
         limit: Max number of results to return.
     """
-    return _run_admitted_recall(lambda: _recall_memory_impl(
-        query=query, limit=limit, session_id=session_id,
-        agent=agent, user=user, machine=machine, project=project, as_of=as_of,
-    ))
+    lane_futs: list = []
+    return _run_admitted_recall(
+        lambda: _recall_memory_impl(
+            query=query, limit=limit, session_id=session_id,
+            agent=agent, user=user, machine=machine, project=project, as_of=as_of,
+            lane_futures=lane_futs,
+        ),
+        lane_futures=lane_futs,
+    )
 
 
 def _recall_memory_impl(query: str, limit: int = 3, session_id: Optional[str] = None,
                         agent: Optional[str] = None, user: Optional[str] = None,
                         machine: Optional[str] = None, project: Optional[str] = None,
-                        as_of: Optional[str] = None) -> str:
+                        as_of: Optional[str] = None,
+                        lane_futures: Optional[list] = None) -> str:
     # sweep_report is how a lane dropped by the recall deadline becomes visible.
     # Without it this tool answered "No relevant shards found" for a timed-out
     # sweep — a positive claim about the substrate that the substrate never
@@ -197,7 +242,7 @@ def _recall_memory_impl(query: str, limit: int = 3, session_id: Optional[str] = 
         from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
         shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
     else:
-        shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
+        shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report, lane_futures=lane_futures)
     dropped = sweep_report.get("lanes_timed_out") or []
     # A lane that ERRORED (vault offline, gateway 530) is as much a hole as one
     # that timed out; reporting only timeouts let an offline vault read as

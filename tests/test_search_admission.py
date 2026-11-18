@@ -179,3 +179,43 @@ def test_mcp_recall_tools_respect_hard_guard(monkeypatch):
             gate.leave()
     finally:
         core.reset_search_admission()
+
+
+def test_mcp_recall_memory_holds_admission_until_straggler_lane_finishes(monkeypatch):
+    import concurrent.futures
+    import time
+    from nougen_shards import core, mcp as mcp_mod
+
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_WAITING", "0")
+    monkeypatch.setenv("NOUGEN_RECALL_WAIT_S", "0")
+    core.reset_search_admission()
+
+    straggler = concurrent.futures.Future()
+
+    def fake_fed(query, limit=3, sweep_report=None, lane_futures=None, **kw):
+        if lane_futures is not None:
+            lane_futures.append(straggler)
+        return []
+
+    monkeypatch.setattr(mcp_mod, "federated_retrieve", fake_fed)
+
+    try:
+        out = mcp_mod.recall_memory("x")
+        assert out == "No relevant shards found in the memory substrate."
+        # Straggler lane still running: admission slot must still be held.
+        assert mcp_mod.recall_memory("y").startswith("Recall busy:")
+
+        straggler.set_result([])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not mcp_mod.recall_memory("z").startswith("Recall busy:"):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("MCP admission slot never released after straggler finished")
+    finally:
+        if not straggler.done():
+            straggler.set_result([])
+        core.reset_search_admission()
