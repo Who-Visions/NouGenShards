@@ -423,7 +423,8 @@ if ! tunnel_up; then
   fi
 fi
 report ok
-(command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
+# NOUGEN_NO_BROWSER=1 skips opening the node page (headless boxes, test runs).
+[ -n "\${NOUGEN_NO_BROWSER:-}" ] || (command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
 if [ "$MODE" = foreground ]; then
   echo "NouGen is on. It will not start by itself after a restart here; to start it again run:"
   echo "  $S run"
