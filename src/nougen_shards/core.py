@@ -370,7 +370,12 @@ def _resolve_vault_dir() -> Path:
         # A node folder may point at the vault a local install already filled,
         # so the node and the local tools use one vault (vault_unify.py).
         from . import vault_unify as _vault_unify  # pylint: disable=import-outside-toplevel
-        pointed = _vault_unify.read_pointer(chosen)
+        # One hop only, for the whole process. When the package init has
+        # already followed a pointer, the variable names the target; following
+        # a pointer found there too would send core to a third folder while
+        # every reader of the variable stays on the second.
+        already_followed = bool(os.environ.get(_vault_unify.ENV_CONFIGURED, "").strip())
+        pointed = None if already_followed else _vault_unify.read_pointer(chosen)
         if pointed is not None:
             VAULT_SOURCE = "NOUGEN_VAULT_DIR -> VAULT_POINTER"
             return pointed

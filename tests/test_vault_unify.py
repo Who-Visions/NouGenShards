@@ -25,6 +25,11 @@ def vaults(tmp_path, monkeypatch):
     monkeypatch.setenv(vu.ENV_LOCAL_VAULT, str(local))
     monkeypatch.setenv(vu.ENV_BACKUP_ROOT, str(tmp_path / "backups"))
     monkeypatch.setenv(vu.ENV_FREE_HEADROOM, "0")
+    # adopt_pointer_into_env writes this marker straight into os.environ.
+    # Setting then deleting it here makes pytest restore the original state
+    # after each test, so one test's marker cannot leak into the next.
+    monkeypatch.setenv(vu.ENV_CONFIGURED, "placeholder")
+    monkeypatch.delenv(vu.ENV_CONFIGURED)
     return node, local, tmp_path
 
 
@@ -196,3 +201,20 @@ def test_core_resolver_follows_the_pointer(vaults, monkeypatch):
     from nougen_shards import core
     assert core._resolve_vault_dir() == local.resolve()
     assert "VAULT_POINTER" in core.VAULT_SOURCE
+
+
+def test_a_chain_of_pointers_is_followed_one_hop_by_everyone(tmp_path, monkeypatch):
+    """node -> local -> other: the environment readers and core must agree."""
+    other = make_vault(tmp_path / "other", 7)
+    local = make_vault(tmp_path / "local", 5)
+    node = make_vault(tmp_path / "node", 1)
+    (node / vu.POINTER_NAME).write_text(str(local), encoding="utf-8")
+    (local / vu.POINTER_NAME).write_text(str(other), encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(node))
+    monkeypatch.setenv(vu.ENV_CONFIGURED, "placeholder")
+    monkeypatch.delenv(vu.ENV_CONFIGURED)
+    assert vu.adopt_pointer_into_env() == local.resolve()
+    import os
+    from nougen_shards import core
+    assert core._resolve_vault_dir() == local.resolve()
+    assert os.environ["NOUGEN_VAULT_DIR"] == str(local.resolve())
