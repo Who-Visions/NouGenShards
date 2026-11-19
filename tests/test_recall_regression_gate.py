@@ -8,6 +8,7 @@ Verifies:
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -331,8 +332,68 @@ def test_full_p6_gate_then_score_end_to_end(isolated_vault):
     )
 
     assert report["domain_leaks"] == 0
+    assert report["vault_leaks"] == 0
+    assert report["tenant_leaks"] == 0
+    assert report["isolation_probes_run"] >= 9
+    assert report["vault_isolation"]["positive_hits"] == 3
+    assert "p95" in report["negative_latency_ms"]
     assert report["negatives_nonempty"] == 0
     assert verdict["governance_passed"] is True
     assert verdict["quality_passed"] is True
     assert verdict["passed"] is True, f"P6 gate failed: {verdict}"
     assert list(tmp_path.glob("report_*.json")), "Expected report artifact in out_dir"
+
+
+def test_real_tenant_vault_isolation_shared_domain(isolated_vault):
+    iso = ev.probe_tenant_vault_isolation(core, k=10, domain_key="shared_domain")
+    assert iso["probes_run"] == 9
+    assert iso["positive_expected"] == 3
+    assert iso["positive_hits"] == 3
+    assert iso["cross_leaks"] == 0
+
+
+def test_negative_query_latency_included_in_gate_p95(isolated_vault, monkeypatch):
+    tmp_path, keys = isolated_vault
+    neg_q = "qxzkjmvplr vbtgfnhwds"
+    golden = {
+        "created_utc": "2026-11-19T00:00:00Z",
+        "seed": 42,
+        "include_research": False,
+        "queries": [
+            {
+                "tier": "title",
+                "query": "Commercial HVAC condenser airflow specification",
+                "relevant": [keys["hvac_spec"]],
+                "target": keys["hvac_spec"],
+            },
+        ],
+        "negatives": [neg_q, neg_q],
+    }
+    golden_file = tmp_path / "golden_neg_lat.json"
+    golden_file.write_text(json.dumps(golden, indent=1), encoding="utf-8")
+
+    orig_retrieve = core.retrieve
+
+    def delayed_negative(q, *args, **kwargs):
+        if q == neg_q:
+            time.sleep(0.05)
+        return orig_retrieve(q, *args, **kwargs)
+
+    monkeypatch.setattr(core, "retrieve", delayed_negative)
+    report = ev.run(
+        golden_file,
+        k=10,
+        no_embed=True,
+        fp_target=0.1,
+        domain="*",
+        out_dir=tmp_path,
+        write_report=False,
+        max_latency_ms=25.0,
+        verify_vault_isolation=True,
+    )
+    verdict = ev.evaluate_gate(report, max_p95_ms=25.0)
+    assert report["negative_latency_ms"]["p95"] >= 40.0
+    assert report["latency_ms"]["p95"] >= 40.0
+    assert report["taxonomy_counts"].get(ev.ERROR_LATENCY_BREACH, 0) >= 2
+    assert verdict["governance_passed"] is False
+    assert any("latency_p95_ms" in msg for msg in verdict["failures"])

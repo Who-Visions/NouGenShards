@@ -37,6 +37,7 @@ import random
 import re
 import statistics
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,7 @@ SCORE_FIELDS = ("final_score", "utility_score_tripartite")
 ERROR_MISSED_SHARD = "MISSED_SHARD"
 ERROR_STALE_RANK = "STALE_RANK"
 ERROR_WRONG_DOMAIN = "WRONG_DOMAIN"
+ERROR_TENANT_LEAK = "TENANT_LEAK"
 ERROR_FALSE_POSITIVE = "FALSE_POSITIVE"
 ERROR_LATENCY_BREACH = "LATENCY_BREACH"
 TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]{4,}")
@@ -176,6 +178,116 @@ def classify_query_failure(
     return errors
 
 
+def _latency_summary(vals: list[float]) -> dict:
+    """Compute p50/p95 latency summary in milliseconds for a sample list."""
+    if not vals:
+        return {}
+    lat = sorted(vals)
+    return {
+        "p50": round(statistics.median(lat), 1),
+        "p95": round(lat[min(len(lat) - 1, int(len(lat) * 0.95))], 1),
+    }
+
+
+def probe_tenant_vault_isolation(
+    core,
+    *,
+    k: int = 10,
+    domain_key: str = "shared_domain",
+    research: bool = False,
+) -> dict:
+    """Verify owner/sibling vault isolation under core.bind_active_vault with shared domain_key."""
+    env_keys = ("NOUGEN_EMBED_AT_CAPTURE", "NOUGEN_DISTILL_LANES", "NOUGEN_QUERY_EMBED", "NOUGEN_RERANK")
+    prev_env = {key: os.environ.get(key) for key in env_keys}
+    for key in env_keys:
+        os.environ[key] = "0"
+
+    sentinels = (
+        ("owner", getattr(core, "OWNER_TENANT_ID", "owner"), "Owner Vault Sentinel", "owner_sentinel_token_alpha"),
+        ("tenant_a", "tenant-a", "Tenant Alpha Vault Sentinel", "tenant_alpha_sentinel_bravo"),
+        ("tenant_b", "tenant-b", "Tenant Beta Vault Sentinel", "tenant_beta_sentinel_charlie"),
+    )
+
+    probes_run = 0
+    positive_hits = 0
+    cross_leaks = 0
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            root = Path(td)
+            vault_dirs = {label: root / label for label, _, _, _ in sentinels}
+            for vdir in vault_dirs.values():
+                vdir.mkdir(parents=True, exist_ok=True)
+            try:
+                for label, tenant_id, title, marker in sentinels:
+                    tok = core.bind_active_vault(vault_dirs[label], tenant_id)
+                    try:
+                        res = core.capture(
+                            "KNOWLEDGE",
+                            title,
+                            f"Sentinel shard content for {marker} under {label}.",
+                            domain_key=domain_key,
+                        )
+                        if not getattr(res, "captured", False):
+                            raise RuntimeError(f"Failed capturing isolation sentinel for {label}: {res}")
+                    finally:
+                        core.reset_active_vault(tok)
+
+                core.close_readonly_pool()
+
+                for active_label, active_tenant, _, own_marker in sentinels:
+                    tok = core.bind_active_vault(vault_dirs[active_label], active_tenant)
+                    try:
+                        for target_label, _, target_title, target_marker in sentinels:
+                            probes_run += 1
+                            rows = core.retrieve(
+                                target_marker,
+                                limit=k,
+                                domain_key=domain_key,
+                                include_research=research,
+                            )
+                            if target_label == active_label:
+                                if any(
+                                    isinstance(r, dict)
+                                    and (own_marker in str(r.get("content") or "") or r.get("title") == target_title)
+                                    for r in rows[:k]
+                                ):
+                                    positive_hits += 1
+                            else:
+                                for r in rows[:k]:
+                                    if isinstance(r, dict) and (
+                                        target_marker in str(r.get("content") or "")
+                                        or r.get("title") == target_title
+                                    ):
+                                        cross_leaks += 1
+                    finally:
+                        core.reset_active_vault(tok)
+            finally:
+                core.close_readonly_pool()
+                init_dbs = getattr(core, "_INITIALIZED_DBS", None)
+                if isinstance(init_dbs, set):
+                    prefixes = tuple(str(p) for p in vault_dirs.values())
+                    stale = [
+                        entry for entry in init_dbs
+                        if isinstance(entry, tuple) and entry and str(entry[0]).startswith(prefixes)
+                    ]
+                    for entry in stale:
+                        init_dbs.discard(entry)
+    finally:
+        for key, prev in prev_env.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    return {
+        "probes_run": probes_run,
+        "positive_expected": len(sentinels),
+        "positive_hits": positive_hits,
+        "cross_leaks": cross_leaks,
+        "domain_key": domain_key,
+    }
+
+
 def evaluate_gate(
     report: dict,
     *,
@@ -184,12 +296,29 @@ def evaluate_gate(
     max_fp_rate: float = 0.20,
     max_p95_ms: float = 2000.0,
     max_domain_leaks: int = 0,
+    require_isolation_coverage: bool = True,
 ) -> dict:
     """Gate-Then-Score evaluation (arXiv:2611.24039): governance gates first, quality floors second."""
     neg_total_raw = int(report.get("negatives_total", 0) or 0)
     neg_nonempty = int(report.get("negatives_nonempty", 0) or 0)
     fp_rate = (neg_nonempty / neg_total_raw) if neg_total_raw > 0 else 0.0
-    domain_leaks = int(report.get("domain_leaks", 0) or 0)
+
+    iso_probes = int(report.get("isolation_probes_run") or 0)
+    vault_leaks = int(report.get("vault_leaks") or 0)
+    domain_leaks = int(report.get("domain_leaks") or 0)
+    total_leaks = (
+        int(report["tenant_leaks"])
+        if report.get("tenant_leaks") is not None
+        else (vault_leaks + domain_leaks)
+    )
+    vault_iso = report.get("vault_isolation") or {}
+    pos_expected = int(vault_iso.get("positive_expected") or 0)
+    pos_hits = int(vault_iso.get("positive_hits") or 0)
+
+    coverage_ok = (not require_isolation_coverage) or (iso_probes > 0)
+    own_recall_ok = pos_hits >= pos_expected
+    iso_passed = coverage_ok and own_recall_ok and (total_leaks <= max_domain_leaks)
+
     p95_ms = float((report.get("latency_ms") or {}).get("p95") or 0.0)
 
     overall = report.get("overall") or {}
@@ -198,9 +327,13 @@ def evaluate_gate(
 
     gates = {
         "tenant_isolation": {
-            "passed": domain_leaks <= max_domain_leaks,
-            "observed": domain_leaks,
+            "passed": iso_passed,
+            "observed": total_leaks,
             "threshold": max_domain_leaks,
+            "probes_run": iso_probes,
+            "vault_leaks": vault_leaks,
+            "domain_leaks": domain_leaks,
+            "own_recall_ok": own_recall_ok,
         },
         "false_positive_rate": {
             "passed": fp_rate <= max_fp_rate,
@@ -233,7 +366,19 @@ def evaluate_gate(
     for name in governance_keys + quality_keys:
         g = gates[name]
         if not g["passed"]:
-            failures.append(f"{name}: observed {g['observed']} violates threshold {g['threshold']}")
+            if name == "tenant_isolation":
+                if not coverage_ok:
+                    failures.append("tenant_isolation: no isolation probes executed (isolation_probes_run=0)")
+                if not own_recall_ok:
+                    failures.append(
+                        f"tenant_isolation: own-vault sentinel recall failed ({pos_hits}/{pos_expected})"
+                    )
+                if total_leaks > max_domain_leaks:
+                    failures.append(
+                        f"tenant_isolation: observed {total_leaks} leaks (vault={vault_leaks}, domain={domain_leaks}) violates threshold {max_domain_leaks}"
+                    )
+            else:
+                failures.append(f"{name}: observed {g['observed']} violates threshold {g['threshold']}")
 
     return {
         "passed": governance_passed and quality_passed,
@@ -321,6 +466,7 @@ def run(
     out_dir: Path | None = None,
     write_report: bool = True,
     max_latency_ms: float | None = None,
+    verify_vault_isolation: bool = True,
 ) -> dict:
     if no_embed:
         os.environ["NOUGEN_QUERY_EMBED"] = "0"
@@ -335,9 +481,13 @@ def run(
             return core.retrieve(q, limit=k, domain_key=active_domain, include_research=research)
         search("warm up the grid")
 
-        per_query, by_tier, latencies = [], {}, []
+        per_query, by_tier = [], {}
+        pos_latencies: list[float] = []
+        neg_latencies: list[float] = []
+        latencies: list[float] = []
         pos = {f: [] for f in SCORE_FIELDS}
         domain_leaks = 0
+        domain_probes_run = 0
         taxonomy_counts: dict[str, int] = {}
 
         for it in golden["queries"]:
@@ -346,6 +496,7 @@ def run(
             res = search(it["query"], active_domain=q_domain)
             ms = (time.perf_counter() - t0) * 1000
             latencies.append(ms)
+            pos_latencies.append(ms)
             ranked = [f"{r.get('id')}@{r.get('_db_index')}" for r in res]
             s = score_query(ranked, it["relevant"], k)
             by_tier.setdefault(it.get("tier", "manual"), []).append(s)
@@ -353,6 +504,7 @@ def run(
             for f in SCORE_FIELDS:
                 pos[f].append(hit.get(f) if hit else None)
             if q_domain and q_domain != "*":
+                domain_probes_run += 1
                 domain_leaks += sum(
                     1 for r in res[:k]
                     if isinstance(r, dict) and r.get("domain_key") is not None and r.get("domain_key") != q_domain
@@ -382,14 +534,28 @@ def run(
         neg = {f: [] for f in SCORE_FIELDS}
         neg_queries = golden.get("negatives", [])
         for q in neg_queries:
+            t0 = time.perf_counter()
             res = search(q)
+            ms = (time.perf_counter() - t0) * 1000
+            latencies.append(ms)
+            neg_latencies.append(ms)
             if res:
                 taxonomy_counts[ERROR_FALSE_POSITIVE] = taxonomy_counts.get(ERROR_FALSE_POSITIVE, 0) + 1
+            if max_latency_ms is not None and ms > max_latency_ms:
+                taxonomy_counts[ERROR_LATENCY_BREACH] = taxonomy_counts.get(ERROR_LATENCY_BREACH, 0) + 1
             for f in SCORE_FIELDS:
                 neg[f].append(res[0].get(f) if res else None)
 
+        vault_iso = (
+            probe_tenant_vault_isolation(core, k=k, research=research)
+            if verify_vault_isolation
+            else {"probes_run": 0, "positive_expected": 0, "positive_hits": 0, "cross_leaks": 0}
+        )
+        vault_leaks = int(vault_iso.get("cross_leaks", 0) or 0)
+        if vault_leaks > 0:
+            taxonomy_counts[ERROR_TENANT_LEAK] = taxonomy_counts.get(ERROR_TENANT_LEAK, 0) + vault_leaks
+
         now = datetime.now(timezone.utc)
-        lat = sorted(latencies)
         report = {
             "created_utc": now.isoformat(timespec="seconds"), "created_eastern": _eastern(now),
             "config": {"k": k, "embed": not no_embed and os.environ.get("NOUGEN_QUERY_EMBED", "1") != "0",
@@ -399,11 +565,16 @@ def run(
                        "fp_target": fp_target, "golden": str(golden_path), "golden_created": golden.get("created_utc")},
             "summary": {t: aggregate(rows) for t, rows in sorted(by_tier.items())},
             "overall": aggregate([s for rows in by_tier.values() for s in rows]),
-            "latency_ms": {"p50": round(statistics.median(lat), 1),
-                           "p95": round(lat[min(len(lat) - 1, int(len(lat) * 0.95))], 1)} if lat else {},
+            "latency_ms": _latency_summary(latencies),
+            "positive_latency_ms": _latency_summary(pos_latencies),
+            "negative_latency_ms": _latency_summary(neg_latencies),
             "negatives_total": len(neg_queries),
             "negatives_nonempty": sum(1 for s in neg[SCORE_FIELDS[0]] if s is not None),
             "domain_leaks": domain_leaks,
+            "vault_leaks": vault_leaks,
+            "tenant_leaks": vault_leaks + domain_leaks,
+            "isolation_probes_run": int(vault_iso.get("probes_run", 0) or 0) + domain_probes_run,
+            "vault_isolation": vault_iso,
             "taxonomy_counts": taxonomy_counts,
             "sweep": {f: sweep(pos[f], neg[f], fp_target) for f in SCORE_FIELDS},
             "per_query": per_query,
@@ -430,7 +601,8 @@ def _print(rep: dict, prev, out: Path):
             line += "   delta MRR " + f"{agg['mrr'] - prev['overall'].get('mrr', 0):+.3f}"
         print(line)
     print(f"latency ms p50 {rep['latency_ms'].get('p50')}  p95 {rep['latency_ms'].get('p95')}  "
-          f"| negatives returning results: {rep['negatives_nonempty']}")
+          f"| negatives returning results: {rep['negatives_nonempty']}  "
+          f"| isolation probes: {rep.get('isolation_probes_run', 0)} leaks: {rep.get('tenant_leaks', 0)}")
     for f, sw in rep["sweep"].items():
         b = sw["best"]
         print(f"sweep {f}: " + (f"t={b['threshold']:.4f} recall {b['recall']:.3f} fp {b['fp_rate']:.3f}"
@@ -469,7 +641,15 @@ def main(argv=None):
     if a.cmd == "build":
         build(a.n, a.neg, a.seed, a.include_research)
     elif a.cmd == "gate":
-        rep = run(a.golden, a.k, a.no_embed, a.fp_target, a.domain, write_report=not a.no_write)
+        rep = run(
+            a.golden,
+            a.k,
+            a.no_embed,
+            a.fp_target,
+            a.domain,
+            write_report=not a.no_write,
+            max_latency_ms=a.max_p95_ms,
+        )
         verdict = evaluate_gate(
             rep,
             min_recall5=a.min_recall5,
