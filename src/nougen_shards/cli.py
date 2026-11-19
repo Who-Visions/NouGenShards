@@ -2683,6 +2683,17 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_vault_unify = subparsers.add_parser(
+        "vault-unify", help="Check that the node and the local install use one vault; --apply repairs it")
+    p_vault_unify.add_argument("--node-vault", help="the node's vault folder (default: NOUGEN_VAULT_DIR)")
+    p_vault_unify.add_argument("--local-vault", help="the local install's vault (default: ~/.nougen/shards)")
+    p_vault_unify.add_argument("--apply", action="store_true",
+                               help="back up both vaults, then point the node at the populated one")
+    p_vault_unify.add_argument("--allow-populated-node", action="store_true",
+                               help="with --apply: proceed even though the node's folder already holds shards")
+    p_vault_unify.add_argument("--dry-run", action="store_true", help="with --apply: show the plan, change nothing")
+    p_vault_unify.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_agent_perms = subparsers.add_parser(
         "agent-permissions",
         help="Let your coding agent run the read-only NouGen commands without asking each time")
@@ -3614,6 +3625,40 @@ def cmd_wishlist(args):
 
     print(f"unknown wishlist subcommand: {sub!r}")
     raise SystemExit(1)
+
+
+def cmd_vault_unify(args):
+    """Report, and with --apply repair, a node that opened a different vault
+    folder than the one the local install filled (nougen_shards/vault_unify.py)."""
+    from nougen_shards import vault_unify  # pylint: disable=import-outside-toplevel
+    node_vault = getattr(args, "node_vault", None) or vault_unify.configured_vault()
+    if not node_vault:
+        print("No node vault to check: pass --node-vault, or set NOUGEN_VAULT_DIR to the "
+              "folder the node was started with.", file=sys.stderr)
+        sys.exit(2)
+    local_vault = getattr(args, "local_vault", None)
+    try:
+        if getattr(args, "apply", False):
+            report = vault_unify.apply(Path(node_vault), Path(local_vault) if local_vault else None,
+                                       allow_populated_node=getattr(args, "allow_populated_node", False),
+                                       dry_run=getattr(args, "dry_run", False))
+        else:
+            report = vault_unify.inspect(Path(node_vault), Path(local_vault) if local_vault else None)
+    except vault_unify.VaultUnifyError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "json", False):
+        print(json.dumps(dict(report, ok=True)))
+        return
+    print(vault_unify.describe(report))
+    if report.get("changed"):
+        print(f"Backups: {report['backup_dir']}")
+        print("Restart the node so it opens the vault it now points at.")
+    elif report.get("dry_run"):
+        print(f"Dry run: would back up {report['backup_bytes']} bytes, then write the pointer.")
 
 
 def cmd_agent_permissions(args):
@@ -4766,7 +4811,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "agent-permissions": cmd_agent_permissions, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
+        "doctor": cmd_doctor, "vault-unify": cmd_vault_unify, "agent-permissions": cmd_agent_permissions, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,
