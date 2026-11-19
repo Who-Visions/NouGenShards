@@ -11,7 +11,13 @@
   async function playerResponse(vid) {
     const html = await (await fetch("/watch?v=" + vid, { credentials: "include" })).text();
     const grab = k => { const i = html.indexOf(k + " = {"); if (i < 0) return null; let d = 0, s = html.indexOf("{", i);
-      for (let j = s; j < html.length; j++) { const c = html[j]; if (c === "{") d++; else if (c === "}" && --d === 0) return JSON.parse(html.slice(s, j + 1)); } };
+      // Braces inside JSON strings ("Foo } bar" in a title) are not delimiters: track string state and \ escapes.
+      let str = false, bs = false;
+      for (let j = s; j < html.length; j++) { const c = html[j];
+        if (str) { if (bs) bs = false; else if (c === "\\") bs = true; else if (c === '"') str = false; continue; }
+        if (c === '"') str = true; else if (c === "{") d++;
+        else if (c === "}" && --d === 0) { try { return JSON.parse(html.slice(s, j + 1)); } catch { return null; } } }
+      return null; };
     return { pr: grab("ytInitialPlayerResponse"), data: grab("ytInitialData"), key: (html.match(/"INNERTUBE_API_KEY":"([^"]+)"/) || [])[1],
              ver: (html.match(/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/) || [])[1] };
   }
