@@ -25,7 +25,7 @@ test('handles escaped quotes around braces inside strings', () => {
 });
 
 test('handles escaped backslash immediately before closing quote', () => {
-  const payload = { path: 'C:\\Users\\demo\\', nested: { a: 1 } };
+  const payload = { path: 'a\\b\\c\\', nested: { a: 1 } };
   const html = `var ytInitialPlayerResponse = ${JSON.stringify(payload)};`;
   assert.deepEqual(makeGrab(html)('ytInitialPlayerResponse'), payload);
 });
