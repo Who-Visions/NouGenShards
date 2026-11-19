@@ -44,6 +44,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RELAY_DIR = ROOT / "workers" / "relay"
 RELAY_CONFIG = RELAY_DIR / "wrangler.jsonc"
+# The relay worker only upgrades on this path; a bare origin gets 404.
+RELAY_CONNECT_PATH = os.environ.get("NOUGEN_GOLIVE_RELAY_PATH", "/_relay/connect")
 JOIN_WORKER = ROOT / "workers" / "join" / "worker.js"
 CF_API = os.environ.get("NOUGEN_GOLIVE_CF_API", "https://api.cloudflare.com/client/v4")
 
@@ -177,7 +179,7 @@ def step_merged(ctx: Ctx) -> str:
 
 def step_relay(ctx: Ctx) -> str:
     ctx.kv_id, host = relay_config()
-    ctx.relay_url = f"wss://{host}"
+    ctx.relay_url = f"wss://{host}{RELAY_CONNECT_PATH}"
     r = ctx.run(keyfor_argv([sys.executable, str(Path(__file__).resolve()), "_cf-account", ctx.kv_id]))
     if r.returncode != 0:
         raise GateError(f"account resolve failed: {(r.stderr or r.stdout).strip()[-300:]}")
@@ -233,7 +235,7 @@ def step_supervisor(ctx: Ctx) -> str:
 def step_join(ctx: Ctx) -> str:
     if not (ctx.relay_url and ctx.kv_id):
         ctx.kv_id, host = relay_config()
-        ctx.relay_url = f"wss://{host}"
+        ctx.relay_url = f"wss://{host}{RELAY_CONNECT_PATH}"
     cmd = (f"$env:NOUGEN_JOIN_RELAY_URL='{ctx.relay_url}'; "
            f"$env:NOUGEN_JOIN_RELAY_AUTH_KV_ID='{ctx.kv_id}'; "
            f"python workers/join/deploy.py")

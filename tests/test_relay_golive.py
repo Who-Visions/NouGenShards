@@ -55,6 +55,7 @@ def test_dry_run_never_deploys():
     assert not any("wrangler" in c for c in fake.calls)
     assert "dry run" in lines[-1]
     assert "NOUGEN_JOIN_RELAY_AUTH_KV_ID" in lines[3]
+    assert "wss://relay.nougenai.com/_relay/connect'" in lines[3]
 
 
 def test_unmerged_pr_stops_first():
