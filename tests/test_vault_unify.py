@@ -218,3 +218,33 @@ def test_a_chain_of_pointers_is_followed_one_hop_by_everyone(tmp_path, monkeypat
     from nougen_shards import core
     assert core._resolve_vault_dir() == local.resolve()
     assert os.environ["NOUGEN_VAULT_DIR"] == str(local.resolve())
+
+
+def test_child_process_with_inherited_environment_stays_on_the_parents_vault(tmp_path):
+    """node -> local -> other. The parent follows one hop to local and passes
+    its environment on; the child must not hop again to other."""
+    import os
+    import subprocess
+    import sys
+    other = make_vault(tmp_path / "other", 7)
+    local = make_vault(tmp_path / "local", 5)
+    node = make_vault(tmp_path / "node", 1)
+    (node / vu.POINTER_NAME).write_text(str(local), encoding="utf-8")
+    (local / vu.POINTER_NAME).write_text(str(other), encoding="utf-8")
+    code = ("import os, subprocess, sys\n"
+            "import nougen_shards\n"
+            "from nougen_shards import core\n"
+            "child = subprocess.run([sys.executable, '-c', "
+            "'import os, nougen_shards; from nougen_shards import core; "
+            "print(os.environ[\"NOUGEN_VAULT_DIR\"]); print(core.GLOBAL_DIR)'], "
+            "capture_output=True, text=True)\n"
+            "print(os.environ['NOUGEN_VAULT_DIR']); print(core.GLOBAL_DIR); print(child.stdout)\n")
+    env = dict(os.environ, NOUGEN_VAULT_DIR=str(node))
+    env.pop(vu.ENV_CONFIGURED, None)
+    src = str((__import__("pathlib").Path(vu.__file__).resolve().parent.parent))
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    lines = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    assert len(lines) == 4, out.stderr[-600:]
+    want = str(local.resolve())
+    assert [os.path.normcase(os.path.realpath(x)) for x in lines] == [os.path.normcase(want)] * 4

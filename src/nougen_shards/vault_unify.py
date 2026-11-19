@@ -144,6 +144,11 @@ def adopt_pointer_into_env() -> Optional[Path]:
         raw = os.environ.get(ENV_VAULT, "").strip()
         if not raw:
             return None
+        # A pointer has already been followed, by this process or by the parent
+        # it inherited its environment from. Following another one here would
+        # move a child process to a different vault than its parent.
+        if os.environ.get(ENV_CONFIGURED, "").strip():
+            return None
         target = read_pointer(Path(raw).expanduser())
         if target is None:
             return None
