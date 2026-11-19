@@ -171,3 +171,25 @@ def test_control_double_negative_restatement_still_is_not_a_conflict():
     b = shard(904, 2, "Acme licence confirmed",
               "Confirmed: Acme Mechanical is not a licensed contractor and never was.", "2026-08-09T10:00:00Z")
     assert cs.find_conflicts([a, b]) == []
+
+
+def test_a_reference_does_not_reach_the_same_id_on_another_peer():
+    """peer-a's correction is tagged supersedes:101@db1. peer-b also has a
+    shard 101 in database 1, about something else entirely."""
+    fix = cloud("peer-a", 505, 2, "Acme licence status", "Eligible for exam only.",
+                "2026-08-06T09:00:00Z", tags=["supersedes:101@db1"])
+    unrelated = cloud("peer-b", 101, 1, "Tide tables",
+                      "High tide at the inlet arrives before sunrise on weekdays.", "2026-07-01T09:00:00Z")
+    assert cs.find_conflicts([fix, unrelated]) == []
+    # Same reference, same peer: still the strongest signal.
+    target = cloud("peer-a", 101, 1, "Acme Mechanical profile", "Gas fuel piping contractor.",
+                   "2026-07-19T10:00:00Z")
+    found = cs.find_conflicts([fix, unrelated, target])
+    assert len(found) == 1 and found[0]["signal"] == "supersedes_marker"
+    assert found[0]["earlier"]["source_node"] == "peer-a"
+
+
+def test_a_peer_reference_does_not_reach_a_local_shard_with_that_id():
+    fix = cloud("peer-a", 505, 2, "Amended", "Retracted: see 101@db1, that record is stale.",
+                "2026-08-08T09:00:00Z")
+    assert cs.find_conflicts([OLD, fix]) == []          # OLD is local shard 101@db1

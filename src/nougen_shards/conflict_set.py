@@ -134,10 +134,20 @@ def _negation_count(text: str) -> int:
     return len(_NEGATION.findall(text or ""))
 
 
-def _points_at(text: str, tags: str, other: Dict[str, Any]) -> Optional[str]:
-    """Does this shard name the other one by reference? Returns the signal name."""
+def _points_at(text: str, tags: str, other: Dict[str, Any],
+               source: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Does this shard name the other one by reference? Returns the signal name.
+
+    A reference such as ``101@db1`` names an id inside one store. Each peer
+    numbers its own shards, so the reference only means the other shard when
+    both came from the same store; ``101@db1`` written on one peer says nothing
+    about shard 101 on another. Disagreement across peers is still found by
+    the cue-and-shared-subject path.
+    """
     oid, odb = _key(other)
     if not oid:
+        return None
+    if source is not None and _identity(source)[2] != _identity(other)[2]:
         return None
     for m in _SUPERSEDES_TAG.finditer(tags + "\n" + text):
         if m.group(1) == oid and (not m.group(2) or not odb or m.group(2) == odb):
@@ -196,7 +206,7 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             for later, earlier in ((a, b), (b, a)):
                 if later["ts"] and earlier["ts"] and later["ts"] < earlier["ts"]:
                     continue
-                signal = _points_at(later["text"], later["tags"], earlier["item"])
+                signal = _points_at(later["text"], later["tags"], earlier["item"], later["item"])
                 if signal == "names_reference" and not later["cue"]:
                     signal = None            # citing a shard is not disputing it
                 if signal is None and later["cue"]:
