@@ -1,5 +1,4 @@
 """The NouGenTube panel palettes come from the generated mono-violet package, never inline copies (drift check)."""
-import importlib.util
 import re
 import subprocess
 import sys
