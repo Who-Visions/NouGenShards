@@ -100,7 +100,7 @@ test("unix: a fingerprint mismatch stops before any account file is touched", { 
   for (const tool of ["pkill", "pgrep"]) writeFileSync(join(bin, tool), `#!/bin/sh\necho "$0 $*" >> "${home.replace(/\\/g, "/")}/killed"\nexit 0\n`, { mode: 0o755 });
   const file = join(home, "setup.sh");
   writeFileSync(file, setupSh(good));
-  const r = spawnSync("sh", [file], { env: { ...process.env, HOME: home, PATH: bin + (process.platform === "win32" ? ";" : ":") + process.env.PATH }, encoding: "utf8" });
+  const r = spawnSync("sh", [file], { env: { ...process.env, HOME: home, NOUGEN_NO_BROWSER: "1", PATH: bin + (process.platform === "win32" ? ";" : ":") + process.env.PATH }, encoding: "utf8" });
   assert.notEqual(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /did not match its fingerprint\. Nothing was changed/);
   assert.ok(existsSync(join(acct, "NouGenShards", "app.py")), "the working install was removed");

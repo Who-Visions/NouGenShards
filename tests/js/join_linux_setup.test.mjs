@@ -20,6 +20,9 @@ const STUBS = {
   uname: `case "$1" in -s) echo Linux;; -m) echo x86_64;; *) echo Linux;; esac`,
   sha256sum: `echo "$EXPECT_SHA  $1"`,
   sleep: `exit 0`,
+  // Stand-ins so a test run never opens the operator's real browser; calls are logged for the assertion below.
+  open: `echo "$*" >> "$T/browser.log"`,
+  "xdg-open": `echo "$*" >> "$T/browser.log"`,
   nohup: `exec "$@"`,
   pkill: `echo "pkill $*" >> "$T/killed"; exit 0`,
   pgrep: `exit 1`,
@@ -114,6 +117,16 @@ test("a rerun skips every finished step and downloads nothing", { skip: !hasSh }
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(b.read("downloads.log"), "", "a rerun downloaded something again");
   assert.ok(!existsSync(join(b.T, "killed")) || !/NouGenShards/.test(b.read("killed")), "a rerun stopped a current node");
+});
+
+test("a PASS opens the node page through the open stand-in; NOUGEN_NO_BROWSER=1 skips it", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  assert.equal(b.run({ READY: "always" }).status, 0);
+  assert.match(b.read("browser.log"), /https:\/\/sample-acct\.example\.test/, "the page was not opened through the stand-in");
+  rmSync(join(b.T, "browser.log"), { force: true });
+  const r = b.run({ READY: "always", NOUGEN_NO_BROWSER: "1" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(b.read("browser.log"), "", "NOUGEN_NO_BROWSER=1 still opened a browser");
 });
 
 test("tunnel fallback: retries over http2 (no unsupported edge override), then it connects", { skip: !hasSh }, () => {
