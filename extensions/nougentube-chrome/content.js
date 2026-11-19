@@ -467,11 +467,12 @@
   function stream(messages, onDelta, onDone, bound) {
     const v0 = S.vid, od = onDelta, oe = onDone;
     if (bound) { onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); }; }
-    if (S.port) { try { S.port.disconnect(); } catch {} }
+    if (S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
     const port = S.port = chrome.runtime.connect({ name: "chat" }); port.bound = !!bound; let fin = false;
     // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
     const ka = setInterval(() => { try { port.postMessage({ ping: 1 }); } catch {} }, 15000);
     const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); onDone(e, m); };
+    port.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
     port.onMessage.addListener(m => { if (m.stage && S.onStage) S.onStage(m.stage); if (m.reset && S.onReset) S.onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
     port.onDisconnect.addListener(() => end("\n\n⚠ The extension's background page stopped before the answer arrived. Press Regenerate."));
     port.postMessage({ messages });
@@ -705,6 +706,7 @@
   }
 
   async function summarize() {
+    const v0 = S.vid;
     S.summary = ""; S.shardMsg = ""; S.sty = $("sty").value; S.len = $("len").value; S.lng = $("lng").value;
     if (S.sty === "custom" && !(S.custom || "").trim()) return $("cp2")?.focus();
     const task = (S.sty === "custom" ? S.custom : STY[S.sty]) + " " + (S.sty === "mindmap" || S.sty === "chapters" || S.sty === "intel" ? "" : LEN[S.len]) + (S.lng !== "Auto" ? ` Write the answer in ${S.lng}.` : ""); render(); const bd = $("bd"), b = $("gen"); b.disabled = true; b.innerHTML = '<span class="spin"></span>Working'; S.sT0 = Date.now();
@@ -719,9 +721,10 @@
     let sys = SYS(); S.mapInfo = "";
     if ((S.model === "nougenopen:auto" || (S.model === "auto" && S.bridge)) && fullLen() > 14000) {
       try { const notes = await withAwake(() => mapNotes(bd));
+        if (S.vid !== v0) return;   // navigated away while mapping: these notes belong to the old video
         bd.innerHTML = loader("Combining the notes into your summary", S.mapInfo, S.sT0);
         sys = `You are NouGenTube, writing about the YouTube video "${vtitle()}". Below are grounded, timestamped notes covering the whole video in order. Use only these notes; keep [m:ss] timestamps. When you quote, use only passages that appear inside double quotes on the QUOTE: lines, exactly as written. Markdown only.\n\nNOTES:\n${notes}`;
-      } catch (e) { if (S.model === "auto") { sys = SYS(); S.mapInfo = ""; bd.innerHTML = loader("Finding the best available route", "", S.sT0); } else { S.summary = "⚠ " + e.message; b.disabled = false; b.textContent = "Regenerate"; return render(); } } }
+      } catch (e) { if (S.vid !== v0) return; if (S.model === "auto") { sys = SYS(); S.mapInfo = ""; bd.innerHTML = loader("Finding the best available route", "", S.sT0); } else { S.summary = "⚠ " + e.message; b.disabled = false; b.textContent = "Regenerate"; return render(); } } }
     stream([{ role: "system", content: sys }, { role: "user", content: task }], d => { S.summary += d; if (S.tab === "summary") bd.innerHTML = show(S.summary) + WRITING; },
       (e, fin) => { S.summary += e; if (fin) S.summary += `\n\n— ${fin.model}, ${fin.tokens} tokens, ${Math.round((Date.now() - S.sT0) / 1000)}s, ${fin.where}${S.mapInfo ? " · map: " + S.mapInfo : ""}${fin.failed && fin.failed.length ? ` · after ${fin.failed.length} failed route${fin.failed.length === 1 ? "" : "s"}` : ""}`; save(); render(); }, true);
   }
@@ -979,7 +982,7 @@
     if (!mount()) return setTimeout(load, 500);
     if (!alive()) return render();
     if (vid === S.vid) return;
-    if (S.port?.bound) { try { S.port.disconnect(); } catch {} S.port = null; }
+    if (S.port?.bound) { S.port.cancel(); try { S.port.disconnect(); } catch {} S.port = null; }
     Object.assign(S, { vid, lines: [], paras: [], err: null, summary: "", chat: [], hl: {}, q: "", tT0: Date.now(), tStage: "", shardMsg: "", morph: null, tr: null }); render();
     const st = (await chrome.storage.local.get(key()))[key()]; if (st) Object.assign(S, st);
     Object.assign(S, await chrome.storage.sync.get(["sty", "len", "lng", "custom"])); render(); note();
