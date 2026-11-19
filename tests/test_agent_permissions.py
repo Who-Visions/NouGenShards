@@ -9,7 +9,7 @@ from nougen_shards import agent_permissions as ap
 def settings(tmp_path, monkeypatch):
     path = tmp_path / ".claude" / "settings.json"
     monkeypatch.setenv(ap.ENV_SETTINGS_FILE, str(path))
-    for name in (ap.ENV_ALLOWLIST_FILE, ap.ENV_MCP_SERVER, ap.ENV_CLI_NAMES):
+    for name in (ap.ENV_ALLOWLIST_FILE, ap.ENV_MCP_SERVER, ap.ENV_CLI_NAMES, ap.ENV_GATEWAY_SERVER):
         monkeypatch.delenv(name, raising=False)
     return path
 
@@ -23,7 +23,7 @@ def test_fresh_machine_gets_the_list_and_no_backup(settings):
     assert report["changed"] is True and report["backup"] is None
     allow = read(settings)["permissions"]["allow"]
     assert "Bash(nougen recall:*)" in allow
-    assert "mcp__nougen-shards__shards_recall" in allow
+    assert "mcp__nougen-shards__recall_memory" in allow
     assert allow == report["rules"]
 
 
@@ -65,12 +65,12 @@ def test_existing_settings_are_preserved_and_backed_up(settings):
 def test_a_rule_the_person_denied_or_set_to_ask_stays_that_way(settings):
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({"permissions": {
-        "deny": ["mcp__nougen-shards__shards_capture"], "ask": ["Bash(nougen doctor:*)"]}}), encoding="utf-8")
+        "deny": ["mcp__nougen-shards__capture_experience"], "ask": ["Bash(nougen doctor:*)"]}}), encoding="utf-8")
     report = ap.apply()
     allow = read(settings)["permissions"]["allow"]
-    assert "mcp__nougen-shards__shards_capture" not in allow
+    assert "mcp__nougen-shards__capture_experience" not in allow
     assert "Bash(nougen doctor:*)" not in allow
-    assert set(report["left_alone"]) == {"mcp__nougen-shards__shards_capture", "Bash(nougen doctor:*)"}
+    assert set(report["left_alone"]) == {"mcp__nougen-shards__capture_experience", "Bash(nougen doctor:*)"}
 
 
 def test_apply_twice_adds_nothing_the_second_time(settings):
@@ -130,7 +130,35 @@ def test_connector_and_cli_names_come_from_the_environment(settings, monkeypatch
     monkeypatch.setenv(ap.ENV_MCP_SERVER, "my-node")
     monkeypatch.setenv(ap.ENV_CLI_NAMES, "nougen,ngs")
     rules = ap.load_rules()
-    assert "mcp__my-node__shards_recall" in rules and "Bash(ngs status:*)" in rules
+    assert "mcp__my-node__recall_memory" in rules and "Bash(ngs status:*)" in rules
     monkeypatch.setenv(ap.ENV_CLI_NAMES, "nougen; rm")
     with pytest.raises(ap.AgentPermissionsError):
         ap.load_rules()
+
+
+def test_every_local_tool_on_the_list_is_registered_by_the_local_server():
+    """The list drifted once: it named the hosted connector's tools for the
+    local server, so the rules matched nothing. Read the server's source rather
+    than importing it (the import is heavy and starts services)."""
+    import pathlib
+    import re
+    source = (pathlib.Path(ap.__file__).parent / "mcp.py").read_text(encoding="utf-8")
+    registered = set(re.findall(r"@mcp\.tool\([^)]*\)\s*(?:async\s+)?def\s+([a-z_0-9]+)", source))
+    missing = [t for t in ap.LOCAL_MCP_TOOLS if t not in registered]
+    assert not missing, f"not registered by nougen_shards.mcp: {missing}"
+    assert len(registered) > len(ap.LOCAL_MCP_TOOLS)      # control: the parse found the server's tools
+
+
+def test_hosted_connector_tools_are_added_only_when_its_name_is_given(settings, monkeypatch):
+    assert not any("shards_recall" in r for r in ap.load_rules())
+    monkeypatch.setenv(ap.ENV_GATEWAY_SERVER, "my-nougen")
+    rules = ap.load_rules()
+    assert "mcp__my-nougen__shards_recall" in rules
+    assert "mcp__nougen-shards__recall_memory" in rules
+
+
+def test_nothing_state_changing_or_code_running_is_on_either_tool_list():
+    risky = ("exec", "sandbox", "deploy", "forget", "retract", "send", "evolve", "rollback", "claim",
+             "release", "create", "put", "fetch", "crawl", "import", "verify", "solve", "review")
+    for tool in ap.LOCAL_MCP_TOOLS + ap.GATEWAY_MCP_TOOLS:
+        assert not any(word in tool for word in risky), tool

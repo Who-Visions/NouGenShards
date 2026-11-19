@@ -38,6 +38,7 @@ ENV_ALLOWLIST_FILE = "NOUGEN_AGENT_ALLOWLIST_FILE"
 ENV_SETTINGS_FILE = "NOUGEN_AGENT_SETTINGS_FILE"
 ENV_MCP_SERVER = "NOUGEN_AGENT_MCP_SERVER"
 ENV_CLI_NAMES = "NOUGEN_AGENT_CLI_NAMES"
+ENV_GATEWAY_SERVER = "NOUGEN_AGENT_GATEWAY_SERVER"
 
 _FALLBACK_MCP_SERVER = "nougen-shards"
 _FALLBACK_CLI_NAMES = "nougen"
@@ -48,8 +49,18 @@ MARKER_KEY = "nougenAgentPermissions"
 CLI_PREFIX_SUBCOMMANDS = ("recall", "status", "doctor", "search")
 # Exact commands: the bare inspection form only, never the form that changes state.
 CLI_EXACT_COMMANDS = ("vault-unify", "vault-unify --json", "tenant --help", "--version")
-# Tools on the person's own NouGen connector: reads, plus capture into their own vault.
-MCP_TOOLS = (
+# Tools on the local NouGen MCP server (``nougen_shards.mcp``, the server the
+# repository's own ``.mcp.json`` starts): reads, plus capture into the person's
+# own vault. A test checks every name here is really registered by that server.
+LOCAL_MCP_TOOLS = (
+    "recall_memory", "recall_window", "recall_layered", "recall_related",
+    "search_shards", "search_context", "get_memory_stats",
+    "capture_experience", "add_shard", "nougenmsg_inbox", "relay_open",
+)
+# The hosted connector exposes a different set of names. Its server name is
+# whatever the person called the connector, so these are added only when that
+# name is given (``NOUGEN_AGENT_GATEWAY_SERVER`` or ``--connector``).
+GATEWAY_MCP_TOOLS = (
     "shards_recall", "shards_search", "shards_status", "shards_window", "get_shard",
     "shards_capture", "fleet_whoami", "relay_latest", "relay_open", "relay_read",
     "nougenmsg_inbox", "nougenmsg_latest",
@@ -81,7 +92,10 @@ def default_rules() -> List[str]:
         rules += [f"Bash({cli} {sub}:*)" for sub in CLI_PREFIX_SUBCOMMANDS]
         rules += [f"Bash({cli} {cmd})" for cmd in CLI_EXACT_COMMANDS]
     for server in _names(ENV_MCP_SERVER, _FALLBACK_MCP_SERVER):
-        rules += [f"mcp__{server}__{tool}" for tool in MCP_TOOLS]
+        rules += [f"mcp__{server}__{tool}" for tool in LOCAL_MCP_TOOLS]
+    if os.environ.get(ENV_GATEWAY_SERVER, "").strip():
+        for server in _names(ENV_GATEWAY_SERVER, ""):
+            rules += [f"mcp__{server}__{tool}" for tool in GATEWAY_MCP_TOOLS]
     return rules
 
 

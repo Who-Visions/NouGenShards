@@ -2689,6 +2689,7 @@ def get_parser():
     p_agent_perms.add_argument("--apply", action="store_true", help="add the rules (default: only show them)")
     p_agent_perms.add_argument("--remove", action="store_true", help="take out the rules NouGen added")
     p_agent_perms.add_argument("--settings", help="settings file to edit (default: your Claude Code settings)")
+    p_agent_perms.add_argument("--connector", help="the name you gave the hosted NouGen connector, to cover its tools too")
     p_agent_perms.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_wishlist = subparsers.add_parser(
@@ -3620,6 +3621,8 @@ def cmd_agent_permissions(args):
     run without asking (nougen_shards/agent_permissions.py)."""
     from nougen_shards import agent_permissions  # pylint: disable=import-outside-toplevel
     settings = Path(args.settings) if getattr(args, "settings", None) else None
+    if getattr(args, "connector", None):
+        os.environ[agent_permissions.ENV_GATEWAY_SERVER] = args.connector
     try:
         if getattr(args, "remove", False):
             report = agent_permissions.remove(settings)
