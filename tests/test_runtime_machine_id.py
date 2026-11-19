@@ -134,3 +134,52 @@ def test_sent_message_source_carries_the_runtime_name(box, monkeypatch):
     _host(monkeypatch, "Monnas-Laptop.local")
     assert f"NouGenMsg-{m.current_machine_id()}" == "NouGenMsg-monnas-laptop"
     assert "standalone" not in m.current_machine_id()
+
+
+def test_failed_write_returns_the_stable_fallback_and_leaves_no_file(box, monkeypatch):
+    """A full disk must not escape as an error or leave an empty id file behind."""
+    import errno
+    from pathlib import Path
+    _host(monkeypatch, "localhost")
+    monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "")
+
+    def boom(self, *a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    first = m.current_machine_id()
+    assert re.fullmatch(r"device-[0-9a-f]{8}", first)
+    assert m.current_machine_id() == first
+    root = box / "root"
+    assert not (root / "machine_id").exists()
+    assert not list(root.glob("machine_id*")), "no temp file may be left behind"
+
+
+def test_empty_id_file_from_a_crashed_run_is_repaired(box, monkeypatch):
+    _host(monkeypatch, "localhost")
+    monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "os:fixed")
+    (box / "root").mkdir()
+    (box / "root" / "machine_id").write_text("")
+    got = m.current_machine_id()
+    assert (box / "root" / "machine_id").read_text().strip() == got
+    assert m.current_machine_id() == got
+
+
+def test_concurrent_first_processes_agree_on_one_id(tmp_path):
+    """Real processes, not threads: no seed, a cold root, all started together."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    src = str(Path(fleet_nodes.__file__).resolve().parents[1])
+    code = ("import sys,time;sys.path.insert(0,sys.argv[1]);"
+            "from nougen_shards import fleet_nodes as f;f._stable_seed=lambda:'';"
+            "t=float(sys.argv[2]);time.sleep(max(0,t-time.time()));print(f.device_id())")
+    import time
+    go = time.time() + 2.5
+    env = {**os.environ, "NOUGEN_ROOT": str(tmp_path / "root")}
+    procs = [subprocess.Popen([sys.executable, "-c", code, src, str(go)], env=env,
+                              stdout=subprocess.PIPE, text=True) for _ in range(6)]
+    outs = {p.communicate(timeout=60)[0].strip() for p in procs}
+    stored = (tmp_path / "root" / "machine_id").read_text().strip()
+    assert outs == {stored}

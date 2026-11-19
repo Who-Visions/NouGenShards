@@ -108,28 +108,52 @@ def device_id() -> str:
     if stored:
         return stored
     seed = _stable_seed()
-    candidate = ("device-" + hashlib.sha256(seed.encode()).hexdigest()[:8]) if seed else ""
+    fallback = "device-" + hashlib.sha256((seed or _weak_seed()).encode()).hexdigest()[:8]
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        # Another caller is creating it right now; wait for its value to land.
-        for _ in range(10):
-            stored = _read_id(path)
-            if stored:
-                return stored
-            time.sleep(0.02)
-        return candidate or "device-" + hashlib.sha256(_weak_seed().encode()).hexdigest()[:8]
+        candidate = ("device-" + hashlib.sha256(seed.encode()).hexdigest()[:8]) if seed \
+            else "device-" + uuid.uuid4().hex[:8]
+        # Write the whole id to a private temp file, then publish it with an
+        # atomic hard link: the id file either does not exist or is complete,
+        # never half-written, so a loser of the race always reads the winner's
+        # full value and no reader has to wait or guess.
+        # A random suffix, not pid + clock: threads of one process share the pid and
+        # the Windows clock is coarse, so those names collide and two callers would
+        # write the same temp file.
+        tmp = path.with_name("%s.%s.tmp" % (path.name, uuid.uuid4().hex))
+        tmp.write_text(candidate + "\n", encoding="utf-8")
+        try:
+            os.link(str(tmp), str(path))
+            return candidate
+        except (FileExistsError, PermissionError):
+            # Someone else published first. On Windows a read can fail for a moment
+            # while the winner's temp file is being unlinked, so an unreadable file
+            # is retried, never mistaken for a corrupt one.
+            for _ in range(25):
+                try:
+                    stored = _slug(path.read_text(encoding="utf-8"))
+                except OSError:
+                    stored = None
+                if stored:
+                    return stored
+                if stored == "":
+                    # Exists and is empty: left by a crashed run. Repair it.
+                    os.replace(str(tmp), str(path))
+                    tmp = None
+                    return candidate
+                time.sleep(0.02)
+            return fallback
     except OSError:
-        return "device-" + hashlib.sha256((seed or _weak_seed()).encode()).hexdigest()[:8]
-    # The file is ours alone now (exclusive create), so a random id is safe to draw
-    # and every later reader sees this one.
-    candidate = candidate or "device-" + uuid.uuid4().hex[:8]
-    try:
-        os.write(fd, (candidate + "\n").encode("utf-8"))
+        # Read-only home, full disk, or no hard-link support: a stable id that is
+        # not persisted, so it is the same on every run.
+        return fallback
     finally:
-        os.close(fd)
-    return candidate
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def local_node() -> str:
