@@ -205,3 +205,4 @@ projects/
 *.bak*
 bin/ngs-node.sh.bak*
 ~/
+!extensions/nougentube-chrome/icons/*.png
