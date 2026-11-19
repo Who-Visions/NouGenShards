@@ -21,7 +21,7 @@ def _huge_hits():
 @pytest.fixture
 def stub_retrieve(monkeypatch):
     monkeypatch.setattr(shards_mcp, "federated_retrieve",
-                        lambda query, limit=3, sweep_report=None: _huge_hits())
+                        lambda query, limit=3, sweep_report=None, **_kwargs: _huge_hits())
 
 
 def test_default_budget_truncates_a_huge_first_record(stub_retrieve, monkeypatch):
