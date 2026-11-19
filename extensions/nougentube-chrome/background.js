@@ -89,6 +89,7 @@ async function* lines(r) {
   const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
   for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true });
     const ls = buf.split("\n"); buf = ls.pop(); for (const l of ls) if (l.trim()) yield l.trim(); }
+  if (buf.trim()) yield buf.trim();
 }
 
 // ---- one function per wire format; each streams text through emit() and returns a receipt ----
@@ -195,7 +196,7 @@ chrome.runtime.onConnect.addListener(port => {
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
       try {
         const r = await fetch(NGO + "/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
-        const j = await r.json();
+        const t = await r.text(); let j = {}; try { j = JSON.parse(t); } catch {}
         send(r.ok ? bridge.ok(j) : { ok: false, error: j.error?.message || ("bridge said " + r.status), code: r.status });
       } catch (e) {
         if (closed) return;

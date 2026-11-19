@@ -268,6 +268,10 @@
     const where = slot(); if (!where) return false;
     host = document.createElement("div"); host.id = "nougentube"; host.style.cssText = "top:72px;z-index:5;display:block"; where.el.prepend(host); place();
     root = host.attachShadow({ mode: "open" });
+    // Action chips are spans; give each actionable one button semantics, focus and Enter/Space activation.
+    const chipify = () => root.querySelectorAll("span.chip").forEach(c => { if ((c.id || c.attributes.length > 2 || c.onclick) && !c.hasAttribute("tabindex")) { c.setAttribute("role", "button"); c.tabIndex = 0; } });
+    new MutationObserver(chipify).observe(root, { childList: true, subtree: true });
+    root.addEventListener("keydown", e => { const c = e.target; if (c?.matches?.("span.chip[role=button]") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); c.click(); } });
     root.innerHTML = `<style>${CSS}</style><div class="p">
       <div class="hd"><div class="lg">N</div><div class="ti">NouGenTube<small id="mdl"></small></div>
         <button class="chip" id="hs" title="Save this video to NouGenShards: the full transcript, plus the summary if you have made one">Shard</button><button class="ib" id="th" title="Theme">◐</button><button class="ib" id="key" title="Settings: provider keys and routes">⚙</button><button class="ib" id="cp" title="Copy transcript">⧉</button><button class="ib" id="dl" title="Export">⤓</button><div class="menu" id="menu" hidden><button data-x="md">Markdown (everything)</button><button data-x="txt">Transcript .txt</button><button data-x="srt">Subtitles .srt</button><button data-x="plain">Transcript, no timestamps</button><button data-x="obsidian">Obsidian note .md</button><button data-x="html">Readable page .html</button><button data-x="csv">Highlights + transcript .csv</button><button data-x="json">Everything .json</button></div>
@@ -459,6 +463,7 @@
     quiz: "Write 5 multiple-choice questions testing the key ideas. Each: question, options A-D, then \"Answer: X — [m:ss]\".",
     custom: "", brief: "Give a one-line gist, then 5-8 key points as bullets, each with its timestamp.", deep: "Give a sectioned deep-dive: ### headings per topic in order, bullets under each with timestamps, then 'Recommended to watch' (the 3 most valuable moments as [m:ss] links with why), 'Notable quotes' and 'Action items'.", steps: "Extract the procedure as numbered steps with timestamps, plus prerequisites and gotchas.", tldr: "Three sentences max, plus the single most important timestamp." };
   function stream(messages, onDelta, onDone) {
+    const v0 = S.vid, od = onDelta, oe = onDone; onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); };
     if (S.port) { try { S.port.disconnect(); } catch {} }
     const port = S.port = chrome.runtime.connect({ name: "chat" }); let fin = false;
     // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
@@ -971,6 +976,7 @@
     if (!mount()) return setTimeout(load, 500);
     if (!alive()) return render();
     if (vid === S.vid) return;
+    if (S.port) { try { S.port.disconnect(); } catch {} S.port = null; }
     Object.assign(S, { vid, lines: [], paras: [], err: null, summary: "", chat: [], hl: {}, q: "", tT0: Date.now(), tStage: "", shardMsg: "", morph: null, tr: null }); render();
     const st = (await chrome.storage.local.get(key()))[key()]; if (st) Object.assign(S, st);
     Object.assign(S, await chrome.storage.sync.get(["sty", "len", "lng", "custom"])); render(); note();
