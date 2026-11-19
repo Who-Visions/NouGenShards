@@ -37,6 +37,7 @@ async function cfg() {
   const prov = local.prov || {};
   // One-time carry-over of the key saved by earlier versions (⚙ prompt).
   if (local.nvKey && !prov.nvidia) { prov.nvidia = { key: local.nvKey, model: "google/gemma-4-31b-it" }; chrome.storage.local.set({ prov }); }
+  if (local.nvKey) chrome.storage.local.remove("nvKey");   // migrated (or superseded); deleting the provider must not resurrect it
   const c = { ...DEF, ...sync, prov };
   if (String(c.model).startsWith("nvidia:")) c.model = "prov:nvidia";   // old picker value
   return c;

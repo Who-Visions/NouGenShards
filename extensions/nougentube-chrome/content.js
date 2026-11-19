@@ -603,7 +603,8 @@
     if ($("tg").value === "custom" && !custom) return $("tgc")?.focus();
     const M = S.morph = { target: $("tg").value, custom, text: "", shards: [], prior: [], queries: [], t0: Date.now(), busy: true, err: "", vaultOff: "", web: [], webOff: "", webVia: "", v21: true };
     const release = holdAwake(); let step = 0;
-    const bd = $("bd"), stage = (t, sub = "") => { progress(++step + "/4"); if (S.tab === "morph") bd.innerHTML = loader(t, sub, M.t0); };
+    const v0 = S.vid, here = () => S.vid === v0 && S.morph === M;   // navigation replaces S; a stale run writes nowhere
+    const bd = $("bd"), stage = (t, sub = "") => { progress(++step + "/4"); if (here() && S.tab === "morph") bd.innerHTML = loader(t, sub, M.t0); };
     renderMorph();
     try {
       // 1. What is this video really teaching? Reduce it to phrases the vault can be searched for.
@@ -659,11 +660,11 @@
         `### First build steps\n5-8 ordered, concrete steps, each small enough to finish in one sitting.\n### Gaps\nWhat the vault lacks for this build and what to capture or learn next.` + V21_ASK + (S.lng && S.lng !== "Auto" ? `\nWrite in ${S.lng}.` : "");
       S.onStage = t => { if (!M.text) stage(t); }; S.onReset = () => { M.text = ""; };
       await new Promise((res, rej) => stream([{ role: "system", content: sys }, { role: "user", content: task }],
-        d => { M.text += d; if (S.tab === "morph") bd.innerHTML = `<div class="md">${md(M.text)}</div>` + WRITING; },
+        d => { M.text += d; if (here() && S.tab === "morph") bd.innerHTML = `<div class="md">${md(M.text)}</div>` + WRITING; },
         (e, fin) => { if (e) return rej(new Error(e.replace(/^[\s⚠]+/, "")));
           M.text += `\n\n— ${fin.model}, ${fin.tokens} tokens, ${Math.round((Date.now() - M.t0) / 1000)}s, ${fin.where}${fin.failed && fin.failed.length ? ` · after ${fin.failed.length} failed route${fin.failed.length === 1 ? "" : "s"}` : ""}`; res(); }));
     } catch (e) { M.err = String(e.message || e); }
-    release(); M.busy = false; save(); renderMorph();
+    release(); M.busy = false; if (here()) { save(); renderMorph(); }
   }
   // Shards cited must be ones the vault returned, web tags ones the search found, all 21 steps present in order, timestamps inside the video.
   function morphCheck(M) {
@@ -731,7 +732,7 @@
   function ask(q) {
     S.chat.push({ role: "user", content: q }, { role: "assistant", content: "" }); render(); const a = S.chat[S.chat.length - 1];
     S.onStage = null; S.onReset = () => { a.content = ""; };
-    stream([{ role: "system", content: SYS() + (S.lng && S.lng !== "Auto" ? `\nAlways answer in ${S.lng}.` : "") }, ...S.chat.slice(0, -1).filter(m => m.scope !== "lib").slice(-10)], d => { a.content += d; if (S.tab === "chat") { const ms = $("bd").querySelectorAll(".msg"); ms[ms.length - 1].innerHTML = md(a.content); $("bd").scrollTop = 1e9; } },
+    stream([{ role: "system", content: SYS() + (S.lng && S.lng !== "Auto" ? `\nAlways answer in ${S.lng}.` : "") }, ...S.chat.slice(0, -1).filter(m => m.scope !== "lib").slice(-10)], d => { a.content += d; const ms = S.tab === "chat" && S.scope !== "lib" ? $("bd")?.querySelectorAll(".msg") : null, el = ms?.[ms.length - 1]; if (el) { el.innerHTML = md(a.content); $("bd").scrollTop = 1e9; } },
       e => { a.content += e; save(); render(); }, true);
   }
 
@@ -855,6 +856,7 @@
     it.status = "transcript"; it.err = ""; stage("Getting the transcript (captions first, then audio on this computer)");
     const t = await tubeCall("transcript", { video_id: it.id, audio: "auto", max_minutes: 150 });
     if (!t || !t.ok) throw new Error((t && t.error) || "the NouGenOpen bridge did not answer");
+    if (!t.lines?.length) throw new Error("no transcript lines came back");
     it.title = it.title || t.title || it.id; it.src = t.source === "whisper" ? "audio" : "captions"; S.bt.mem[it.id] = t.lines;
     it.status = "summary";
     const r = await summarizeLines(t.lines, it.title, S.bt.sty || "brief", stage);

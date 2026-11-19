@@ -223,3 +223,4 @@ ops/launchd/
 
 # local git worktree checkouts
 wt/
+extensions/nougentube-chrome/_metadata/
