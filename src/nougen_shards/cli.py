@@ -2683,6 +2683,14 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_agent_perms = subparsers.add_parser(
+        "agent-permissions",
+        help="Let your coding agent run the read-only NouGen commands without asking each time")
+    p_agent_perms.add_argument("--apply", action="store_true", help="add the rules (default: only show them)")
+    p_agent_perms.add_argument("--remove", action="store_true", help="take out the rules NouGen added")
+    p_agent_perms.add_argument("--settings", help="settings file to edit (default: your Claude Code settings)")
+    p_agent_perms.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_wishlist = subparsers.add_parser(
         "wishlist", help="Track the canonical 100-item resilience/context wishlist "
                         "(leg 20260910T202128Z, rebroadcast 20260923T174020Z)")
@@ -3605,6 +3613,42 @@ def cmd_wishlist(args):
 
     print(f"unknown wishlist subcommand: {sub!r}")
     raise SystemExit(1)
+
+
+def cmd_agent_permissions(args):
+    """Show, add or remove the short list of NouGen commands a coding agent may
+    run without asking (nougen_shards/agent_permissions.py)."""
+    from nougen_shards import agent_permissions  # pylint: disable=import-outside-toplevel
+    settings = Path(args.settings) if getattr(args, "settings", None) else None
+    try:
+        if getattr(args, "remove", False):
+            report = agent_permissions.remove(settings)
+        elif getattr(args, "apply", False):
+            report = agent_permissions.apply(settings)
+        else:
+            report = agent_permissions.apply(settings, dry_run=True)
+    except agent_permissions.AgentPermissionsError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "json", False):
+        print(json.dumps(dict(report, ok=True)))
+        return
+    print(f"Settings file: {report['settings']}")
+    if "removed" in report:
+        print(f"Removed {len(report['removed'])} rule(s) that NouGen had added.")
+    else:
+        verb = "Added" if report.get("changed") else "Would add"
+        print(f"{verb} {len(report['to_add'])} rule(s); {len(report['already_allowed'])} already allowed; "
+              f"{len(report['left_alone'])} left alone because you set them to deny or ask.")
+        for rule in report["to_add"]:
+            print(f"  {rule}")
+        if not report.get("changed") and report["to_add"]:
+            print("Nothing was written. Run again with --apply to add them.")
+    if report.get("backup"):
+        print(f"Backup of the previous settings: {report['backup']}")
 
 
 def cmd_doctor(args):
@@ -4719,7 +4763,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
+        "doctor": cmd_doctor, "agent-permissions": cmd_agent_permissions, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,
