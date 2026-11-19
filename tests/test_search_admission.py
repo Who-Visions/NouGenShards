@@ -102,3 +102,120 @@ def test_slot_held_until_straggler_lane_finishes(monkeypatch):
         time.sleep(0.02)
     else:
         raise AssertionError("slot never released after lane finished")
+
+
+def test_v1_recall_local_and_federated_respect_hard_guard(monkeypatch):
+    from dataclasses import dataclass
+    from nougen_shards import core
+
+    @dataclass
+    class _FakeRecallResult:
+        query: str
+        hits: list
+        federation_fanout_count: int
+        scope: str
+
+    node, c = _client(monkeypatch, [])
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_WAITING", "0")
+    monkeypatch.setenv("NOUGEN_RECALL_WAIT_S", "0")
+    core.reset_search_admission()
+
+    class _FakeSvc:
+        def __init__(self, **kw):
+            pass
+
+        async def recall(self, query, limit, corr_id):
+            return _FakeRecallResult(query=query, hits=[], federation_fanout_count=0, scope="federated")
+
+    monkeypatch.setattr(node, "_federation_v1", lambda: (lambda: [], lambda **kw: None, _FakeSvc))
+
+    gate = core.search_admission()
+    try:
+        gate.enter()
+        try:
+            r_local = c.post("/v1/recall", json={"query": "x", "limit": 3, "scope": "local"},
+                             headers={"X-NGS-Token": "tok"})
+            r_fed = c.post("/v1/recall", json={"query": "x", "limit": 3, "scope": "federated"},
+                           headers={"X-NGS-Token": "tok"})
+        finally:
+            gate.leave()
+        assert r_local.status_code == 503
+        assert r_local.headers.get("X-NouGen-Busy") == "hard"
+        assert "Retry-After" in r_local.headers
+        assert r_fed.status_code == 503
+        assert r_fed.headers.get("X-NouGen-Busy") == "hard"
+
+        r_ok = c.post("/v1/recall", json={"query": "x", "limit": 3, "scope": "federated"},
+                      headers={"X-NGS-Token": "tok"})
+        assert r_ok.status_code == 200
+        assert r_ok.json()["scope"] == "federated"
+    finally:
+        core.reset_search_admission()
+
+
+def test_mcp_recall_tools_respect_hard_guard(monkeypatch):
+    from nougen_shards import core, mcp as mcp_mod
+
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_WAITING", "0")
+    monkeypatch.setenv("NOUGEN_RECALL_WAIT_S", "0")
+    core.reset_search_admission()
+
+    gate = core.search_admission()
+    try:
+        gate.enter()
+        try:
+            for out in (
+                mcp_mod.recall_memory("x"),
+                mcp_mod.recall_window(when="today"),
+                mcp_mod.recall_layered("x"),
+                mcp_mod.recall_related(1),
+            ):
+                assert out.startswith("Recall busy:"), out
+        finally:
+            gate.leave()
+    finally:
+        core.reset_search_admission()
+
+
+def test_mcp_recall_memory_holds_admission_until_straggler_lane_finishes(monkeypatch):
+    import concurrent.futures
+    import time
+    from nougen_shards import core, mcp as mcp_mod
+
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_INFLIGHT", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_WAITING", "0")
+    monkeypatch.setenv("NOUGEN_RECALL_WAIT_S", "0")
+    core.reset_search_admission()
+
+    straggler = concurrent.futures.Future()
+
+    def fake_fed(query, limit=3, sweep_report=None, lane_futures=None, **kw):
+        if lane_futures is not None:
+            lane_futures.append(straggler)
+        return []
+
+    monkeypatch.setattr(mcp_mod, "federated_retrieve", fake_fed)
+
+    try:
+        out = mcp_mod.recall_memory("x")
+        assert out == "No relevant shards found in the memory substrate."
+        # Straggler lane still running: admission slot must still be held.
+        assert mcp_mod.recall_memory("y").startswith("Recall busy:")
+
+        straggler.set_result([])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not mcp_mod.recall_memory("z").startswith("Recall busy:"):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("MCP admission slot never released after straggler finished")
+    finally:
+        if not straggler.done():
+            straggler.set_result([])
+        core.reset_search_admission()
