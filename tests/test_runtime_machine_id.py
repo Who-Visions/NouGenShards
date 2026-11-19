@@ -155,14 +155,17 @@ def test_failed_write_returns_the_stable_fallback_and_leaves_no_file(box, monkey
     assert not list(root.glob("machine_id*")), "no temp file may be left behind"
 
 
-def test_empty_id_file_from_a_crashed_run_is_repaired(box, monkeypatch):
+def test_empty_id_file_is_left_alone_and_answers_with_the_stable_fallback(box, monkeypatch):
+    """Overwriting a truncated file would race callers into different ids; do not."""
     _host(monkeypatch, "localhost")
     monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "os:fixed")
     (box / "root").mkdir()
     (box / "root" / "machine_id").write_text("")
-    got = m.current_machine_id()
-    assert (box / "root" / "machine_id").read_text().strip() == got
-    assert m.current_machine_id() == got
+    first = m.current_machine_id()
+    assert re.fullmatch(r"device-[0-9a-f]{8}", first)
+    assert all(m.current_machine_id() == first for _ in range(3))
+    assert (box / "root" / "machine_id").read_text() == ""
+
 
 
 def test_concurrent_first_processes_agree_on_one_id(tmp_path):

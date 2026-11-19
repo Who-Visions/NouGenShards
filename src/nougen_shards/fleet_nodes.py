@@ -138,10 +138,11 @@ def device_id() -> str:
                 if stored:
                     return stored
                 if stored == "":
-                    # Exists and is empty: left by a crashed run. Repair it.
-                    os.replace(str(tmp), str(path))
-                    tmp = None
-                    return candidate
+                    # Exists and is empty. Publishing is atomic, so a run of this code
+                    # cannot leave one; someone truncated it. Overwriting would race
+                    # other callers into different ids, so leave it alone and answer
+                    # with the stable fallback.
+                    return fallback
                 time.sleep(0.02)
             return fallback
     except OSError:
