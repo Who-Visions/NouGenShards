@@ -471,7 +471,7 @@ class AgentPinger:
             out.append({
                 "session_id": sid,
                 "project": project or cwd,
-                "machine": str(entry.get("machine") or get_current_node()),
+                "machine": str(entry.get("machine") or current_machine_id()),
                 "agent": str(entry.get("agent") or "claude"),
                 "registered_utc": str(entry.get("registered_utc") or ""),
                 "live": _base(sock) in live,
@@ -501,7 +501,7 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        source = f"NouGenMsg-{get_current_node()}"
+        source = f"NouGenMsg-{current_machine_id()}"
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
         try:
@@ -645,8 +645,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -741,8 +741,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -1151,7 +1151,7 @@ class NouGenMsgBus:
                     """, (
                         msg_id,
                         envelope.get("timestamp") or time.time(),
-                        envelope.get("machine") or get_current_node(),
+                        envelope.get("machine") or current_machine_id(),
                         envelope.get("original_sender") or envelope.get("lane") or "agent",
                         node or get_current_node(),
                         target,
@@ -2160,9 +2160,21 @@ def _registry_node_names() -> set:
     return _full_registry_node_names()
 
 
-def _self_node_name() -> str:
+def current_machine_id() -> str:
+    """The name this box stamps on what it sends, on any computer or device.
+
+    A box listed in fleet_hosts.json keeps its fleet node name. Every other box
+    (a new laptop, a phone, a tenant's PC) is named at runtime from its own
+    hostname or a persisted device id, never the literal "standalone", so a
+    reply always says which machine it came from. Routing decisions still use
+    get_current_node(), whose "standalone" means "no fleet configured here".
+    """
     n = get_current_node()
     return local_node() if not n or n == "standalone" else n
+
+
+def _self_node_name() -> str:
+    return current_machine_id()
 
 
 def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
