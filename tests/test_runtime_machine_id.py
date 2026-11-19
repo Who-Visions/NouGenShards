@@ -28,13 +28,13 @@ def _host(monkeypatch, name):
 
 
 def test_unlisted_laptop_is_named_from_its_hostname(box, monkeypatch):
-    _host(monkeypatch, "Monnas-Laptop.local")
+    _host(monkeypatch, "Family-Laptop.local")
     assert m.get_current_node() == "standalone"          # routing semantics unchanged
-    assert m.current_machine_id() == "monnas-laptop"     # but the reply says who it is
+    assert m.current_machine_id() == "family-laptop"     # but the reply says who it is
 
 
 def test_hostname_is_slugged_so_it_is_safe_in_a_header_and_path(box, monkeypatch):
-    _host(monkeypatch, "Dave's iPhone (2)")
+    _host(monkeypatch, "Field Tablet (2)")
     assert re.fullmatch(r"[a-z0-9-]+", m.current_machine_id())
 
 
@@ -131,8 +131,8 @@ def test_node_name_env_pins_the_name_everywhere(box, monkeypatch):
 
 def test_sent_message_source_carries_the_runtime_name(box, monkeypatch):
     """The stamp on the wire is the runtime name, never the word standalone."""
-    _host(monkeypatch, "Monnas-Laptop.local")
-    assert f"NouGenMsg-{m.current_machine_id()}" == "NouGenMsg-monnas-laptop"
+    _host(monkeypatch, "Family-Laptop.local")
+    assert f"NouGenMsg-{m.current_machine_id()}" == "NouGenMsg-family-laptop"
     assert "standalone" not in m.current_machine_id()
 
 
@@ -186,3 +186,13 @@ def test_concurrent_first_processes_agree_on_one_id(tmp_path):
     outs = {p.communicate(timeout=60)[0].strip() for p in procs}
     stored = (tmp_path / "root" / "machine_id").read_text().strip()
     assert outs == {stored}
+
+
+def test_origin_envelope_carries_the_runtime_name_not_standalone(box, monkeypatch):
+    """live_ping builds original_sender/machine from the envelope; it must not say standalone."""
+    _host(monkeypatch, "Family-Laptop.local")
+    env = m.NouGenMsgBus._origin_envelope({})
+    assert env["machine"] == "family-laptop"
+    assert env["transport_machine"] == "family-laptop"
+    assert "standalone" not in env["original_sender"]
+    assert "family-laptop" in env["original_sender"]

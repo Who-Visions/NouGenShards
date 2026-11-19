@@ -1013,7 +1013,7 @@ class NouGenMsgBus:
     def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
-        current = get_current_node()
+        current = current_machine_id()
         lane = cls._sender_lane(supplied)
         if lane:
             # Bookkeeping only: record that this lane spoke, for reply routing.
