@@ -208,6 +208,9 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         _distill.mark_sent(session_id, sent)
     else:
         packet = compile_recall_packet(shards_list, token_budget=token_budget)
+    # Disagreeing shards are named, not hidden or resolved (conflict_set.py).
+    from nougen_shards import conflict_set as _conflict_set  # pylint: disable=import-outside-toplevel
+    packet = _conflict_set.annotate(packet, shards_list)
     if holes:
         packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
                    + "Shards below are real; absence below proves nothing.")
