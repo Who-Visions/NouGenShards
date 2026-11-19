@@ -98,7 +98,41 @@ def say(text: str, persona: str = "rhea", out: str | None = None, timeout: float
     path = out or os.path.join(OUT_DIR, f"{persona}-{time.strftime('%Y%m%dT%H%M%S')}.wav")
     with open(path, "wb") as f:
         f.write(wav)
+    _auto_prune_clips(OUT_DIR)
     return path
+
+
+def _auto_prune_clips(directory: str = OUT_DIR, max_clips: int = 20, max_age_seconds: float = 3600.0) -> int:
+    """Rolling prune: removes temporary speech clips older than max_age_seconds or beyond max_clips count."""
+    pruned = 0
+    try:
+        if not os.path.isdir(directory):
+            return 0
+        now = time.time()
+        files = []
+        for name in os.listdir(directory):
+            if not name.endswith(".wav") or name.endswith("-first-words.wav"):
+                continue
+            fpath = os.path.join(directory, name)
+            try:
+                mtime = os.path.getmtime(fpath)
+                files.append((mtime, fpath))
+            except OSError:
+                continue
+        # Sort newest first
+        files.sort(key=lambda x: x[0], reverse=True)
+        # Delete if beyond max_clips or (beyond 10 recent and older than max_age_seconds)
+        for i, (mtime, fpath) in enumerate(files):
+            age = now - mtime
+            if (i >= max_clips) or (i >= 10 and age > max_age_seconds):
+                try:
+                    os.remove(fpath)
+                    pruned += 1
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return pruned
 
 
 def main() -> int:

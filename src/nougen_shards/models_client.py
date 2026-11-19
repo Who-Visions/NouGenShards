@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from . import keymaker
 from . import structured
+from .lane_header import LaneTools
+from .response_contract import response_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,17 @@ class ModelBudgetConfig:
 class LLMClient(ABC):
     """Abstract base class for all LLM clients."""
 
+    # Tools this lane has. Default is none, so a client must declare tools
+    # before a task that needs them is routed to it.
+    lane_tools: LaneTools = LaneTools("unnamed")
+
+    def _with_lane_header(self, messages: list) -> list:
+        """Prepend the lane's tool header once, so the model knows what it can check."""
+        header = {"role": "system", "content": self.lane_tools.header()}
+        if messages and messages[0] == header:
+            return list(messages)
+        return [header] + list(messages)
+
     @abstractmethod
     def is_alive(self) -> bool:
         """Check if the service is reachable/configured."""
@@ -66,6 +79,16 @@ class LLMClient(ABC):
     @abstractmethod
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         """Send chat request."""
+
+    def chat_with_metadata(self, model: str, messages: list, stream: bool = False) -> dict:
+        """Compatibility wrapper returning text plus explicit unknown provenance.
+
+        Providers that expose response metadata should override this method.
+        The wrapper never infers provider identity from generated prose.
+        """
+        content = self.chat(model, messages, stream=stream)
+        meta = response_metadata(model, None, content, None)
+        return {"content": content, **meta.to_dict()}
 
     @abstractmethod
     def embed(self, model: str, text: str) -> list:
@@ -253,6 +276,12 @@ class AnthropicClient(LLMClient):
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
 
+    def embed(self, model: str, text: str) -> list:
+        return []
+
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
+
     def _stream_chat(self, response) -> str:
         full_content = ""
         for line in response:
@@ -268,12 +297,6 @@ class AnthropicClient(LLMClient):
                 except (json.JSONDecodeError, KeyError):
                     continue
         return full_content
-
-    def embed(self, model: str, text: str) -> list:
-        return []
-
-    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
-        return [[] for _ in texts]
 
 
 class GeminiClient(LLMClient):
@@ -494,6 +517,8 @@ def _openrouter_fallback_limit() -> int:
 
 
 class OpenRouterClient(OpenAIClient):
+    lane_tools = LaneTools("openrouter")
+
     """Client for OpenRouter (Unified API)."""
     def __init__(self, api_key: Optional[str] = None):
         super().__init__(api_key=api_key or keymaker.get_secret("OPENROUTER_API_KEY"))
@@ -526,7 +551,7 @@ class OpenRouterClient(OpenAIClient):
             req = urllib.request.Request(f"{self.base_url}/models", method="GET")
             if self.api_key:
                 req.add_header("Authorization", f"Bearer {self.api_key}")
-            req.add_header("HTTP-Referer", "https://whovisions.com")
+            req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
             req.add_header("X-OpenRouter-Title", "NouGenShards")
             with urllib.request.urlopen(req, timeout=15) as res:
                 data = json.loads(res.read().decode())
@@ -547,16 +572,28 @@ class OpenRouterClient(OpenAIClient):
         return list(FREE_MODEL_SEED)
 
     def preferred_free_model(self, preference: Optional[str] = None) -> str:
-        """Resolve a single free model DYNAMICALLY from the live roster. Prefer
-        the first roster entry matching ``preference`` (substring), else the top
-        of the live roster; only falls back to the seed when discovery is empty.
-        No call site should hardcode a model string — call this instead."""
+        """Resolve a free model DYNAMICALLY from the live roster.
+        Supports explicit preference, environment overrides, or dynamic multi-model rotation
+        across the full frontier set (Nemotron, Gemma, Ling, LFM, Inkling, etc.)."""
         roster = self.get_free_models()
-        if preference:
+        if not roster:
+            return FREE_MODEL_SEED[0]
+
+        env_pref = os.environ.get("NOUGEN_MSG_OPENROUTER_MODEL", "").strip() or os.environ.get("NOUGEN_OPENROUTER_PREFERENCE", "").strip()
+        pref = preference or env_pref
+
+        # If user explicitly specifies a model preference (e.g. 'nemotron', 'gemma', 'ling')
+        if pref and pref.lower() not in ("random", "rotate", "auto", "dynamic"):
             for mid in roster:
-                if preference.lower() in mid.lower():
+                if pref.lower() in mid.lower():
                     return mid
-        return roster[0] if roster else FREE_MODEL_SEED[0]
+
+        # Dynamic Frontier Rotation: choose from capable free models instead of hard-pinning roster[0]
+        import random
+        # Pool capable frontier architectures
+        priority_models = [m for m in roster if any(k in m.lower() for k in ["nemotron", "gemma", "ling", "lfm", "inkling", "north"])]
+        pool = priority_models if priority_models else roster
+        return random.choice(pool)
 
     def bounded_fallback_models(self, primary: Optional[str] = None,
                                 roster: Optional[list] = None) -> list:
@@ -598,7 +635,7 @@ class OpenRouterClient(OpenAIClient):
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
             return "Error: OR Key missing."
-        messages = self._inject_persona(messages)
+        messages = self._with_lane_header(self._inject_persona(messages))
         payload = {"model": model, "messages": messages, "stream": stream}
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -607,7 +644,7 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
@@ -618,6 +655,45 @@ class OpenRouterClient(OpenAIClient):
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
 
+    def chat_with_metadata(self, model: str, messages: list, stream: bool = False) -> dict:
+        """OpenRouter response with provider-reported model and finish state."""
+        if not self.api_key:
+            content = "Error: OR Key missing."
+            meta = response_metadata(model, None, content, None)
+            return {"content": content, **meta.to_dict()}
+        messages = self._with_lane_header(self._inject_persona(messages))
+        payload = {"model": model, "messages": messages, "stream": stream}
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=json.dumps(payload).encode(), method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
+        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("X-OpenRouter-Title", "NouGenShards")
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+                if stream:
+                    content = self._stream_chat(res)
+                    raw = {}
+                    actual, finish, refusal = None, None, None
+                else:
+                    raw = json.loads(res.read().decode())
+                    choice = (raw.get("choices") or [{}])[0]
+                    message = choice.get("message") or {}
+                    content = message.get("content", "") or ""
+                    actual = raw.get("model")
+                    finish = choice.get("finish_reason")
+                    refusal = message.get("refusal")
+            meta = response_metadata(model, actual, content, finish, refusal)
+            return {"content": content, "usage": self._extract_usage_metadata(raw) if not stream else {},
+                    **meta.to_dict()}
+        except Exception as exc:
+            content = f"Error: {exc}"
+            meta = response_metadata(model, None, content, None)
+            return {"content": content, "error": str(exc), **meta.to_dict()}
+
+
+
     def chat_with_fallback(self, model: str, messages: list,
                            fallback_models: Optional[list] = None, session_id: Optional[str] = None,
                            stream: bool = False, **kwargs) -> dict:
@@ -625,9 +701,11 @@ class OpenRouterClient(OpenAIClient):
         Executes a chat request with OpenRouter model fallback.
         """
         if not self.api_key:
-            return {"content": "Error: OR Key missing.", "model": "unknown"}
+            meta = response_metadata(model, None, "", None)
+            return {"content": "Error: OR Key missing.", "model": meta.actual_model,
+                    **meta.to_dict()}
 
-        messages = self._inject_persona(messages)
+        messages = self._with_lane_header(self._inject_persona(messages))
         bounded_models = self.bounded_fallback_models(model, fallback_models)
         payload = {
             "model": model,
@@ -653,7 +731,7 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
@@ -661,15 +739,24 @@ class OpenRouterClient(OpenAIClient):
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     choice = resp_data.get("choices", [{}])[0]
+                    content = choice.get("message", {}).get("content", "") or ""
+                    meta = response_metadata(model, resp_data.get("model"), content,
+                                             choice.get("finish_reason"),
+                                             (choice.get("message") or {}).get("refusal"))
                     return {
-                        "content": choice.get("message", {}).get("content", ""),
-                        "model": resp_data.get("model", model),
+                        "content": content,
+                        "model": meta.actual_model,
+                        **meta.to_dict(),
                         "usage": self._extract_usage_metadata(resp_data),
                         "finish_reason": choice.get("finish_reason")
                     }
-                return {"content": self._stream_chat(res), "model": model}
+                content = self._stream_chat(res)
+                meta = response_metadata(model, None, content, None)
+                return {"content": content, "model": meta.actual_model, **meta.to_dict()}
         except Exception as exc:
-            return {"content": f"Error: {exc}", "model": "error"}
+            meta = response_metadata(model, None, "", None)
+            return {"content": f"Error: {exc}", "model": meta.actual_model,
+                    "error": str(exc), **meta.to_dict()}
 
     def structured_chat(self, model: str, messages: list, schema: dict,
                         fallback_models: Optional[list] = None, session_id: Optional[str] = None,
@@ -708,18 +795,25 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
-                content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                choice = (resp_data.get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                content = message.get("content", "") or ""
+                meta = response_metadata(model, resp_data.get("model"), content,
+                                         choice.get("finish_reason"), message.get("refusal"))
 
                 try:
                     data = structured.parse_json_content(content)
                 except ValueError as e:
-                    return {"error": f"JSON Parse Failed: {e}", "raw": content}
+                    return {"error": f"JSON Parse Failed: {e}", "raw": content,
+                            "requested_model": meta.requested_model, "actual_model": meta.actual_model,
+                            "complete": meta.complete, "status": meta.status, "reason": meta.reason,
+                            "finish_reason": meta.finish_reason}
 
                 valid, errors = structured.validate_against_schema(data, schema)
 
@@ -727,7 +821,13 @@ class OpenRouterClient(OpenAIClient):
                     "data": data,
                     "valid": valid,
                     "errors": errors,
-                    "model": resp_data.get("model"),
+                    "model": meta.actual_model,
+                    "requested_model": meta.requested_model,
+                    "actual_model": meta.actual_model,
+                    "complete": meta.complete,
+                    "status": meta.status,
+                    "reason": meta.reason,
+                    "finish_reason": meta.finish_reason,
                     "usage": self._extract_usage_metadata(resp_data)
                 }
         except Exception as exc:
@@ -762,7 +862,7 @@ class WhoVisionsCloudClient(LLMClient):
 
     def list_models(self) -> list:
         # Return canonical cloud models
-        return ["gemma4:cloud", "qwen3.5:cloud", "whovisions/brain-v1", "openrouter/auto"]
+        return ["gemma4:cloud", "qwen3.5:cloud", "openrouter/auto"]
 
     def chat(self, model: Optional[str] = None, messages: Optional[list] = None, stream: bool = False) -> str:
         # Support chat(messages=[...]) or chat(model, messages)
@@ -822,6 +922,8 @@ def find_best_model_from_list(models: List[str], persona_hint: Optional[str] = N
 
 
 class OllamaClient(LocalLLMClient):
+    lane_tools = LaneTools("ollama")
+
     """Client for local Ollama instance."""
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         self.base_url = base_url
@@ -843,6 +945,7 @@ class OllamaClient(LocalLLMClient):
 
     def chat(self, model: str, messages: list, stream: bool = False,
              manual: bool = False) -> str:
+        messages = self._with_lane_header(messages)
         if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
             try:
                 import ollama

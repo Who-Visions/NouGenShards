@@ -100,7 +100,10 @@ def test_promotion_gate_lists_failures_and_never_auto_passes():
     base = cal.evaluate([rec("act", "act", conf=1.0)] * 300, L, cost={})
     fails = cal.promotion_gate(good, base)
     assert any("fallback" in f for f in fails) and any("replay" in f for f in fails)
-    assert cal.promotion_gate(good, base, fallback_tested=True, replay_stable=True) == []
+    validation = dict(held_out_candidate=good, held_out_baseline=base,
+                      ood_candidate=good, ood_baseline=base)
+    assert cal.promotion_gate(good, base, fallback_tested=True, replay_stable=True,
+                              **validation) == []
     tiny = cal.evaluate([rec("act", "act")], L, cost={})
     assert any("too few" in f for f in cal.promotion_gate(tiny, base, fallback_tested=True, replay_stable=True))
 

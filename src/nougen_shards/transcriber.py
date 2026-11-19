@@ -72,23 +72,45 @@ class TranscribeEngine:
 
     def transcribe_file(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         """Transcribe an audio file synchronously."""
-        model = self._get_model()
-        segments, info = model.transcribe(
-            audio_path,
-            language=language,
-            beam_size=5,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-        )
-        collected_segments = []
-        full_text_parts = []
-        for s in segments:
-            collected_segments.append({
-                "start": s.start,
-                "end": s.end,
-                "text": s.text.strip(),
-            })
-            full_text_parts.append(s.text.strip())
+        try:
+            model = self._get_model()
+            segments, info = model.transcribe(
+                audio_path,
+                language=language,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+            )
+            collected_segments = []
+            full_text_parts = []
+            for s in segments:
+                collected_segments.append({
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text.strip(),
+                })
+                full_text_parts.append(s.text.strip())
+        except RuntimeError as e:
+            if "cublas" in str(e).lower() or "cuda" in str(e).lower():
+                self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8", cpu_threads=8)
+                segments, info = self._model.transcribe(
+                    audio_path,
+                    language=language,
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=500),
+                )
+                collected_segments = []
+                full_text_parts = []
+                for s in segments:
+                    collected_segments.append({
+                        "start": s.start,
+                        "end": s.end,
+                        "text": s.text.strip(),
+                    })
+                    full_text_parts.append(s.text.strip())
+            else:
+                raise
 
         return {
             "language": info.language,

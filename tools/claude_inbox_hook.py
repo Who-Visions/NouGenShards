@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,14 @@ STATE_PATH = Path(os.environ.get("NOUGEN_CLAUDE_INBOX_STATE", Path.home() / ".no
 MAX_MESSAGE_CHARS = int(os.environ.get("NOUGEN_CLAUDE_INBOX_MESSAGE_CHARS", "2000"))
 MAX_BATCH_CHARS = int(os.environ.get("NOUGEN_CLAUDE_INBOX_BATCH_CHARS", "6000"))
 TARGETS = {t.strip().lower() for t in os.environ.get("NOUGEN_CLAUDE_INBOX_TARGETS", "claude,claude-cli,all").split(",") if t.strip()}
+# Stale proof-of-life pings are the fleet's own noise, not a message to the operator.
+# A heartbeat/pong older than NOISE_MAX_AGE_S is drained (cursor advances past it) and
+# never surfaced; this is why ~15 hours-old heartbeats were injected on every prompt.
+NOISE_RE = re.compile(os.environ.get("NOUGEN_CLAUDE_INBOX_NOISE_RE", r"Heartbeat|HEARTBEAT|\bPONG\b"), re.I)
+try:
+    NOISE_MAX_AGE_S = int(os.environ.get("NOUGEN_CLAUDE_INBOX_NOISE_MAX_AGE_S", "600"))
+except ValueError:
+    NOISE_MAX_AGE_S = 600
 
 
 def _load_state() -> dict[str, Any]:
@@ -117,7 +127,11 @@ def read_new_messages(*, replay_existing: bool = False, session_id: str = "") ->
     selected = entries if cursor is None else [e for e in entries if e[0] > cursor]
     messages: list[str] = []
     used = 0
+    skipped_noise = 0
+    now_ns = time.time_ns()
+    noise_max_age_ns = NOISE_MAX_AGE_S * 1_000_000_000
     for key, path in selected:
+        advance = True  # drain this file (advance cursor) unless it must be retried later
         try:
             env: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
             target = str(env.get("target", "")).lower()
@@ -130,15 +144,26 @@ def read_new_messages(*, replay_existing: bool = False, session_id: str = "") ->
             # skip what the live socket path already delivered mid-turn
             if env.get("delivered_live"):
                 continue
+            # drop stale proof-of-life noise: drain it but never surface it
+            if NOISE_RE.search(text) and (now_ns - key[0]) > noise_max_age_ns:
+                skipped_noise += 1
+                continue
             rendered = f"[{source}] {text.strip()[:MAX_MESSAGE_CHARS]}"
             if messages and used + len(rendered) > MAX_BATCH_CHARS:
+                advance = False  # over budget: leave this one for the next prompt
                 break
             messages.append(rendered)
             used += len(rendered)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
         finally:
-            _save_cursor(key, session_id)
+            if advance:
+                _save_cursor(key, session_id)
+    if skipped_noise:
+        messages.append(
+            f"[inbox] skipped {skipped_noise} stale heartbeat/noise message(s) "
+            f"older than {NOISE_MAX_AGE_S}s"
+        )
     return messages
 
 

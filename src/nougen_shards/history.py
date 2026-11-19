@@ -99,6 +99,8 @@ def _count_shard_rows() -> Optional[int]:
 def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
+    if event_type == ACCESS_EVENT and not _ACCESS_LOGGING:
+        return
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
 
@@ -147,6 +149,25 @@ def _writer_lock():
     return _WRITER_LOCK
 
 
+#: The event a read leaves behind. It is the only write a recall makes.
+ACCESS_EVENT = "ACCESSED"
+_ACCESS_LOGGING = True
+
+
+def set_access_logging(enabled: bool) -> bool:
+    """Turn the ACCESSED write of a read on or off for this process; returns the old setting.
+
+    A short-lived caller that only reads (the per-prompt recall hook) turns it
+    off: the write queues on the history database's single writer slot, so a
+    busy vault made every scan wait for telemetry and kept the hook process
+    alive long after it had answered (measured 2026-11-16: 24.8 s for an
+    800 ms recall). Every other event type is still written.
+    """
+    global _ACCESS_LOGGING  # pylint: disable=global-statement
+    previous, _ACCESS_LOGGING = _ACCESS_LOGGING, bool(enabled)
+    return previous
+
+
 def log_events(events: list):
     """Batch-writes multiple events in a single transaction.
 
@@ -158,6 +179,8 @@ def log_events(events: list):
     locked" noise); cross-process contention is handled by busy_timeout.
     Degrades gracefully exactly like log_event.
     """
+    if not _ACCESS_LOGGING:
+        events = [ev for ev in events if len(ev) < 3 or ev[2] != ACCESS_EVENT]
     if not events:
         return
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

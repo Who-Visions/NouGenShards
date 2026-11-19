@@ -10,6 +10,7 @@ Operationalizes the OpenAI Astra / Morph architecture inside NouGen:
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import re
@@ -38,6 +39,53 @@ class FormalProofResult:
     evidence: Dict[str, Any]
     error: Optional[str] = None
     certificate_hash: Optional[str] = None
+
+
+def _parse_smt_expression(source: str, symbols: Dict[str, Any], backend: Any) -> Any:
+    """Parse a small, non-executable SMT expression language into Z3 nodes."""
+    if not isinstance(source, str) or len(source) > 2000:
+        raise ValueError("SMT expression must be text no longer than 2000 characters")
+    tree = ast.parse(source, mode="eval")
+
+    def visit(node: ast.AST) -> Any:
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Name) and node.id in symbols:
+            return symbols[node.id]
+        if isinstance(node, ast.Constant) and isinstance(node.value, (bool, int, float)):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.Not, ast.USub, ast.UAdd)):
+            value = visit(node.operand)
+            return backend.Not(value) if isinstance(node.op, ast.Not) else (-value if isinstance(node.op, ast.USub) else value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
+            left, right = visit(node.left), visit(node.right)
+            if isinstance(node.op, ast.Add): return left + right
+            if isinstance(node.op, ast.Sub): return left - right
+            if isinstance(node.op, ast.Mult): return left * right
+            if isinstance(node.op, ast.Div): return left / right
+            return left % right
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            args = [visit(v) for v in node.values]
+            return backend.And(*args) if isinstance(node.op, ast.And) else backend.Or(*args)
+        if isinstance(node, ast.Compare):
+            left = visit(node.left)
+            clauses = []
+            for op, comparator in zip(node.ops, node.comparators):
+                right = visit(comparator)
+                if isinstance(op, ast.Eq): clause = left == right
+                elif isinstance(op, ast.NotEq): clause = left != right
+                elif isinstance(op, ast.Lt): clause = left < right
+                elif isinstance(op, ast.LtE): clause = left <= right
+                elif isinstance(op, ast.Gt): clause = left > right
+                elif isinstance(op, ast.GtE): clause = left >= right
+                else: raise ValueError("Unsupported SMT comparison")
+                clauses.append(clause)
+                left = right
+            return backend.And(*clauses)
+        # No calls, attributes, subscripts, comprehensions, lambdas, or arbitrary Python.
+        raise ValueError(f"Unsupported SMT expression syntax: {type(node).__name__}")
+
+    return visit(tree)
 
 
 class FormalProverEngine:
@@ -70,21 +118,34 @@ class FormalProverEngine:
 
         start_t = time.perf_counter()
 
+        if not isinstance(code, str) or len(code) > 100_000:
+            return FormalProofResult(status="rejected", verified=False, engine="lean4",
+                theorem_name="unnamed", domain="formal_math",
+                execution_time_ms=(time.perf_counter() - start_t) * 1000,
+                evidence={"max_source_chars": 100_000}, error="Lean source must be text no longer than 100000 characters.")
+        if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= 30:
+            return FormalProofResult(status="rejected", verified=False, engine="lean4",
+                theorem_name="unnamed", domain="formal_math",
+                execution_time_ms=(time.perf_counter() - start_t) * 1000,
+                evidence={"max_timeout_seconds": 30}, error="Lean timeout must be in (0, 30] seconds.")
+
         # Strict check for 'sorry' placeholders
-        if not allow_sorry:
-            sorry_match = re.search(r"\bsorry\b", code)
-            if sorry_match:
-                elapsed = (time.perf_counter() - start_t) * 1000
-                return FormalProofResult(
-                    status="rejected",
-                    verified=False,
-                    engine="lean4",
-                    theorem_name="unnamed",
-                    domain="formal_math",
-                    execution_time_ms=elapsed,
-                    evidence={"sorry_detected": True, "location": sorry_match.start()},
-                    error="Strict verification failed: Lean proof contains 'sorry' placeholder.",
-                )
+        # Comments and strings must not hide a placeholder or unsafe declaration.
+        code_without_comments = re.sub(r"/\-.*?\-/|--[^\n]*", " ", code, flags=re.S)
+        sorry_match = re.search(r"\bsorry\b|\badmit\b", code_without_comments)
+        if sorry_match:
+            elapsed = (time.perf_counter() - start_t) * 1000
+            return FormalProofResult(status="rejected", verified=False, engine="lean4",
+                theorem_name="unnamed", domain="formal_math", execution_time_ms=elapsed,
+                evidence={"placeholder_detected": True, "location": sorry_match.start()},
+                error="Strict verification rejects sorry/admit placeholders; allow_sorry cannot produce a verified result.")
+        unsafe_match = re.search(r"\b(?:axiom|unsafe|run_tac|elab|macro)\b", code_without_comments)
+        if unsafe_match:
+            elapsed = (time.perf_counter() - start_t) * 1000
+            return FormalProofResult(status="rejected", verified=False, engine="lean4",
+                theorem_name="unnamed", domain="formal_math", execution_time_ms=elapsed,
+                evidence={"disallowed_construct": code_without_comments[unsafe_match.start():unsafe_match.end()]},
+                error="Lean source uses a construct outside the bounded theorem-only verifier policy.")
 
         if not self.has_lean:
             elapsed = (time.perf_counter() - start_t) * 1000
@@ -112,7 +173,7 @@ class FormalProverEngine:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout_seconds,
+                timeout=min(timeout_seconds, 30),
                 encoding="utf-8",
                 errors="replace",
             )
@@ -179,12 +240,23 @@ class FormalProverEngine:
                 "error": "z3-solver is not available in the current environment.",
             }
 
+        if (not isinstance(declarations, list) or len(declarations) > 64
+                or any(not isinstance(item, (tuple, list)) or len(item) != 2 for item in declarations)
+                or not isinstance(assertions, list) or len(assertions) > 128
+                or any(not isinstance(x, str) or len(x) > 2000 for x in assertions)
+                or (query is not None and (not isinstance(query, str) or len(query) > 2000))
+                or not isinstance(timeout_ms, int) or not 1 <= timeout_ms <= 5000):
+            return {"status": "error", "error": "SMT request exceeds bounded input policy (64 declarations, 128 formulas of 2000 chars, timeout <= 5000ms)."}
+
         start_t = time.perf_counter()
         solver = z3.Solver()
         solver.set("timeout", timeout_ms)
 
-        context: Dict[str, Any] = {"z3": z3}
+        context: Dict[str, Any] = {}
         for name, typ in declarations:
+            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name)
+                    or name in context or not isinstance(typ, str)):
+                return {"status": "error", "error": "Invalid or duplicate SMT variable name."}
             if typ.lower() in ("int", "integer"):
                 context[name] = z3.Int(name)
             elif typ.lower() in ("real", "float"):
@@ -203,11 +275,11 @@ class FormalProverEngine:
 
         try:
             for formula_str in assertions:
-                expr = eval(formula_str, {"__builtins__": {}}, context)
+                expr = _parse_smt_expression(formula_str, context, z3)
                 solver.add(expr)
 
             if query:
-                query_expr = eval(query, {"__builtins__": {}}, context)
+                query_expr = _parse_smt_expression(query, context, z3)
                 # Prove validity by checking unsatisfiability of negation
                 solver.add(z3.Not(query_expr))
 

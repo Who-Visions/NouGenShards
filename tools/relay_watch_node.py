@@ -25,7 +25,29 @@ documented fallback:
                                ~/.nougen/state/relay_watch.json)
 ``NOUGEN_AGY_INBOX``           inbox directory (default ~/.nougen/agy_inbox)
 ``NOUGEN_RELAY_WATCH_ONCE``    ``1`` for a single pass (cron, testing)
+``NOUGEN_RELAY_BLOCK_ALERT_SECS``  how long a pull may stay blocked before
+                               an ALERT is raised (default 600)
+``NOUGEN_RELAY_BLOCKED_STATE`` file written while blocked (default
+                               ~/.nougen/state/relay_watch_blocked.json)
+``NOUGEN_NODE_NAME``           this node's name for addressing (default
+                               ``NOUGEN_MACHINE``, else the short hostname)
+``NOUGEN_RELAY_WATCH_LANES``   comma list of lanes addressed here (default
+                               ``NOUGEN_AGENT``)
+``NOUGEN_RELAY_WATCH_MAX_AGE_HOURS``  open legs older than this are adopted
+                               silently, never announced (default 72)
+``NOUGEN_RELAY_WATCH_LOG_MAX_BYTES``  stdout/stderr files are rotated to one
+                               ``.1`` backup past this size (default 5 MB)
 =============================  =========================================
+
+What gets announced (2026-11-17): only a leg that is new to the persisted
+cursor, has status ``open``, is no older than the max age, and is addressed to
+this node, one of this node's lanes, or everyone (``@all``/``@fleet``, or no
+address at all). Every other new leg is adopted into the cursor silently and
+only counted, so a pass writes a bounded number of lines however large the
+registry grows. The cursor keeps every id it has seen (no lexicographic cap:
+the old ``sorted(seen)[-4000:]`` evicted the NEWEST timestamped legs behind the
+``usage_*`` ids, so after every restart thousands of closed September legs came
+back as "new" and the log grew about 3.6 GB a day).
 
 Note for macOS nodes: if the clone authenticates over HTTPS with the keychain
 credential helper, a pull works from a GUI-session agent (launchd) but fails
@@ -37,6 +59,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -56,8 +80,22 @@ LEG_GLOB = "*.json"
 DEFAULT_INTERVAL_SECS = 60
 LOCK_STALE_SECS = 300  # a holder quieter than this is treated as dead
 PULL_TIMEOUT_SECS = 180
-CURSOR_KEEP = 4000  # ids are time-ordered, so the tail is the useful part
+CURSOR_KEEP = 200000  # insertion order, newest last; age filter covers any eviction
+CURSOR_VERSION = 2
+MAX_NEW_LINES = 20  # NEW lines printed per pass; the rest are counted
+DEFAULT_MAX_AGE_HOURS = 72
+DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
+CLOSED_STATUSES = frozenset({
+    "complete", "completed", "acked", "reported", "done", "sealed", "closed",
+    "resolved", "dead_letter", "abandoned", "superseded", "cancelled", "canceled"})
+BROADCAST_NAMES = frozenset({"all", "fleet", "everyone"})
+_NAME = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
+_ARROW_ADDR = re.compile(r"(?:->|\u2192|=>)\s*((?:@[A-Za-z0-9_.:-]+[\s,/]*)+)")
+_AT_TOKEN = re.compile(r"@([A-Za-z0-9_.:-]+)")
+_ID_STAMP = re.compile(r"(\d{8}T\d{6}Z)")
 GOAL_CHARS = 180
+BLOCK_ALERT_SECS = 600     # a pull blocked this long means the board is stale: say so loudly
+BLOCK_REPEAT_SECS = 1800   # then repeat, not every cycle
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -85,17 +123,199 @@ INBOX = _env_path("NOUGEN_AGY_INBOX", ".nougen", "agy_inbox")
 LOCK = _env_path("NOUGEN_RELAY_WATCH_LOCK", ".nougen", "state", "relay_watch.lock")
 
 
-def load_seen() -> set:
+class Seen(dict):
+    """Ordered set of leg ids already handled (dict keys keep insertion order)."""
+
+    def add(self, leg_id: str) -> None:
+        self.pop(leg_id, None)
+        self[leg_id] = None
+
+    def __eq__(self, other):  # compares as the set of ids, so callers may treat it as one
+        if isinstance(other, (set, frozenset)):
+            return set(self) == other
+        return dict.__eq__(self, other)
+
+    __hash__ = None
+
+    def __or__(self, other):  # keep ``seen | {...}`` working for old callers
+        out = Seen(self)
+        for item in other:
+            out.add(item)
+        return out
+
+
+def load_seen() -> Seen:
     try:
-        return set(json.loads(CURSOR.read_text(encoding="utf-8")).get("seen", []))
-    except (OSError, ValueError):
-        return set()
+        ids = json.loads(CURSOR.read_text(encoding="utf-8")).get("seen", [])
+    except (OSError, ValueError, AttributeError):
+        return Seen()
+    seen = Seen()
+    for leg_id in ids if isinstance(ids, list) else []:
+        seen.add(str(leg_id))
+    return seen
 
 
-def save_seen(seen: set) -> None:
+def save_seen(seen) -> None:
+    """Persist the cursor atomically. Order is insertion order, never sorted:
+    sorting put non-timestamp ids last and evicted the newest real legs."""
+    ids = list(seen)[-CURSOR_KEEP:]
     CURSOR.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"seen": sorted(seen)[-CURSOR_KEEP:], "updated": time.time()}
-    CURSOR.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    payload = {"version": CURSOR_VERSION, "seen": ids, "updated": time.time()}
+    tmp = CURSOR.with_name(CURSOR.name + ".tmp{}".format(os.getpid()))
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, CURSOR)
+
+
+def cursor_version() -> int:
+    try:
+        return int(json.loads(CURSOR.read_text(encoding="utf-8")).get("version") or 1)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def prime_cursor(root: Path) -> Seen:
+    """Load the cursor; adopt the whole current listing silently when there is
+    none or it predates version 2. A version-1 cursor was truncated by the old
+    lexicographic cap, so diffing against it would replay thousands of legs."""
+    seen, version = load_seen(), cursor_version()
+    if version >= CURSOR_VERSION:  # a valid v2 cursor, even an empty one, is initialised
+        return seen
+    for leg_id in sorted(legs(root)):
+        seen.add(leg_id)
+    save_seen(seen)
+    print("[relay_watch] cursor {} with {} existing legs (was version {})".format(
+        "migrated" if version else "primed", len(seen), version), flush=True)
+    return seen
+
+
+def _norm_name(raw) -> str:
+    name = str(raw or "").strip().lstrip("@").lower()
+    return name if _NAME.fullmatch(name) else ""
+
+
+def identity() -> "tuple":
+    """(node, lanes) this watcher announces for, from the environment."""
+    node = _norm_name(os.environ.get("NOUGEN_NODE_NAME") or os.environ.get("NOUGEN_MACHINE")
+                      or socket.gethostname().split(".")[0])
+    raw = os.environ.get("NOUGEN_RELAY_WATCH_LANES") or os.environ.get("NOUGEN_AGENT") or ""
+    lanes = {n for n in (_norm_name(x) for x in raw.split(",")) if n}
+    return node, lanes
+
+
+def addresses(record: dict) -> set:
+    """Explicit addressees of a leg: structured fields plus ``-> @x`` in the goal."""
+    out = set()
+    for key in ("target", "to", "lane", "addressed_to", "targets"):
+        value = record.get(key)
+        for item in value if isinstance(value, list) else [value]:
+            for part in re.split(r"[\s,]+", str(item or "")):
+                name = _norm_name(part.split("/")[0])
+                if name and name != "local":
+                    out.add(name)
+    for group in _ARROW_ADDR.findall(str(record.get("goal") or "")):
+        out.update(n for n in (_norm_name(t) for t in _AT_TOKEN.findall(group)) if n)
+    return out
+
+
+def addressed_here(record: dict, node: str, lanes: set) -> bool:
+    """Open legs are for this node when their explicit address names it, one of
+    its lanes, or everyone; a leg with no explicit address is a broadcast."""
+    mine = ({node} if node else set()) | set(lanes) | BROADCAST_NAMES
+    explicit = addresses(record)
+    if explicit:  # only structured fields and '-> @x' decide; prose mentions never do
+        return bool(explicit & mine)
+    return True
+
+
+def leg_time(leg_id: str, record: dict):
+    """Epoch seconds a leg was created, or None when it cannot be told."""
+    for key in ("created_utc", "created", "created_at", "timestamp"):
+        raw = record.get(key)
+        if isinstance(raw, (int, float)) and raw > 0:
+            return float(raw)
+        if isinstance(raw, str) and raw.strip():
+            text = raw.strip().replace("Z", "+00:00")
+            try:
+                from datetime import datetime
+                stamp = datetime.fromisoformat(text)
+                if stamp.tzinfo is None:
+                    from datetime import timezone
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                return stamp.timestamp()
+            except ValueError:
+                pass
+    match = _ID_STAMP.search(leg_id)
+    if match:
+        import calendar
+        return float(calendar.timegm(time.strptime(match.group(1), "%Y%m%dT%H%M%SZ")))
+    return None
+
+
+def max_age_secs() -> float:
+    raw = os.environ.get("NOUGEN_RELAY_WATCH_MAX_AGE_HOURS", "").strip()
+    try:
+        hours = float(raw) if raw else DEFAULT_MAX_AGE_HOURS
+    except ValueError:
+        hours = DEFAULT_MAX_AGE_HOURS
+    return max(hours, 0.0) * 3600.0
+
+
+def classify(leg_id: str, record: dict, node: str, lanes: set, now: float) -> str:
+    """``announce`` or the reason a new leg is adopted silently."""
+    status = str(record.get("status") or "").strip().lower()
+    if status != "open":
+        return "closed" if status in CLOSED_STATUSES else "not_open"
+    created = leg_time(leg_id, record)
+    if created is None or now - created > max_age_secs():
+        return "stale"
+    if not addressed_here(record, node, lanes):
+        return "elsewhere"
+    return "announce"
+
+
+def _fd_path(fd: int):
+    try:
+        import fcntl
+        getpath = getattr(fcntl, "F_GETPATH", 50 if sys.platform == "darwin" else None)
+        if getpath is not None and sys.platform == "darwin":
+            raw = fcntl.fcntl(fd, getpath, b"\0" * 1024)
+            return Path(raw.split(b"\0", 1)[0].decode())
+    except (OSError, ImportError, ValueError):
+        pass
+    try:
+        return Path(os.readlink("/proc/self/fd/{}".format(fd)))
+    except OSError:
+        return None
+
+
+def cap_log(stream, max_bytes=None) -> bool:
+    """Rotate the file behind ``stream`` to one ``.1`` backup once it passes
+    ``max_bytes``. launchd owns the descriptor (StandardOutPath), so the file is
+    copied aside and the descriptor truncated in place rather than renamed."""
+    if max_bytes is None:
+        raw = os.environ.get("NOUGEN_RELAY_WATCH_LOG_MAX_BYTES", "").strip()
+        max_bytes = int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_LOG_MAX_BYTES
+    try:
+        stream.flush()
+        fd = stream.fileno()
+        st = os.fstat(fd)
+    except (OSError, ValueError, AttributeError):
+        return False
+    import stat as _stat
+    if not _stat.S_ISREG(st.st_mode) or st.st_size <= max_bytes:
+        return False
+    path = _fd_path(fd)
+    if path is not None:
+        try:
+            shutil.copyfile(path, str(path) + ".1")
+        except OSError:
+            pass
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError:
+        return False
+    return True
 
 
 # On Windows a child process spawned from a windowless parent (pythonw, a
@@ -194,6 +414,60 @@ def pull(root: Path) -> str:
             fallback = "{} failed".format(args[0])
             return (result.stderr.strip().splitlines() or [fallback])[0][:120]
     return "ok"
+
+
+class BlockTracker:
+    """Escalate a pull that stays blocked.
+
+    A blocked pull used to cost one log line per cycle and nothing else, so on 2026-10-04 two
+    uncommitted leg files left this watcher blind to every new leg all night and nobody noticed.
+    ``update`` returns an ALERT line once the block has lasted ``alert_secs`` (then again every
+    ``repeat_secs``), keeps ``state_path`` while blocked so a HUD or another session can read it,
+    and returns a RECOVERED line (and removes the file) when the pull works again.
+    """
+
+    def __init__(self, alert_secs=None, repeat_secs=None, state_path=None):
+        self.alert_secs = float(os.environ.get("NOUGEN_RELAY_BLOCK_ALERT_SECS") or alert_secs or BLOCK_ALERT_SECS)
+        self.repeat_secs = float(repeat_secs or BLOCK_REPEAT_SECS)
+        self.state_path = Path(state_path or os.environ.get("NOUGEN_RELAY_BLOCKED_STATE")
+                               or HOME / ".nougen" / "state" / "relay_watch_blocked.json")
+        self.since = None
+        self.last_alert = None
+
+    def _write(self, now, status, dirty):
+        stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+        body = {"blocked_since_utc": stamp(self.since), "minutes": int((now - self.since) // 60), "status": status,
+                "dirty_legs": dirty, "alerted_utc": stamp(now), "pid": os.getpid()}
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(body), encoding="utf-8")
+            os.replace(tmp, self.state_path)
+        except OSError:
+            pass
+
+    def update(self, status, dirty=-1, now=None):
+        now = time.time() if now is None else now
+        if status == "ok":
+            alerted, since = self.last_alert is not None, self.since
+            self.since = self.last_alert = None
+            try:
+                self.state_path.unlink()
+            except OSError:
+                pass
+            if alerted:
+                return "[relay_watch] RECOVERED: pull works again after {:.0f} min".format((now - since) / 60)
+            return None
+        if self.since is None:
+            self.since = now
+        blocked = now - self.since
+        if blocked < self.alert_secs or (self.last_alert is not None and now - self.last_alert < self.repeat_secs):
+            return None
+        self.last_alert = now
+        self._write(now, status, dirty)
+        return ("[relay_watch] ALERT: pull blocked for {:.0f} min, so the board may be stale: {} (uncommitted legs: {}). "
+                "Commit or claim them, then `git merge --no-edit @{{u}}`; do NOT rebase, reset, or merge with -X ours."
+                ).format(blocked / 60, status, "unknown" if dirty < 0 else dirty)
 
 
 def scrub(obj):
@@ -304,8 +578,7 @@ def announce(leg_id: str, path: Path) -> None:
         for k in ("target", "to", "lane", "addressed_to"))
     
     if not is_open and not has_target:
-        print("[relay_watch] SKIP inbox fanout for closed status-only leg {}".format(leg_id), flush=True)
-        return
+        return  # counted by run_pass; one line per skipped leg filled the disk
 
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
@@ -449,31 +722,76 @@ def main() -> int:
     once = os.environ.get("NOUGEN_RELAY_WATCH_ONCE", "").strip() == "1"
     if not acquire_lock(interval):
         return 0
-    seen = load_seen()
-    if not seen:
-        seen = set(legs(root))
-        save_seen(seen)
-        print("[relay_watch] cursor primed with {} existing legs".format(len(seen)), flush=True)
-    print("[relay_watch] interval={}s ({}) once={} inbox={}".format(
-        interval, source, once, INBOX), flush=True)
+    cap_log(sys.stdout)
+    cap_log(sys.stderr)
+    seen = prime_cursor(root)
+    node, lanes = identity()
+    print("[relay_watch] interval={}s ({}) once={} inbox={} node={} lanes={}".format(
+        interval, source, once, INBOX, node or "?", ",".join(sorted(lanes)) or "-"), flush=True)
+    blocks = BlockTracker()
     try:
         while True:
             heartbeat()
             status = pull(root)
-            current = legs(root)
-            fresh = sorted(set(current) - seen)
-            for leg_id in fresh:
-                announce(leg_id, current[leg_id])
-            if fresh:
-                seen |= set(fresh)
-                save_seen(seen)
-            elif status != "ok":
+            alert = blocks.update(status, dirty_legs(root) if status != "ok" else 0)
+            if alert:
+                print(alert, flush=True)
+            counts = run_pass(root, seen, node, lanes)
+            if not counts["new"] and status != "ok":
                 print("[relay_watch] pull: {}".format(status), flush=True)
+            cap_log(sys.stdout)
+            cap_log(sys.stderr)
             if once:
                 return 0
             time.sleep(interval)
     finally:
         release_lock()
+
+
+def _read_record(path: Path) -> dict:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def run_pass(root: Path, seen, node: str, lanes: set, now=None, announcer=None) -> dict:
+    """One diff of the registry against the cursor. Every new leg is added to
+    the cursor whatever happens to it (a leg that crashes delivery must not be
+    retried on every restart); only open legs addressed here are announced.
+    Writes at most ``MAX_NEW_LINES + 1`` lines however many legs are new."""
+    now = time.time() if now is None else now
+    announcer = announcer or announce
+    current = legs(root)
+    fresh = [leg_id for leg_id in sorted(current) if leg_id not in seen]
+    counts = {"new": len(fresh), "announced": 0, "closed": 0, "not_open": 0,
+              "stale": 0, "elsewhere": 0, "errors": 0}
+    for leg_id in fresh:
+        record = _read_record(current[leg_id])
+        verdict = classify(leg_id, record, node, lanes, now)
+        if verdict == "announce":
+            if counts["announced"] < MAX_NEW_LINES:
+                print("[relay_watch] NEW {} ({}) from {}/{}: {}".format(
+                    leg_id, record.get("status"), scrub(record.get("machine", "?")),
+                    scrub(record.get("agent", "?")),
+                    scrub(str(record.get("goal") or "(no goal)"))[:GOAL_CHARS]), flush=True)
+            try:
+                announcer(leg_id, current[leg_id])
+            except Exception as exc:  # noqa: BLE001 - one bad leg must not crash-loop the daemon
+                counts["errors"] += 1
+                print("[relay_watch] announce failed for {}: {}".format(
+                    leg_id, type(exc).__name__), flush=True)
+            counts["announced"] += 1
+        else:
+            counts[verdict] += 1
+        seen.add(leg_id)
+    if fresh:
+        save_seen(seen)
+        print("[relay_watch] pass: new={new} announced={announced} closed={closed} "
+              "not_open={not_open} stale={stale} elsewhere={elsewhere} errors={errors}".format(
+                  **counts), flush=True)
+    return counts
 
 
 if __name__ == "__main__":

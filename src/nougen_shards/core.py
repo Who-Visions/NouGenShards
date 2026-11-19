@@ -4,20 +4,25 @@ Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Re
 Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
+import bisect
+import contextlib
 import hashlib
 import json
 import logging
 import math
 import os
+import random
 import re
 import socket
 import sqlite3
 import threading as _threading
 import time
 from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+import zlib
 
 import numpy as np
 from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
@@ -25,6 +30,20 @@ from nougen_time import InvalidTimestampError, format_log_time, now as nougen_no
 
 
 logger = logging.getLogger(__name__)
+
+# Request-local collector follows copy_context into both retrieval fan-outs.
+RETRIEVAL_FAILURES = ContextVar("nougen_retrieval_failures", default=None)
+
+
+def _note_retrieval_db_failure(index, exc):
+    failures = RETRIEVAL_FAILURES.get()
+    if failures is not None:
+        entry = {"store": f"local:db:{index}",
+                 "error": f"{type(exc).__name__}: {exc}",
+                 "failure_class": "database_unreadable"}
+        if entry not in failures:
+            failures.append(entry)
+
 
 #: Seconds a capture may wait for its embedding before storing NULL and
 #: leaving the row for embedding_backfill. Env-tunable per Rule 0.0 item 4;
@@ -76,6 +95,258 @@ def get_vault_journal_mode() -> str:
     return "WAL"
 
 
+#: Durability contract for the vault cluster (P0, Native Memory Engine).
+#: Before this, no ``PRAGMA synchronous`` was ever set on vault connections,
+#: so durability rested on SQLite's implicit default (FULL under WAL) —
+#: safe, but undocumented and untested as a deliberate choice. The default
+#: below preserves the exact effective behaviour that was already in force;
+#: it only makes it explicit and testable.
+#:
+#: - journal_mode: WAL by default (see :func:`get_vault_journal_mode`).
+#: - synchronous: FULL by default (see :func:`get_vault_synchronous_mode`).
+#:   FULL + WAL means a committed transaction survives a process crash and,
+#:   barring OS/filesystem failure, a power loss. NORMAL would be faster but
+#:   risks losing the last transactions on power loss; OFF risks corruption.
+#: - checkpoint policy: SQLite's default ``wal_autocheckpoint`` (1000 pages)
+#:   plus the passive checkpoint that runs when the last connection to a DB
+#:   closes. There is deliberately NO explicit ``wal_checkpoint`` call in the
+#:   vault path yet: on a live grid an aggressive checkpoint schedule can
+#:   stall readers, and no measurement justifies one. A measured checkpoint
+#:   policy is P1 work, not a P0 change.
+#: - Linux note: WAL needs POSIX shared-memory (``-shm``) and coherent file
+#:   locking on the vault directory. It is correct on local Linux filesystems
+#:   (ext4, xfs, btrfs). Network mounts without coherent locking (NFS without
+#:   proper lockd, FUSE object-storage mounts) must NOT use WAL — that is why
+#:   :func:`get_vault_journal_mode` auto-detects DELETE for such mounts.
+#:   A vault directory on ``tmpfs`` is fast but not durable across reboot;
+#:   never point NOUGEN_VAULT_DIR at tmpfs for a real vault.
+_VALID_SYNCHRONOUS_MODES = {"OFF", "NORMAL", "FULL", "EXTRA"}
+
+
+def get_vault_synchronous_mode() -> str:
+    """Return the SQLite ``PRAGMA synchronous`` mode for vault databases.
+
+    Defaults to FULL — the effective behaviour before this function existed
+    (SQLite's default under WAL), now set deliberately rather than inherited.
+    Override with ``NOUGEN_VAULT_SYNCHRONOUS`` (OFF, NORMAL, FULL, EXTRA).
+    An invalid value logs a warning and falls back to FULL; it never raises,
+    because a durability knob must fail closed toward the safest mode.
+    """
+    mode = os.environ.get("NOUGEN_VAULT_SYNCHRONOUS", "").strip().upper()
+    if mode in _VALID_SYNCHRONOUS_MODES:
+        return mode
+    if mode:
+        logger.warning(
+            "NOUGEN_VAULT_SYNCHRONOUS=%r is not a valid mode; using FULL", mode)
+    return "FULL"
+
+
+def _min_coverage_pct() -> float:
+    """Minimum embedding coverage % below which the semantic lane is degraded.
+
+    ``NOUGEN_MIN_COVERAGE_PCT`` (default 50), env-discovered per Rule 0.2.
+    """
+    raw = os.environ.get("NOUGEN_MIN_COVERAGE_PCT", "50")
+    try:
+        return max(0.0, min(100.0, float(raw)))
+    except ValueError:
+        logger.warning("NOUGEN_MIN_COVERAGE_PCT=%r is not a number; using 50", raw)
+        return 50.0
+
+
+def lane_health() -> dict:
+    """Report per-lane health of the local vault grid (HARDENING §4 sensor).
+
+    Read-only and never raising: every probe is guarded, so a broken DB
+    reports as degraded instead of crashing the caller. This is the sensor
+    that lets recall distinguish "no match" from "degraded lane" — an empty
+    result from a grid whose semantic lane is dead must never be reported
+    as a verified absence.
+
+    The function deliberately does NOT touch the recall path: it neither
+    calls :func:`retrieve` nor alters any recall result. Callers that want
+    coverage in a recall packet should call this separately.
+
+    Returns a dict with ``healthy`` (bool), ``degraded_lanes`` (list of lane
+    names), ``total_shards`` / ``embedded_shards`` / ``embedding_coverage_pct``
+    (``None`` on an empty grid), ``journal_mode`` / ``synchronous`` (the
+    durability contract as read back from a live connection), per-DB entries
+    under ``databases`` (``db1``..``db9``: exists, readable, quick_check,
+    shard/FTS/embedded counts), ``fts`` (present on all existing DBs, rows),
+    ``embedding`` (provider status from :mod:`embed_providers`), and
+    ``vector_cache`` (sidecar presence and per-DB staleness vs the DB file
+    and its ``-wal``; a missing sidecar is "not built", not degraded — the
+    cache is written lazily on first vector retrieve by design).
+    """
+    checked_utc = datetime.now(timezone.utc).isoformat()
+    vault_dir = str(active_vault_dir())
+    degraded: list[str] = []
+    databases: dict[str, dict] = {}
+    total = 0
+    embedded = 0
+    fts_rows = 0
+    fts_present_all = True
+    journal_mode = get_vault_journal_mode()
+    synchronous = get_vault_synchronous_mode()
+
+    for index in range(1, MAX_DB_COUNT + 1):
+        key = f"db{index}"
+        try:
+            path = get_db_path(index)
+        except Exception as exc:  # pylint: disable=broad-except
+            databases[key] = {"exists": False, "readable": False,
+                              "error": f"{type(exc).__name__}: {exc}"}
+            degraded.append(key)
+            continue
+        entry: dict = {"exists": bool(path.exists())}
+        if not path.exists():
+            entry.update({"readable": False, "shards": 0, "fts_present": False,
+                          "fts_rows": 0, "embedded": 0})
+            databases[key] = entry
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        except (sqlite3.Error, OSError) as exc:
+            entry.update({"readable": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+            databases[key] = entry
+            degraded.append(key)
+            fts_present_all = False
+            continue
+        try:
+            quick = conn.execute("PRAGMA quick_check").fetchone()
+            entry["quick_check"] = (quick[0] if quick else "unknown")
+            entry["journal_mode"] = conn.execute(
+                "PRAGMA journal_mode").fetchone()[0]
+            entry["synchronous"] = conn.execute(
+                "PRAGMA synchronous").fetchone()[0]
+            has_shards = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='shards'").fetchone() is not None
+            entry["readable"] = bool(has_shards) and entry["quick_check"] == "ok"
+            if not entry["readable"]:
+                degraded.append(key)
+            if has_shards:
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(embedding IS NOT NULL), 0) "
+                    "FROM shards").fetchone()
+                entry["shards"] = int(row[0])
+                entry["embedded"] = int(row[1])
+                total += entry["shards"]
+                embedded += entry["embedded"]
+            else:
+                entry["shards"] = 0
+                entry["embedded"] = 0
+            fts_present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='shards_fts'").fetchone() is not None
+            entry["fts_present"] = bool(fts_present)
+            if not fts_present:
+                fts_present_all = False
+                if key not in degraded:
+                    degraded.append(key)
+            else:
+                try:
+                    # Probe the FTS5 index itself (external-content COUNT(*) only reads shards).
+                    conn.execute(
+                        "SELECT rowid FROM shards_fts "
+                        "WHERE shards_fts MATCH 'a*' LIMIT 1").fetchone()
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM shards_fts_docsize").fetchone()[0]
+                    entry["fts_rows"] = int(count)
+                    fts_rows += int(count)
+                except sqlite3.Error:
+                    entry["fts_rows"] = 0
+                    fts_present_all = False
+                    if key not in degraded:
+                        degraded.append(key)
+        except (sqlite3.Error, OSError) as exc:
+            entry.update({"readable": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+            degraded.append(key)
+            fts_present_all = False
+        finally:
+            conn.close()
+        databases[key] = entry
+
+    if total > 0:
+        coverage = round(100.0 * embedded / total, 2)
+    else:
+        coverage = None
+    min_pct = _min_coverage_pct()
+    semantic_degraded = bool(
+        coverage is not None and coverage < min_pct)
+    if semantic_degraded and "embedding" not in degraded:
+        degraded.append("embedding")
+
+    embedding_status: dict = {"provider": "unknown", "model": "",
+                              "ollama_reachable": False}
+    try:
+        from . import embed_providers  # pylint: disable=import-outside-toplevel
+        embedding_status = embed_providers.provider_status()
+    except Exception as exc:  # pylint: disable=broad-except
+        embedding_status = {"provider": "unknown", "model": "",
+                            "ollama_reachable": False,
+                            "error": f"{type(exc).__name__}: {exc}"}
+    prov = embedding_status.get("provider")
+    if (prov == "none"
+            or (prov == "ollama" and not embedding_status.get("ollama_reachable", True))
+            or embedding_status.get("error")) and "embedding" not in degraded:
+        degraded.append("embedding")
+
+    vector_cache: dict = {"present": False, "files": 0, "stale_dbs": []}
+    try:
+        sidecar_dir = Path(vault_dir) / ".vector-cache"
+        if sidecar_dir.is_dir():
+            files = [p for p in sidecar_dir.iterdir()
+                     if p.is_file() and p.suffix in (".npy", ".json")]
+            vector_cache["present"] = bool(files)
+            vector_cache["files"] = len(files)
+            for index in range(1, MAX_DB_COUNT + 1):
+                paths = _vector_sidecar_paths(
+                    index, str(get_db_path(index)))
+                if not paths:
+                    continue
+                npy_path, json_path = (Path(p) for p in paths)
+                if not (npy_path.exists() or json_path.exists()):
+                    continue
+                newest_sidecar = max(
+                    (p.stat().st_mtime for p in (npy_path, json_path)
+                     if p.exists()), default=0.0)
+                db_path = get_db_path(index)
+                newest_db = 0.0
+                for candidate in (db_path, Path(str(db_path) + "-wal")):
+                    try:
+                        newest_db = max(newest_db, candidate.stat().st_mtime)
+                    except OSError:
+                        pass
+                if newest_db > newest_sidecar:
+                    vector_cache["stale_dbs"].append(f"db{index}")
+    except Exception as exc:  # pylint: disable=broad-except
+        vector_cache = {"present": False, "files": 0, "stale_dbs": [],
+                        "error": f"{type(exc).__name__}: {exc}"}
+    if vector_cache["stale_dbs"] and "vector_cache" not in degraded:
+        degraded.append("vector_cache")
+
+    return {
+        "checked_utc": checked_utc,
+        "vault_dir": vault_dir,
+        "healthy": not degraded,
+        "degraded_lanes": sorted(degraded),
+        "total_shards": total,
+        "embedded_shards": embedded,
+        "embedding_coverage_pct": coverage,
+        "min_coverage_pct": min_pct,
+        "semantic_degraded": semantic_degraded,
+        "journal_mode": journal_mode,
+        "synchronous": synchronous,
+        "databases": databases,
+        "fts": {"present_all": fts_present_all, "rows": fts_rows},
+        "embedding": embedding_status,
+        "vector_cache": vector_cache,
+    }
+
+
 def _resolve_vault_dir() -> Path:
     """Pick the vault directory. Explicit beats implicit; nothing is CWD-relative.
 
@@ -121,6 +392,8 @@ if VAULT_SOURCE != "default":
 else:
     logger.info("NouGen vault: %s", GLOBAL_DIR)
 
+OWNER_TENANT_ID = "owner"
+
 _ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
     "nougen_active_vault_dir", default=None)
 _ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
@@ -136,7 +409,7 @@ def active_vault_dir() -> Path:
 
 def active_tenant_id() -> str:
     """Request-local tenant; unset local/CLI work retains owner behaviour."""
-    return _ACTIVE_TENANT_ID.get() or "owner"
+    return _ACTIVE_TENANT_ID.get() or OWNER_TENANT_ID
 
 
 def active_lane() -> str:
@@ -167,6 +440,51 @@ def reset_active_vault(tokens: tuple) -> None:
     _ACTIVE_VAULT_DIR.reset(vault_token)
 
 
+_OWNER_HOME_ENV_VARS = ("NOUGEN_ROOT",)
+_OWNER_HOME_FALLBACK_LOGGED = False
+
+
+def owner_home() -> Path:
+    """The owner's runtime root (relay, inboxes, secrets, destinies live under it).
+
+    Resolution: NOUGEN_ROOT -> ~/.nougen (fallback, logged once). NOUGEN_HOME is
+    the *code* home (Watchtower/NouGen) and deliberately not consulted.
+    """
+    global _OWNER_HOME_FALLBACK_LOGGED
+    for var in _OWNER_HOME_ENV_VARS:
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            return Path(raw).expanduser()
+    if not _OWNER_HOME_FALLBACK_LOGGED:
+        _OWNER_HOME_FALLBACK_LOGGED = True
+        logger.info("owner_home: %s unset; falling back to ~/.nougen", "/".join(_OWNER_HOME_ENV_VARS))
+    return Path.home() / ".nougen"
+
+
+def is_tenant_context() -> bool:
+    """True inside a request bound to a non-owner tenant."""
+    return vault_context_is_set() and active_tenant_id() != OWNER_TENANT_ID
+
+
+def active_home() -> Path:
+    """Identity-scoped runtime root.
+
+    A tenant request resolves to its own vault dir, so relay legs, message inboxes,
+    secrets and destinies all live under ``<tenant_vault>/`` and never under the
+    owner's ``~/.nougen``. Owner and CLI work resolve to :func:`owner_home`.
+    """
+    if is_tenant_context():
+        return active_vault_dir()
+    return owner_home()
+
+
+def active_subdir(*parts: str) -> Path:
+    """``active_home()/<parts>`` created on first use (tenants must never fall back to owner paths)."""
+    target = active_home().joinpath(*parts)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def _ensure_active_vault_dir() -> Path:
     vault = active_vault_dir()
     vault.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -190,7 +508,7 @@ def get_db_path(index: int) -> Path:
 
 
 def is_db_full(index: int) -> bool:
-    """Checks if a database file has reached its 1GB constraint."""
+    """Checks if a database file has reached MAX_DB_SIZE (2GB by default)."""
     path = get_db_path(index)
     if not path.exists():
         return False
@@ -213,7 +531,7 @@ def get_write_index(fhash: str) -> int:
     """
     Resolves the destination DB for a new shard (Module 4: Surface Leverage).
     Routes deterministically by content hash for uniform O(1) distribution across
-    the 9-DB cluster, then skips any database that has hit its 1GB constraint.
+    the 9-DB cluster, then skips any database that has hit MAX_DB_SIZE.
     """
     start = get_routing_index(fhash)
     for offset in range(MAX_DB_COUNT):
@@ -229,6 +547,23 @@ def get_active_db_index() -> int:
 
 
 DEFAULT_SQLITE_TIMEOUT_S = 10.0
+DEFAULT_SQLITE_MMAP_SIZE = 268435456  # 256MB memory-mapped I/O per DB
+
+
+def sqlite_mmap_size(default: int | None = None) -> int:
+    """Bytes for SQLite PRAGMA mmap_size; NOUGEN_SQLITE_MMAP_SIZE overrides.
+
+    Allows memory-mapped reads of FTS5 indices and table pages to stay sub-50ms
+    and avoid disk thrashing across 9-DB federated lookups.
+    """
+    fallback = DEFAULT_SQLITE_MMAP_SIZE if default is None else default
+    raw = os.environ.get("NOUGEN_SQLITE_MMAP_SIZE", "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
 
 
 def sqlite_timeout_s(default: float | None = None) -> float:
@@ -263,6 +598,128 @@ def sqlite_timeout_s(default: float | None = None) -> float:
     return value
 
 
+# Persistent read-only connection pool keyed by thread ID and DB index/path
+_RO_POOL_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_SET = False
+
+
+def _apply_sqlite_heap_limit(conn: sqlite3.Connection) -> None:
+    """Cap SQLite's process-wide heap once (NOUGEN_SQLITE_SOFT_HEAP_MB, default 512).
+
+    SQLite page caches, sorters and FTS buffers are native memory that Python's
+    allocator and tracemalloc never see. On the WhoArt node (2026-11-18) 240
+    recalls took commit from 2.2 to 7.4 GB (peak 8.7 GB) with flat Python object
+    counts; with this limit the same run held flat near 2.8 GB. soft_heap_limit
+    is process-wide: at the limit SQLite recycles cache pages instead of
+    allocating more. 0 disables it.
+    """
+    global _SQLITE_HEAP_LIMIT_SET  # pylint: disable=global-statement
+    if _SQLITE_HEAP_LIMIT_SET:
+        return
+    with _SQLITE_HEAP_LIMIT_LOCK:
+        if _SQLITE_HEAP_LIMIT_SET:
+            return
+        try:
+            mb = int(os.environ.get("NOUGEN_SQLITE_SOFT_HEAP_MB", "512"))
+        except ValueError:
+            mb = 512
+        try:
+            conn.execute(f"PRAGMA soft_heap_limit={max(0, mb) * 1024 * 1024};")
+        except sqlite3.DatabaseError:
+            pass
+        _SQLITE_HEAP_LIMIT_SET = True
+_RO_CONN_POOL: dict[tuple[int, str], sqlite3.Connection] = {}
+
+
+def get_readonly_connection(index: int) -> sqlite3.Connection:
+    """Thread-local / persistent pooled read-only SQLite connection.
+
+    Configured with PRAGMA mmap_size=256MB, PRAGMA cache_size=-64000 (64MB RAM),
+    and PRAGMA query_only=ON for lightning-fast sub-50ms FTS5 / shard queries.
+    """
+    path = get_db_path(index)
+    tid = _threading.get_ident()
+    pool_key = (tid, str(path))
+
+    with _RO_POOL_LOCK:
+        existing = _RO_CONN_POOL.get(pool_key)
+        if existing is not None:
+            try:
+                # Fast liveness check
+                existing.execute("SELECT 1;")
+                return existing
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                _RO_CONN_POOL.pop(pool_key, None)
+
+    # Establish new read-only connection with mmap and memory cache
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        conn = sqlite3.connect(f"file:{path}?immutable=1&mode=ro", uri=True, timeout=30.0)
+    else:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=sqlite_timeout_s())
+
+    from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
+    mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
+    conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
+    cache_kb = get_scaled_sqlite_cache_size(ro_cache_kb())
+    conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
+    conn.execute("PRAGMA query_only=ON;")
+    conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
+
+    with _RO_POOL_LOCK:
+        # Connections are keyed by thread id, but a thread-per-request server
+        # (http.server, uvicorn threadpools) never comes back to a finished
+        # thread's key: its connection, each with a 64 MB page cache plus an mmap
+        # window, stayed open until the 64-entry cap. Measured 2026-11-09: the
+        # phone bridge grew ~45 MB per vault search and reached 6-8 GB in about an
+        # hour. Close connections whose owning thread has ended, then cap the pool.
+        _prune_dead_thread_connections()
+        cap = _ro_pool_max()
+        while len(_RO_CONN_POOL) >= cap:
+            oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
+            _RO_CONN_POOL.pop(oldest_key, None)
+            try:
+                oldest_conn.close()
+            except Exception:
+                pass
+        _RO_CONN_POOL[pool_key] = conn
+    return conn
+
+
+def _ro_pool_max() -> int:
+    """Upper bound on pooled read-only connections (env NOUGEN_RO_POOL_MAX, default 24)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_RO_POOL_MAX", "24")))
+    except ValueError:
+        return 24
+
+
+def _prune_dead_thread_connections() -> int:
+    """Close pooled connections owned by threads that no longer exist. Caller holds _RO_POOL_LOCK."""
+    # Drop, don't force-close: the shared grid scan opens connections in worker
+    # threads and keeps reading their rows after those threads end, so closing
+    # from here broke live readers ("Cannot operate on a closed database"). Once
+    # the pool lets go, CPython closes each connection when its last reader does.
+    alive = {t.ident for t in _threading.enumerate()}
+    dead = [key for key in _RO_CONN_POOL if key[0] not in alive]
+    for key in dead:
+        _RO_CONN_POOL.pop(key, None)
+    return len(dead)
+
+
+def close_readonly_pool() -> None:
+    """Explicitly closes all pooled read-only connections."""
+    with _RO_POOL_LOCK:
+        for conn in _RO_CONN_POOL.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _RO_CONN_POOL.clear()
+
+
 def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
 
@@ -294,7 +751,17 @@ def get_connection(index: int):
         raise
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
+    # Durability contract (P0): synchronous is set deliberately, not left to
+    # SQLite's implicit default. FULL is the behaviour that was already in
+    # force under WAL; see get_vault_synchronous_mode().
+    conn.execute(f"PRAGMA synchronous={get_vault_synchronous_mode()};")
+    from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
+    mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
+    conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
+    cache_kb = get_scaled_sqlite_cache_size(64000)
+    conn.execute(f"PRAGMA cache_size={cache_kb};")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
     return conn
 
 
@@ -307,6 +774,56 @@ def _nofile_soft_limit():
 
 
 _INITIALIZED_DBS = set()
+
+
+_QUARANTINE_STATE = "boot_quick_check.json"
+
+
+def _quarantine_state_path() -> Path:
+    return Path(active_vault_dir()) / _QUARANTINE_STATE
+
+
+def _quarantine_recheck_s() -> float:
+    """Seconds a clean quick_check stays valid. NOUGEN_QUARANTINE_RECHECK_HOURS
+    (default 24); 0 checks every boot, the previous behaviour."""
+    raw = os.environ.get("NOUGEN_QUARANTINE_RECHECK_HOURS", "24")
+    try:
+        return max(0.0, float(raw)) * 3600.0
+    except ValueError:
+        logger.warning("NOUGEN_QUARANTINE_RECHECK_HOURS=%r is not a number; using 24", raw)
+        return 24 * 3600.0
+
+
+def _quarantine_recent_ok() -> set:
+    """Paths whose last clean quick_check is inside the recheck window."""
+    window = _quarantine_recheck_s()
+    if window <= 0:
+        return set()
+    try:
+        state = json.loads(_quarantine_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    now = time.time()
+    return {p for p, ts in (state if isinstance(state, dict) else {}).items()
+            if isinstance(ts, (int, float)) and 0 <= now - ts < window}
+
+
+def _quarantine_record_ok(path) -> None:
+    """Stamp a clean quick_check. Best-effort: a failed write only costs a recheck."""
+    state_path = _quarantine_state_path()
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    state[str(path)] = time.time()
+    try:
+        tmp = state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, state_path)
+    except OSError as exc:
+        logger.debug("boot quick_check state not saved: %s", exc)
 
 
 def quarantine_malformed_dbs() -> list:
@@ -335,9 +852,17 @@ def quarantine_malformed_dbs() -> list:
     if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
         return []
     quarantined = []
+    recent_ok = _quarantine_recent_ok()
     for i in range(1, MAX_DB_COUNT + 1):
         path = get_db_path(i)
         if not path.exists():
+            continue
+        if str(path) in recent_ok:
+            # Checked clean inside the recheck window: skip. quick_check is
+            # O(file size) - 741s over a 12 GB grid on WhoArt (2026-11-12) - and
+            # a node that restarts several times an hour paid it every boot,
+            # starving recall the whole time. Corruption between checks is still
+            # covered by the per-DB scan guards (see the docstring above).
             continue
         reason = None
         # Attempt 1: check integrity. If it fails, retry once on a fresh connection
@@ -361,6 +886,7 @@ def quarantine_malformed_dbs() -> list:
                 time.sleep(0.1)
 
         if reason is None:
+            _quarantine_record_ok(path)
             continue
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -533,14 +1059,21 @@ def init_db(index: int = 1):  # noqa: C901
 
 
         # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+        # Tokenizer is env-selectable (P1: NOUGEN_FTS_TOKENIZER, default
+        # trigram) so the trigram-vs-plain comparison can build a plain
+        # vault without code edits. Vault-creation-time choice: the
+        # CREATE below is IF NOT EXISTS, so an existing table keeps its
+        # original tokenizer and a mismatch is logged, never silently
+        # rebuilt (a rebuild would re-tokenize every row on open).
+        fts_tokenizer = _fts_tokenizer()
         try:
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
                     title,
                     content,
                     content='shards',
                     content_rowid='id',
-                    tokenize='trigram'
+                    tokenize='{fts_tokenizer}'
                 );
             """)
         except sqlite3.OperationalError:
@@ -549,9 +1082,20 @@ def init_db(index: int = 1):  # noqa: C901
                     title,
                     content,
                     content='shards',
-                    content_rowid='id'
+                    content_rowid='id',
+                    tokenize='unicode61'
                 );
             """)
+        _fts_sql_row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='shards_fts'"
+        ).fetchone()
+        if _fts_sql_row and _fts_sql_row[0]:
+            _fts_sql = str(_fts_sql_row[0]).lower()
+            if ("trigram" in _fts_sql) != (fts_tokenizer == "trigram"):
+                logger.warning(
+                    "NOUGEN_FTS_TOKENIZER=%r does not match the existing "
+                    "shards_fts table (kept as created); rebuild the vault "
+                    "to change tokenizers", fts_tokenizer)
 
         # Sync triggers (Module 18: Reconstruct Coherence).
         # The FTS index must stay coherent on every write, not just inserts. Without
@@ -587,6 +1131,33 @@ def init_db(index: int = 1):  # noqa: C901
             END;
         """)
 
+        # Timestamp guard: any writer that stores time.time() (seconds or ms) in `timestamp`
+        # produced values that sort as the year 1789 and vanish from date-window recall
+        # (2026-10-04: 398 rows on blade, 91 on phoebus from an unidentified Antigravity writer
+        # that bypasses capture()). Normalize at the schema so unknown writers are covered too.
+        # Only plain numbers in the 2000-2100 epoch range are touched; nothing else is guessed.
+        _ts_numeric = (
+            "new.timestamp IS NOT NULL AND new.timestamp <> '' "
+            "AND new.timestamp NOT GLOB '*[^0-9.]*' "
+            "AND CAST(new.timestamp AS REAL) BETWEEN 946684800 AND 4102444800000"
+        )
+        _ts_iso = (
+            "strftime('%Y-%m-%dT%H:%M:%fZ', CASE WHEN CAST(new.timestamp AS REAL) >= 1e12 "
+            "THEN CAST(new.timestamp AS REAL) / 1000.0 ELSE CAST(new.timestamp AS REAL) END, 'unixepoch')"
+        )
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ts_norm_ai")
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ts_norm_au")
+        cursor.execute(f"""
+            CREATE TRIGGER shards_ts_norm_ai AFTER INSERT ON shards WHEN {_ts_numeric} BEGIN
+                UPDATE shards SET timestamp = {_ts_iso} WHERE id = new.id;
+            END;
+        """)
+        cursor.execute(f"""
+            CREATE TRIGGER shards_ts_norm_au AFTER UPDATE OF timestamp ON shards WHEN {_ts_numeric} BEGIN
+                UPDATE shards SET timestamp = {_ts_iso} WHERE id = new.id;
+            END;
+        """)
+
         conn.commit()
         _INITIALIZED_DBS.add(key)
     finally:
@@ -608,6 +1179,8 @@ def _get_dedup_connection():
     conn = sqlite3.connect(str(get_dedup_path()), timeout=sqlite_timeout_s())
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
+    # Same durability contract as the shard DBs (P0): FULL, set deliberately.
+    conn.execute(f"PRAGMA synchronous={get_vault_synchronous_mode()};")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hashes (
             file_hash TEXT PRIMARY KEY,
@@ -680,23 +1253,33 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def elevated_compression_density(content: str) -> float:
+    """Elevated offline information density proxy using zlib compression ratios.
+
+    Subtracts the static 11-byte zlib header/trailer overhead before dividing,
+    and applies a sigmoid length penalty so shards under 64 characters cannot
+    saturate the density ceiling.
+    """
+    raw = content.encode("utf-8")
+    n = len(raw)
+    if n == 0:
+        return 0.0
+    compressed_len = max(1, len(zlib.compress(raw, level=6)) - 11)
+    raw_ratio = min(1.0, compressed_len / n)
+    length_gate = 1.0 / (1.0 + math.exp(-(n - 64) / 16.0))
+    return float(raw_ratio * length_gate)
+
+
 def compression_density(content: str) -> float:
-    """Local, offline density estimate: gzip ratio as a proxy for surprisal.
+    """Local, offline density estimate: elevated zlib ratio with sigmoid length gate.
 
     Exposed separately from `calculate_contrastive_perplexity` so bulk callers
-    can opt out of the per-item LLM round trip. Scoring an import of six
-    figures of records through a model is not viable — each unreachable
-    provider costs a connection timeout, and even a live local model would
-    serialize the whole ingest behind inference.
+    can opt out of the per-item LLM round trip.
     """
     if not content:
-        return 1.0
-    import zlib
+        return 0.0
     try:
-        compressed_len = len(zlib.compress(content.encode('utf-8')))
-        raw_len = len(content.encode('utf-8'))
-        compression_ratio = compressed_len / max(1, raw_len)
-        return float(min(1.0, max(0.1, compression_ratio * 1.5)))
+        return elevated_compression_density(content)
     except Exception:
         return 0.5
 
@@ -796,13 +1379,15 @@ def _llm_density(content: str) -> Optional[float]:
             preferred = [
                 m.strip()
                 for m in os.getenv(
-                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
+                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-it-qat,gemma4:e4b-it-qat"
                 ).split(",")
                 if m.strip()
             ]
+            # Ollama cloud models are paid since 2026-11-18: never picked by default.
+            local_models = [m for m in models if "cloud" not in str(m)]
             best_model = next(
                 (p for p in preferred if p in models),
-                models[0] if models else None,
+                local_models[0] if local_models else None,
             )
             if best_model:
                 prompt = (
@@ -891,17 +1476,22 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     except ValueError:
         timeout = 1.5
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text(((title or "") + "\n" + (content or ""))[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("embed-at-capture raised: %s", exc)
     if not vec:
         EMBED_AT_CAPTURE_MISSES += 1
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning(
             "shard written WITHOUT embedding (model=%s, miss #%d) -- semantic recall "
-            "will not see it until backfill runs; is ollama up?",
-            model, EMBED_AT_CAPTURE_MISSES,
+            "will not see it until backfill runs; %s",
+            model, EMBED_AT_CAPTURE_MISSES, why,
         )
         return None
     return vec
@@ -936,14 +1526,19 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         # connection at once, so only a hung one ever waits the full budget.
         timeout = 6.0
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed((query or "")[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text((query or "")[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("query embedding raised: %s", exc)
     if not vec:
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning("query embedding unavailable (model=%s); recall is keyword-only "
-                       "for this query -- is ollama up?", model)
+                       "for this query -- %s", model, why)
         return None
     arr = np.array(vec, dtype=np.float32)
     norm = np.linalg.norm(arr)
@@ -1025,7 +1620,9 @@ def capture(event_type: str, title: str, content: str,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
             valid_until: Optional[str] = None,
-            consolidate: Optional[bool] = None) -> bool:
+            consolidate: Optional[bool] = None,
+            poe: Optional[dict] = None,
+            evidence: Optional[dict] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1054,6 +1651,16 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Truth Anchor: a completion-tagged shard must carry proof of execution.
+    from . import poe_gate as _poe  # pylint: disable=import-outside-toplevel
+    allowed, poe_errors = _poe.check(tags, content, poe if poe is not None else evidence,
+                                     event_type=event_type, title=title)
+    if not allowed:
+        logger.warning("capture: rejected unproven completion claim %r: %s",
+                       title, "; ".join(poe_errors))
+        return CaptureResult(captured=False, reason="unproven_completion",
+                             error="completion claim without proof: " + "; ".join(poe_errors)[:300])
 
     # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
     # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
@@ -1301,6 +1908,216 @@ def capture(event_type: str, title: str, content: str,
         dconn.close()
 
 
+@dataclass(frozen=True)
+class CanonicalShardRef:
+    """Deterministic content-addressed shard URI and composite key resolver.
+
+    Eliminates primary key collisions across the 9 SQLite cluster databases
+    where integer IDs repeat from 1 to N in every file.
+    """
+    db_index: int
+    shard_id: int
+    content_hash: str
+
+    @classmethod
+    def compute_hash(cls, domain_key: str, title: str, content: str, origin_ts: str) -> str:
+        payload = f"{domain_key.strip()}|{title.strip()}|{content.strip()}|{origin_ts.strip()}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def verify_mutation_target(self, row_domain: str, row_title: str, row_content: str, row_ts: str) -> bool:
+        actual_hash = self.compute_hash(row_domain, row_title, row_content, row_ts)
+        return actual_hash == self.content_hash
+
+
+def shards_amend(
+    ref: CanonicalShardRef,
+    new_content: Optional[str] = None,
+    new_title: Optional[str] = None,
+    new_utility: Optional[float] = None
+) -> bool:
+    """Amends a shard only if the target row's CanonicalShardRef cryptographically matches."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_amend rejected: hash mismatch for ref %s", ref)
+            return False
+        updates = []
+        params = []
+        if new_content is not None:
+            updates.append("content = ?")
+            params.append(new_content)
+        if new_title is not None:
+            updates.append("title = ?")
+            params.append(new_title)
+        if new_utility is not None:
+            updates.append("utility_score = ?")
+            params.append(new_utility)
+        if not updates:
+            return True
+        params.append(ref.shard_id)
+        cur = conn.execute(f"UPDATE shards SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def shards_retract(ref: CanonicalShardRef, reason: str = "Retracted by cognitive unlearning") -> bool:
+    """Retracts a shard by flooring utility to 0.0001, appending a tombstone, and verifying hash."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp, tags FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_retract rejected: hash mismatch for ref %s", ref)
+            return False
+        existing_tags = row["tags"] or ""
+        new_tags = f"{existing_tags},retracted,tombstone".strip(",")
+        tombstone = f"\n[TOMBSTONE: {reason} at {datetime.now(timezone.utc).isoformat()}]"
+        updated_content = (row["content"] or "") + tombstone
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0001, tags = ?, content = ? WHERE id = ?",
+            (new_tags, updated_content, ref.shard_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def purge_shard(shard_id: int, db_index: int, confirm_title: Optional[str] = None,
+                content_hash: Optional[str] = None) -> dict:
+    """Delete a shard from every place it is recorded, and say so.
+
+    ``shards_forget`` SUPPRESSES (utility 0, tags) and is recoverable. This is
+    the irreversible path, and it has to be complete or it is a worse lie than
+    suppression: the ``shards_ad`` trigger removes the FTS entry, but the row's
+    ``file_hash`` also lives in the central ``dedup_index.db`` ``hashes`` map.
+    Leave that behind and a later re-capture of the same text is silently
+    reported as a duplicate of a row that no longer exists (observed on the
+    node's ``shard_forget`` before this existed). Order: dedup map first, then
+    the row, so a crash between the two leaves a re-capturable row rather than
+    an unreachable hash.
+
+    Requires ``confirm_title`` (exact current title) or ``content_hash``
+    (CanonicalShardRef) so a caller cannot purge a shard it has not seen.
+    Returns a receipt with every store touched; raises ValueError on refusal.
+    """
+    if not confirm_title and not content_hash:
+        raise ValueError("purge_shard requires confirm_title or content_hash")
+    if not get_db_path(db_index).exists():
+        raise ValueError(f"no shard DB at index {db_index}")
+    init_db(db_index)
+    conn = get_connection(db_index)
+    try:
+        row = conn.execute(
+            "SELECT title, domain_key, content, timestamp, file_hash FROM shards WHERE id = ?",
+            (shard_id,)).fetchone()
+        if not row:
+            raise ValueError(f"no shard with id {shard_id} in db {db_index}")
+        title = row["title"] or ""
+        domain = row["domain_key"] or ""
+        content = row["content"] or ""
+        # Core's CanonicalShardRef hashes over `timestamp` (see shards_forget /
+        # shards_amend). The node's resolver prefers `original_timestamp` when
+        # that column exists and is set, so accept a hash computed either way.
+        actual_hash = CanonicalShardRef.compute_hash(domain, title, content, str(row["timestamp"] or ""))
+        accepted = {actual_hash.lower()}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(shards)").fetchall()}
+        if "original_timestamp" in cols:
+            ots = conn.execute("SELECT original_timestamp FROM shards WHERE id = ?", (shard_id,)).fetchone()[0]
+            if ots:
+                accepted.add(CanonicalShardRef.compute_hash(domain, title, content, str(ots)).lower())
+        if content_hash and content_hash.strip().lower() not in accepted:
+            raise ValueError(f"CanonicalShardRef hash mismatch for id {shard_id}@db{db_index}: "
+                             f"expected {content_hash!r}, found {actual_hash!r}; refusing to purge")
+        if confirm_title and title != confirm_title:
+            raise ValueError(f"title mismatch for id {shard_id}@db{db_index}: expected "
+                             f"{confirm_title[:60]!r}, found {title[:60]!r}; refusing to purge")
+        file_hash = row["file_hash"]
+
+        dedup_removed = 0
+        if file_hash:
+            dconn = _get_dedup_connection()
+            try:
+                dedup_removed = dconn.execute("DELETE FROM hashes WHERE file_hash = ?", (file_hash,)).rowcount
+                dconn.commit()
+            finally:
+                dconn.close()
+
+        # shards_ad trigger removes the shards_fts entry in the same statement.
+        rows_removed = conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,)).rowcount
+        conn.commit()
+        fts_left = conn.execute("SELECT count(*) FROM shards_fts WHERE rowid = ?", (shard_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+    try:
+        from . import history  # pylint: disable=import-outside-toplevel
+        # Audit row carries identity and hashes only -- never the content.
+        history.log_event(shard_id, db_index, "purged",
+                          metadata={"content_hash": actual_hash, "file_hash": file_hash})
+    except Exception as exc:
+        logger.warning("purge_shard: history event not written for %s@db%s: %s", shard_id, db_index, exc)
+
+    return {
+        "purged": shard_id, "db_index": db_index, "title": title, "content_hash": actual_hash,
+        "canonical_ref": f"{db_index}#{shard_id}:{actual_hash}",
+        "rows_removed": rows_removed, "fts_entries_left": fts_left,
+        "dedup_entries_removed": dedup_removed, "recoverable": False,
+    }
+
+
+def shards_forget(ref: CanonicalShardRef) -> bool:
+    """Suppresses a shard (utility 0.0, tags 'forgotten,suppressed') after
+    CanonicalShardRef verification. Recoverable: the row, its FTS entry and its
+    dedup hash all stay. For deletion use ``purge_shard``."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_forget rejected: hash mismatch for ref %s", ref)
+            return False
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0, tags = 'forgotten,suppressed' WHERE id = ?",
+            (ref.shard_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
     """Record that a shard was re-confirmed true now, optionally moving its
     validity window (Toujou). Returns False when the row does not exist."""
@@ -1409,6 +2226,66 @@ def _bm25_half_score() -> float:
     return DEFAULT_BM25_HALF_SCORE
 
 
+#: FTS5 tokenizer for the shards_fts table (P1). ``trigram`` is the live
+#: default (fuzzy/substring recall); ``unicode61`` is the plain tokenizer
+#: used by the trigram-vs-plain comparison in tools/fts_bench.py. This is a
+#: VAULT-CREATION-TIME choice: an existing FTS table keeps its original
+#: tokenizer (init_db logs a warning on mismatch) -- flipping the env on a
+#: live vault does not rebuild the index.
+DEFAULT_FTS_TOKENIZER = "trigram"
+FTS_TOKENIZERS = ("trigram", "unicode61")
+
+
+def _fts_tokenizer() -> str:
+    """Resolve the FTS5 tokenizer: env first, logged fallback.
+
+    Env: NOUGEN_FTS_TOKENIZER (``trigram`` | ``unicode61``).
+    """
+    raw = os.environ.get("NOUGEN_FTS_TOKENIZER", "").strip().lower()
+    if not raw:
+        return DEFAULT_FTS_TOKENIZER
+    if raw in FTS_TOKENIZERS:
+        return raw
+    logger.warning("NOUGEN_FTS_TOKENIZER=%r is not one of %s; falling back to %s",
+                   raw, FTS_TOKENIZERS, DEFAULT_FTS_TOKENIZER)
+    return DEFAULT_FTS_TOKENIZER
+
+
+#: BM25 column weights for the FTS MATCH queries in _keyword_retrieve (P1).
+#: Defaults (5.0 title / 1.0 body) are the live behaviour measured by the
+#: audit; the env knobs exist so weight experiments run without code edits
+#: and are judged by measured delta only (tools/fts_bench.py).
+DEFAULT_FTS_BM25_TITLE_WEIGHT = 5.0
+DEFAULT_FTS_BM25_BODY_WEIGHT = 1.0
+
+
+def _fts_bm25_weights() -> tuple:
+    """Resolve the FTS BM25 (title, body) weights: env first, logged fallback.
+
+    Env: NOUGEN_FTS_BM25_TITLE_WEIGHT, NOUGEN_FTS_BM25_BODY_WEIGHT.
+    Each must be a finite number >= 0; anything else falls back to default.
+    """
+    weights = []
+    for env, default in (
+        ("NOUGEN_FTS_BM25_TITLE_WEIGHT", DEFAULT_FTS_BM25_TITLE_WEIGHT),
+        ("NOUGEN_FTS_BM25_BODY_WEIGHT", DEFAULT_FTS_BM25_BODY_WEIGHT),
+    ):
+        raw = os.environ.get(env, "")
+        if raw.strip():
+            try:
+                val = float(raw)
+                if math.isfinite(val) and val >= 0:
+                    weights.append(val)
+                    continue
+                logger.warning("%s=%r must be a finite number >= 0; "
+                               "falling back to %s", env, raw, default)
+            except ValueError:
+                logger.warning("%s=%r is not a number; falling back to %s",
+                               env, raw, default)
+        weights.append(default)
+    return (weights[0], weights[1])
+
+
 def _domain_affinity_boost() -> float:
     """Resolve the implicit-domain affinity boost: env first, logged fallback."""
     raw = os.environ.get("NOUGEN_DOMAIN_BOOST")
@@ -1449,24 +2326,41 @@ def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
         return 1.0
 
 
+def elevated_final_score(
+    bm25_raw: float,
+    utility_base: float,
+    density: float,
+    age_days: float,
+    half_life_days: float = 90.0,
+    is_canon_lock: bool = False,
+    utility_floor: float = 0.25,
+) -> float:
+    """Flagged alternative to the blend in _process_fts_result (NOUGEN_ELEVATED_SCORE=1).
+
+    Lexical gain is monotone in match strength and bounded in [0, 1): FTS5 bm25 is
+    more negative for stronger matches, so the gain is 1 - exp(-|bm25|/10). The
+    spec's exp(-|bm25|/10) inverts that, the bug the existing scorer documents.
+    Utility decays on a 90-day half-life, with a floor so old canon never vanishes;
+    a canon lock is age-invariant.
+    """
+    lexical_gain = 1.0 - math.exp(-abs(float(bm25_raw)) / 10.0)
+    decay = 1.0 if is_canon_lock else math.pow(0.5, max(0.0, age_days) / half_life_days)
+    effective_utility = max(utility_floor, utility_base * decay)
+    tripartite = (0.50 * effective_utility) + (0.30 * max(0.0, min(1.0, density))) + (0.20 * lexical_gain)
+    return lexical_gain * tripartite
+
+
+def _elevated_scoring_enabled() -> bool:
+    return os.environ.get("NOUGEN_ELEVATED_SCORE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _process_fts_result(row, db_index, query_embedding, now: datetime):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = hydrate(dict(row))
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
-    # FTS5 bm25() returns negative values where *more negative == stronger match*
-    # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
-    # strong and weak matches onto the same magnitude and inverts the signal — a
-    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). A raw
-    # logistic 1/(1+e^bm25) fixed the inversion but saturates: measured corpus
-    # scores span roughly -6 (weak single-token) to -90 (near-exact multi-term),
-    # and the logistic maps ALL of them to ~1.0, so keyword strength contributed
-    # a constant and stale high-utility rows outranked near-exact fresh matches.
-    # Map through a rational saturation x/(x+half) instead: still monotonically
-    # increasing in match strength and bounded in [0, 1), but discriminating
-    # across the whole measured range. `half` is the bm25 magnitude that scores
-    # 0.5 (env NOUGEN_BM25_HALF_SCORE; fallback from the measured corpus span).
-    strength = max(0.0, -item["bm25_score"])
+    bm25_raw = float(item.get("bm25_score", 0.0) or 0.0)
+    strength = max(0.0, -bm25_raw)
     norm_bm25 = strength / (strength + _bm25_half_score())
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
@@ -1484,21 +2378,56 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
             except Exception:
                 sem_score = 0.0
 
-    # Synthesize Coherent Likelihood (Module 9). When the caller supplied no
-    # query embedding the semantic lane is ABSENT, not zero-valued: weighting a
-    # missing sensor as 0 capped likelihood at WEIGHT_BM25 and let the decayed
-    # utility prior dominate every keyword-only retrieval. Renormalize over the
-    # signal that actually exists (broken-sensor absence, HARDENING inv. 4).
+    # Synthesize Coherent Likelihood (Module 9).
     if query_embedding is None:
         likelihood = norm_bm25
     else:
         likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
-    # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
-    decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), now)
+    # 3. Density & Temporal decay
+    density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
+    age_days = 0.0
+    ts_str = item.get("timestamp")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
 
-    # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
+    is_canon = bool(item.get("is_canon_lock") or (item.get("tags") and "canon" in str(item.get("tags")).lower()))
+    utility_base = float(item.get("utility_score") if item.get("utility_score") is not None else 1.0)
+
+    # Compute elevated score component and decayed utility
+    decayed_utility = utility_base * _temporal_decay(item.get("timestamp"), now)
+
+    elevated_score = elevated_final_score(
+        bm25_raw=bm25_raw,
+        utility_base=utility_base,
+        density=density,
+        age_days=age_days,
+        half_life_days=90.0,
+        is_canon_lock=is_canon,
+    )
+    item["elevated_score"] = elevated_score
+
+    # 4. Final relevance: weighted blend of likelihood and decayed utility
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+    if _elevated_scoring_enabled():
+        age_days = 0.0
+        try:
+            dt = datetime.fromisoformat(str(item.get("timestamp")).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
+        item["final_score"] = elevated_final_score(
+            item["bm25_score"], float(item.get("utility_score") or 0.0),
+            float(item.get("density_score") if item.get("density_score") is not None else 1.0),
+            age_days, is_canon_lock=str(item.get("event_type") or "").upper() == "CANON")
     return item
 
 
@@ -1532,6 +2461,26 @@ def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     filtered_tokens = [t for t in tokens if t.lower() not in boilerplate]
     if filtered_tokens:
         tokens = filtered_tokens
+
+    # Cap the term count. Recall hooks send whole chat prompts; on a 12 GB grid
+    # the ranked-OR retry over ~20 common words took 6s per call against 0.4s
+    # for four words (WhoArt, 2026-11-12), and hook traffic stacked those scans
+    # until every /search missed its 20s deadline. Keep distinct terms, longest
+    # first (length is a cheap proxy for rarity), in their original order.
+    try:
+        max_terms = max(1, int(os.environ.get("NOUGEN_FTS_MAX_TERMS", "8")))
+    except ValueError:
+        max_terms = 8
+    seen: set = set()
+    distinct = []
+    for t in tokens:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            distinct.append(t)
+    if len(distinct) > max_terms:
+        keep = set(sorted(range(len(distinct)), key=lambda k: (-len(distinct[k]), k))[:max_terms])
+        distinct = [t for k, t in enumerate(distinct) if k in keep]
+    tokens = distinct
 
     return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
@@ -1581,7 +2530,121 @@ def _retrieve_db_workers() -> int:
     return max(1, n)
 
 
-def _run_db_scans(scan_fn):
+def elevated_lane_timeout(
+    alpha: float,
+    beta_param: float,
+    max_deadline: float = 20.0,
+    min_deadline: float = 1.5
+) -> float:
+    """Thompson-sampling adaptive timeout proportional to lane reliability."""
+    expected_reliability = alpha / (alpha + beta_param)
+    sampled_trust = random.betavariate(alpha, beta_param)
+    blended = 0.7 * expected_reliability + 0.3 * sampled_trust
+    return max(min_deadline, min(max_deadline, max_deadline * blended))
+
+
+_SCAN_POOL = None
+_SCAN_POOL_LOCK = _threading.Lock()
+# Deadline-miss tracking for warm-up. The holder is a LIST placed in a
+# ContextVar by begin_scan_miss_tracking(); lanes that run under
+# copy_context().run() inherit the same list object, so a miss recorded inside
+# the vector lane's context still reaches the caller that started tracking
+# (Codex P2 on PR #880: a plain int ContextVar set inside the lane never
+# propagated back, and the caller read the title lane's count or -1).
+_SCAN_MISSES: ContextVar[Optional[list]] = ContextVar("ngs_scan_misses", default=None)
+
+
+def begin_scan_miss_tracking() -> list:
+    """Start collecting per-lane grid-DB miss counts for retrieves in this context."""
+    holder: list = []
+    _SCAN_MISSES.set(holder)
+    return holder
+
+
+def _record_scan_misses(count: int) -> None:
+    holder = _SCAN_MISSES.get()
+    if holder is not None:
+        holder.append(count)
+
+
+def last_scan_miss_count() -> int:
+    """Worst per-lane miss count since begin_scan_miss_tracking(); -1 if no scan ran."""
+    holder = _SCAN_MISSES.get()
+    if not holder:
+        return -1
+    return max(holder)
+# Logged fallback only: env NOUGEN_SCAN_POOL_WORKERS / NOUGEN_SCAN_POOL_RECALLS win.
+_SCAN_POOL_RECALLS_FALLBACK = 3
+
+
+def _scan_pool_capacity(workers: int) -> int:
+    """Bound on outstanding grid scans for the whole process.
+
+    env NOUGEN_SCAN_POOL_WORKERS wins; the fallback allows a few concurrent
+    recalls' worth of scans (workers * NOUGEN_SCAN_POOL_RECALLS, default 3) so
+    normal overlap never queues, while a slow or locked DB can only pin that
+    many threads no matter how many recalls pile up behind it.
+    """
+    raw = os.environ.get("NOUGEN_SCAN_POOL_WORKERS", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_WORKERS=%r is not an int; using fallback", raw)
+    raw_recalls = os.environ.get("NOUGEN_SCAN_POOL_RECALLS", "").strip()
+    recalls = _SCAN_POOL_RECALLS_FALLBACK
+    if raw_recalls:
+        try:
+            recalls = max(1, int(raw_recalls))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_RECALLS=%r is not an int; using fallback %d",
+                           raw_recalls, _SCAN_POOL_RECALLS_FALLBACK)
+    else:
+        logger.debug("NOUGEN_SCAN_POOL_RECALLS unset; fallback %d concurrent recalls",
+                     _SCAN_POOL_RECALLS_FALLBACK)
+    return max(workers, workers * recalls)
+
+
+#: Second bounded pool, for the exact lanes (keyword + title) only. They used to
+#: share _SCAN_POOL with the vector lane. A vector scan can sit on the vector
+#: cache lock for seconds per DB while a cold index loads, and a scan that
+#: misses its deadline keeps its slot until it finishes - so a few timed-out
+#: vector recalls filled every slot and the sub-second keyword scans queued
+#: behind them, then waited out their own full deadline. Measured on whoart
+#: 2026-11-09: POST /search fast=true (keyword only, vector lane not even run)
+#: took 17.7s inside the node while the identical call in a fresh process took
+#: 0.18s. The fast path existed and could not be fast. Each pool is bounded on
+#: its own, so the thread ceiling is 2x the cap, still fixed.
+_EXACT_SCAN_POOL = None
+EXACT_SCAN_LANE = "exact"
+VECTOR_SCAN_LANE = "vector"
+
+
+def _scan_pool(workers: int, lane: str = VECTOR_SCAN_LANE):
+    """Lazily build the bounded ThreadPoolExecutor for ``lane``.
+
+    One process-wide pool per lane class, shared by every recall: ``vector``
+    (may block on the cache lock) and ``exact`` (keyword/title SQL).
+    """
+    global _SCAN_POOL, _EXACT_SCAN_POOL  # pylint: disable=global-statement
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    with _SCAN_POOL_LOCK:
+        if lane == EXACT_SCAN_LANE:
+            if _EXACT_SCAN_POOL is None:
+                cap = _scan_pool_capacity(workers)
+                _EXACT_SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=cap, thread_name_prefix="ngs-grid-scan-exact")
+                logger.info("exact grid scan pool created: %d worker(s)", cap)
+            return _EXACT_SCAN_POOL
+        if _SCAN_POOL is None:
+            cap = _scan_pool_capacity(workers)
+            _SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=cap, thread_name_prefix="ngs-grid-scan")
+            logger.info("grid scan pool created: %d worker(s)", cap)
+        return _SCAN_POOL
+
+
+def _run_db_scans(scan_fn, lane: str = VECTOR_SCAN_LANE):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
     The per-DB scan loops in both retrieval lanes were serial — on a 9-DB,
@@ -1596,11 +2659,44 @@ def _run_db_scans(scan_fn):
         for i in range(1, MAX_DB_COUNT + 1):
             yield i, scan_fn(i)
         return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {i: executor.submit(copy_context().run, scan_fn, i)
-                   for i in range(1, MAX_DB_COUNT + 1)}
-        for i in range(1, MAX_DB_COUNT + 1):
-            yield i, futures[i].result()
+    # One process-wide, bounded pool instead of a fresh executor per recall
+    # (Codex P1 on PR #878): a per-request executor shut down with wait=False
+    # left every straggler thread alive, so repeated recalls during a slow or
+    # locked scan accumulated threads without cap. Dropped scans still finish
+    # in the background and are discarded, but outstanding scans are bounded by
+    # the pool size and later recalls queue instead of spawning more threads.
+    executor = _scan_pool(workers, lane)
+    futures = {i: executor.submit(copy_context().run, scan_fn, i)
+               for i in range(1, MAX_DB_COUNT + 1)}
+    deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+    # Collect in COMPLETION order against one shared deadline, then yield in
+    # DB order. Waiting on futures[1] first let a single slow DB spend the
+    # whole budget, after which DBs 2..9 were declared timed out with 0.10s
+    # "remaining" even though their scans had long finished (blade
+    # 2026-10-26: 8 of 9 grid DBs dropped on a cold cache, recall returned
+    # only side-lane doc mirrors).
+    done: dict = {}
+    by_future = {f: i for i, f in futures.items()}
+    try:
+        for fut in concurrent.futures.as_completed(
+                futures.values(), timeout=max(0.1, deadline - time.monotonic())):
+            done[by_future[fut]] = fut.result()
+    except concurrent.futures.TimeoutError:
+        pass
+    finally:
+        # Queued-but-not-started scans are cancelled so they never occupy a
+        # pool slot; running stragglers finish and are dropped.
+        for fut in futures.values():
+            if not fut.done():
+                fut.cancel()
+    _record_scan_misses(sum(1 for i in range(1, MAX_DB_COUNT + 1) if i not in done))
+    for i in range(1, MAX_DB_COUNT + 1):
+        if i in done:
+            yield i, done[i]
+        else:
+            logger.warning("grid DB %d missed the shared scan deadline", i)
+            # Fallback must match expected scan_fn return signature
+            yield i, ([], True)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -1610,6 +2706,10 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
 
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
+    # BM25 column weights (P1 env knobs, defaults 5.0 title / 1.0 body).
+    # Resolved once per call; the values are validated floats, so formatting
+    # them into the MATCH SQL is safe (bm25() takes literals, not params).
+    _fts_title_w, _fts_body_w = _fts_bm25_weights()
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
 
@@ -1633,8 +2733,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         try:
             if not get_db_path(i).exists():
                 return db_rows, missed
-            conn = get_connection(i)
+            conn = get_readonly_connection(i)
             fts_worked = False
+            fts_ran_clean = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
@@ -1664,25 +2765,62 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         dom_params = () if domain_key in (None, "*") else (domain_key,)
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
-                                   bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
+                                   bm25(shards_fts, {_fts_title_w:.6g}, {_fts_body_w:.6g}) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
                         """, (*dom_params, *ing_params, match_expr, limit))
                         res = cursor.fetchall()
+                        fts_ran_clean = True
                     except sqlite3.OperationalError:
                         res = None
                     if res:
                         via_or_retry = match_expr is not fts_query
                         break
+                # Ingest rescue: bulk-ingest rows (event types in
+                # bulk_ingest_event_types, e.g. NouGenTube transcripts) are held out
+                # of default recall so papers do not drown agent memory. But when
+                # the filtered pass leaves slots unfilled, an exact all-terms match
+                # in the ingest population beats an empty slot -- a rare ID such as
+                # a video id otherwise returns semantic neighbours and never the
+                # one shard that contains it. Filtered hits keep their place; this
+                # only appends. NOUGEN_INGEST_RESCUE=0 disables it.
+                extra_rows: list = []
+                if (fts_ran_clean and fts_query is not None
+                        and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
+                        and (len(res or []) < limit or _id_like_token(query))):
+                    try:
+                        r_dom = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        r_dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        if not _ingest_filter_sql("s", include_research)[0]:
+                            raise sqlite3.OperationalError("no ingest filter active")
+                        have_ids = [r["id"] for r in (res or [])]
+                        not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
+                                  if have_ids else "")
+                        extra = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   bm25(shards_fts, {_fts_title_w:.6g}, {_fts_body_w:.6g}) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {r_dom}{not_in}shards_fts MATCH ?
+                            ORDER BY bm25_score ASC, s.id ASC LIMIT ?
+                        """, (*r_dom_params, *have_ids, fts_query, max(1, limit - len(res or [])))).fetchall()
+                        if extra:
+                            extra_rows = list(extra)
+                            res = list(res or []) + extra_rows
+                    except sqlite3.OperationalError:
+                        pass
                 if res:
+                    rescued_ids = {r["id"] for r in extra_rows}
                     for row in res:
                         accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
+                        if row["id"] in rescued_ids:
+                            item["_ingest_rescue"] = True
                         db_rows.append(item)
                     fts_worked = True
 
@@ -1692,12 +2830,32 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 like_query = f"%{query}%"
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
-                cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
-                    FROM shards
-                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
-                    ORDER BY utility_score DESC, id ASC LIMIT ?
-                """, (*dom_params, like_query, like_query, limit))
+                cursor = None
+                if fts_ran_clean and fts_query is not None and os.environ.get("NOUGEN_LIKE_ON_FTS_MISS", "0") != "1":
+                    # The index is healthy and the ingest-filtered pass came up
+                    # empty. This fallback exists to surface rows that pass skipped
+                    # (e.g. ingested transcripts), and a full LIKE scan of every
+                    # multi-GB shard DB measured ~6s on a hit and ~27s on a miss,
+                    # which timed out the gateway's blade lane ("fanout blade:miss").
+                    # Ask the trigram index for the same rows without the ingest
+                    # filter instead; NOUGEN_LIKE_ON_FTS_MISS=1 restores the scan.
+                    try:
+                        cursor = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {dom_clause.replace("domain_key", "s.domain_key")}shards_fts MATCH ?
+                            ORDER BY s.utility_score DESC, s.id ASC LIMIT ?
+                        """, (*dom_params, fts_query, limit))
+                    except sqlite3.OperationalError:
+                        cursor = None
+                if cursor is None:
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards
+                        WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
+                        ORDER BY utility_score DESC, id ASC LIMIT ?
+                    """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
@@ -1727,6 +2885,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             if not fts_worked and db_hits == 0:
                 missed = True
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk
@@ -1752,9 +2911,6 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-        finally:
-            if conn is not None:
-                conn.close()
         # ONE batched history write per DB scan. The per-row log_event calls
         # this replaces each opened a connection, INSERTed, committed, and
         # closed - ~360 synchronous commits per recall, a measured multi-second
@@ -1763,7 +2919,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             history.log_events([(sid, i, "ACCESSED") for sid in accessed])
         return db_rows, missed
 
-    for i, (db_rows, missed) in _run_db_scans(_scan_db):
+    for i, (db_rows, missed) in _run_db_scans(_scan_db, EXACT_SCAN_LANE):
         results.extend(db_rows)
         if missed:
             missed_dbs.append(i)
@@ -1811,7 +2967,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 # not -- one function, two fan-outs, one patch.
                 conn = None
                 try:
-                    conn = get_connection(i)
+                    conn = get_readonly_connection(i)
                     # Score against a cheap projection: the similarity probe only
                     # ever reads title + the first 256 chars of content, so there
                     # is no reason to pull full content and embedding blobs for
@@ -1847,7 +3003,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     sim_by_id = {rid: sim for sim, rid in keep}
                     placeholders = ",".join("?" * len(keep))
                     full = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards WHERE id IN ({placeholders})
                     """, tuple(rid for _, rid in keep)).fetchall()
                     fuzzy = []
@@ -1866,6 +3022,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
                 except (sqlite3.DatabaseError, OSError) as exc:
+                    _note_retrieval_db_failure(i, exc)
                     logger.error("grid DB %s unreadable during fuzzy pass, skipping it: %s: %s",
                                  i, type(exc).__name__, exc)
                     try:
@@ -1875,9 +3032,6 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     except Exception:  # pylint: disable=broad-except
                         pass
                     continue
-                finally:
-                    if conn is not None:
-                        conn.close()
 
     # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
     # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
@@ -1930,6 +3084,12 @@ _VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a
 #: let the builds run in parallel and let a waiter wait for one matrix, not
 #: the grid.
 _VECTOR_DB_LOCKS: dict = {}
+#: With NOUGEN_RECALL_MEMORY_GUARD on, one matrix build at a time across the grid, so nine
+#: ~70 MB builds do not sit in memory together. It is taken AFTER the per-DB lock and with the
+#: same wait budget, so a waiter still answers stale or keyword-only instead of queueing: the
+#: per-DB lock comment above is why this is not a plain grid-wide lock.
+_VECTOR_BUILD_GATE = _threading.Lock()
+_VECTOR_BUILDS_STARTED = 0
 _VECTOR_WAIT_WARNED: set = set()
 
 
@@ -1968,6 +3128,71 @@ def _db_write_signature(i: int) -> tuple:
     return tuple(sig)
 
 
+class _RowBlocks:
+    """A (rows, dim) float32 matrix kept as a base block plus a small tail.
+
+    The base is normally the saved matrix, memory-mapped. Appending a row with
+    ``np.vstack`` copied the whole base into the heap (~70 MB per grid DB, for
+    one new shard), which undid the mapping one DB at a time. Here an append
+    only grows the tail; the next save writes both out and maps the result.
+
+    Supports what the cache does with a matrix: ``.shape``, ``@ vector``,
+    row selection by a list of indices, and conversion to an array.
+    """
+
+    __slots__ = ("blocks",)
+
+    def __init__(self, blocks):
+        self.blocks = tuple(b for b in blocks if b.shape[0]) or (blocks[0],)
+
+    @classmethod
+    def appended(cls, matrix, new_rows):
+        """``matrix`` followed by ``new_rows``; at most two blocks."""
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) > 1:
+            return cls((blocks[0], np.vstack([*blocks[1:], new_rows])))
+        return cls((blocks[0], new_rows))
+
+    @property
+    def shape(self):
+        return (sum(b.shape[0] for b in self.blocks), self.blocks[0].shape[1])
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __matmul__(self, vec):
+        if len(self.blocks) == 1:
+            return self.blocks[0] @ vec
+        return np.concatenate([b @ vec for b in self.blocks])
+
+    def __array__(self, dtype=None, copy=None):
+        out = self.blocks[0] if len(self.blocks) == 1 else np.vstack(self.blocks)
+        return out if dtype is None else out.astype(dtype, copy=False)
+
+    def take(self, keep):
+        """Rows ``keep`` (ascending indices). While every base row is kept the
+        base stays as it is and only the tail is copied - the canary's
+        write-then-delete lands there, so it never costs a matrix copy."""
+        base = self.blocks[0]
+        n_base = base.shape[0]
+        split = bisect.bisect_left(keep, n_base)
+        rest = [k - n_base for k in keep[split:]]
+        tail = np.vstack(self.blocks[1:])[rest] if len(self.blocks) > 1 else base[:0]
+        if split == n_base:
+            return _RowBlocks((base, tail))
+        return np.vstack([base[keep[:split]], tail])
+
+    def __getitem__(self, key):
+        if isinstance(key, list):
+            return self.take(key)
+        return np.asarray(self)[key]
+
+
+def _matrix_blocks(matrix) -> tuple:
+    """The array blocks of a cache matrix, in row order."""
+    return matrix.blocks if isinstance(matrix, _RowBlocks) else (matrix,)
+
+
 def _prune_deleted(conn, entry: dict) -> dict:
     """Drop deleted rows from a cache entry without re-reading embeddings.
 
@@ -1989,11 +3214,284 @@ def _prune_deleted(conn, entry: dict) -> dict:
         "dom": [entry["dom"][k] for k in keep],
         "etype": [entry["etype"][k] for k in keep],
         "util": entry["util"][keep],
-        "matrix": entry["matrix"][keep],
+        "matrix": _RowBlocks(_matrix_blocks(entry["matrix"])).take(keep),
         "legacy": legacy,
     })
     pruned["n_embedded"] = len(pruned["ids"]) + len(legacy)
     return pruned
+
+
+def _scan_embedding_rows(cursor, dim: Optional[int], capacity: int):
+    """Read (id, timestamp, utility, domain, type, embedding) rows into one
+    preallocated float32 matrix. Collecting per-row bytes and joining them held
+    three copies of every vector at once (~3.7 GB peak for a 950 MB grid), which
+    pushed the WhoArt node over its memory watchdog on every rebuild."""
+    ids, ts, util, dom, etype, legacy = [], [], [], [], [], []
+    matrix = None
+    k = 0
+    for row in cursor:
+        emb = row["embedding"]
+        if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                and len(emb) % 4 == 0 and len(emb) > 0:
+            row_dim = len(emb) // 4
+            if dim is None:
+                dim = row_dim
+            if row_dim == dim:
+                if matrix is None:
+                    matrix = np.empty((max(capacity, 1), dim), dtype=np.float32)
+                elif k >= matrix.shape[0]:
+                    grown = np.empty((matrix.shape[0] * 2, dim), dtype=np.float32)
+                    grown[:k] = matrix[:k]
+                    matrix = grown
+                matrix[k] = np.frombuffer(emb, dtype=np.float32)
+                k += 1
+                ids.append(row["id"])
+                ts.append(row["timestamp"])
+                util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                dom.append(row["domain_key"] or "")
+                etype.append((row["event_type"] or "").upper())
+                continue
+        legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                       row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+    if matrix is None:
+        matrix = np.zeros((0, dim or 0), dtype=np.float32)
+    elif k < matrix.shape[0]:
+        matrix = matrix[:k].copy()
+    return ids, ts, util, dom, etype, matrix, legacy, dim
+
+
+#: Rows compared against the DB when a saved matrix is loaded (catches in-place re-embedding).
+_VECTOR_SIDECAR_SPOT_CHECK = 256
+
+#: Re-save a DB's matrix to disk once this many rows were appended since the last save.
+_VECTOR_SIDECAR_RESAVE_ROWS = 512
+
+
+def _vector_sidecar_paths(i: int, path: str):
+    """Where DB i's matrix is kept on disk (<vault>/.vector-cache by default),
+    keyed by the DB file it was built from. NOUGEN_VECTOR_SIDECAR=0 turns it
+    off; NOUGEN_VECTOR_SIDECAR_DIR moves every vault's copies to one place."""
+    if os.environ.get("NOUGEN_VECTOR_SIDECAR", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    # Default: beside the DB itself, so each vault (and each tenant's runtime
+    # root on a shared node) keeps its own copy and never reads another's.
+    base = os.environ.get("NOUGEN_VECTOR_SIDECAR_DIR") or os.path.join(
+        os.path.dirname(os.path.abspath(path)), ".vector-cache")
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]
+    stem = os.path.join(base, f"db{i}-{key}")
+    return stem + ".npy", stem + ".json"
+
+
+#: A save lock older than this is treated as left behind by a crashed process.
+_VECTOR_SIDECAR_LOCK_STALE_S = 600.0
+
+
+def _acquire_sidecar_lock(lock_path: str) -> bool:
+    """Cross-process: only one writer per DB at a time. Two nodes (or a node
+    and a CLI recall) starting together would otherwise both write the same
+    files. The loser skips its save; the winner's copy serves both."""
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_path) < _VECTOR_SIDECAR_LOCK_STALE_S:
+                    return False
+                os.remove(lock_path)  # left by a crashed writer: take it over once
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _save_vector_sidecar(i: int, entry: dict) -> None:
+    """Best effort: a failed or skipped save only costs the next restart a rebuild."""
+    paths = _vector_sidecar_paths(i, entry["path"])
+    if paths is None:
+        return
+    npy, meta = paths
+    lock_path = npy + ".lock"
+    emptied = not len(entry["ids"]) and not entry["legacy"]
+    if emptied and not os.path.exists(npy) and not os.path.exists(meta):
+        return
+    try:
+        # Owner-only on POSIX: on a shared node the vectors are tenant data.
+        os.makedirs(os.path.dirname(npy), mode=0o700, exist_ok=True)
+    except OSError as exc:
+        logger.warning("grid DB %s: could not create vector cache dir: %s", i, exc)
+        return
+    if not _acquire_sidecar_lock(lock_path):
+        return
+    if emptied:
+        # Nothing embedded any more: drop the old copy (under the lock) rather
+        # than reload and prune it to empty on every restart.
+        for stale in (meta, npy, lock_path):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return
+    tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
+    tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
+    try:
+        matrix = entry["matrix"]
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) == 1:
+            matrix = np.ascontiguousarray(blocks[0], dtype=np.float32)
+            np.save(tmp_npy, matrix)
+        else:
+            # Write block by block: joining them first would hold a full copy
+            # of the matrix in the heap for the length of the save.
+            out = np.lib.format.open_memmap(tmp_npy, mode="w+", dtype=np.float32, shape=matrix.shape)
+            row = 0
+            for block in blocks:
+                out[row:row + block.shape[0]] = block
+                row += block.shape[0]
+            out.flush()
+            del out
+        with open(tmp_meta, "w", encoding="utf-8") as fh:
+            json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
+                       "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
+                       "sha256": _matrix_sha256(matrix),
+                       "ids": entry["ids"], "ts": entry["ts"],
+                       "util": [float(x) for x in entry["util"]],
+                       "dom": entry["dom"], "etype": entry["etype"],
+                       # Rows stored in an older format (JSON text or another
+                       # width) ride along; bytes are kept as hex.
+                       "legacy": [[r[0], r[1], r[2], r[3], r[4],
+                                   {"hex": bytes(r[5]).hex()} if isinstance(r[5], (bytes, bytearray)) else r[5]]
+                                  for r in entry["legacy"]]}, fh)
+        # Matrix first, metadata last: a reader that sees the new metadata
+        # checks it against the matrix hash, so a half-swapped pair is rejected.
+        os.replace(tmp_npy, npy)
+        os.replace(tmp_meta, meta)
+        entry["saved_n"] = len(entry["ids"])
+        if _vector_sidecar_mmap():
+            # Serve from the file just written and let the heap copy go (a
+            # fresh build, or a tail grown since the last save). Same rows in
+            # the same order, so a recall that already holds the old object
+            # ranks identically.
+            try:
+                if matrix.shape[0]:
+                    mapped = np.load(npy, mmap_mode="r")
+                    if mapped.shape == tuple(matrix.shape):
+                        entry["matrix"] = mapped
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.info("grid DB %s: saved vector cache not mapped, serving from memory: %s", i, exc)
+        elif len(blocks) > 1:
+            # No mapping here (Windows): fold the tail back in once per save,
+            # so it stays small and scoring stays one matmul.
+            entry["matrix"] = np.ascontiguousarray(matrix, dtype=np.float32)
+    except Exception as exc:  # disk full, permissions: keep serving from memory
+        logger.warning("grid DB %s: could not save vector cache to disk: %s", i, exc)
+    finally:
+        for leftover in (tmp_npy, tmp_meta, lock_path):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+
+
+#: Rows hashed per step by _matrix_sha256 (~12 MB at 768 dims).
+_MATRIX_HASH_CHUNK_ROWS = 4096
+
+
+def _matrix_sha256(matrix) -> str:
+    """sha256 of the matrix's float32 bytes, hashed in row chunks.
+
+    ``matrix.tobytes()`` holds a second full copy of the matrix while it is
+    hashed (hundreds of MB per grid DB, on every load and every save). The
+    digest is identical: sha256 over the chunks in order is sha256 over the
+    concatenation.
+    """
+    digest = hashlib.sha256()
+    for block in _matrix_blocks(matrix):
+        for start in range(0, block.shape[0], _MATRIX_HASH_CHUNK_ROWS):
+            digest.update(np.ascontiguousarray(
+                block[start:start + _MATRIX_HASH_CHUNK_ROWS], dtype=np.float32).tobytes())
+    return digest.hexdigest()
+
+
+def _vector_sidecar_mmap() -> bool:
+    """Whether a saved matrix is memory-mapped instead of read into the heap.
+
+    Mapped pages are file-backed, so the OS can drop them under memory
+    pressure and page them back in; a heap copy can only go to swap. Off on
+    Windows, where the mapped file could not be replaced by the next save.
+    NOUGEN_VECTOR_SIDECAR_MMAP=0 turns it off, =1 forces it on.
+    """
+    raw = os.environ.get("NOUGEN_VECTOR_SIDECAR_MMAP", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return os.name != "nt"
+
+
+def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
+    """Return DB i's saved matrix as a stale entry (sig=None), or None to rebuild.
+
+    Rejected (rebuilt from SQLite instead) when the files are unreadable, the
+    matrix bytes do not match the recorded sha256, the copy was built from a
+    different DB file, or the DB holds an embedded row at or below the saved
+    max_id that the copy does not know (a backfill or replaced rows). Rows
+    deleted since the save, and rows newer than max_id, are left to the
+    caller's prune and append paths; its consistency gate is the backstop."""
+    paths = _vector_sidecar_paths(i, path)
+    if paths is None or not os.path.exists(paths[0]) or not os.path.exists(paths[1]):
+        return None
+    try:
+        with open(paths[1], encoding="utf-8") as fh:
+            meta = json.load(fh)
+        matrix = np.load(paths[0], mmap_mode="r" if _vector_sidecar_mmap() else None)
+        n = len(meta["ids"])
+        if meta.get("v") != 2 or os.path.normcase(meta["path"]) != os.path.normcase(path) or matrix.shape != (n, meta["dim"]) \
+                or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
+            logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
+            return None
+        if _matrix_sha256(matrix) != meta.get("sha256"):
+            logger.warning("grid DB %s: vector cache on disk failed its checksum; rebuilding", i)
+            return None
+        legacy = [(r[0], r[1], r[2], r[3], r[4],
+                   bytes.fromhex(r[5]["hex"]) if isinstance(r[5], dict) else r[5])
+                  for r in meta.get("legacy", [])]
+        if conn is not None and n:
+            # In-place re-embedding (embedding_backfill reembed=True after a
+            # provider change) rewrites vectors without changing ids or counts.
+            # Spot-check evenly spaced rows against the DB; any difference means
+            # the copy is stale and is rebuilt.
+            k_max = min(n, _VECTOR_SIDECAR_SPOT_CHECK)
+            picks = sorted({(k * (n - 1)) // max(1, k_max - 1) for k in range(k_max)})  # spans first..last row
+            pick_ids = [meta["ids"][k] for k in picks]
+            row_of = {meta["ids"][k]: k for k in picks}
+            for start in range(0, len(pick_ids), 500):
+                chunk = pick_ids[start:start + 500]
+                q = ",".join("?" * len(chunk))
+                for rid, emb in conn.execute(
+                        f"SELECT id, embedding FROM shards WHERE id IN ({q})", chunk):
+                    if not isinstance(emb, (bytes, bytearray)) or bytes(emb) != matrix[row_of[rid]].tobytes():
+                        logger.info("grid DB %s: vector cache on disk differs from the DB at row %s "
+                                    "(re-embedded since it was saved); rebuilding", i, rid)
+                        return None
+            known = set(meta["ids"])
+            known.update(r[0] for r in legacy)
+            for (row_id,) in conn.execute(
+                    "SELECT id FROM shards WHERE embedding IS NOT NULL AND id <= ?", (meta["max_id"],)):
+                if row_id not in known:
+                    logger.info("grid DB %s: vector cache on disk is missing row %s "
+                                "(backfilled since it was saved); rebuilding", i, row_id)
+                    return None
+        return {"sig": None, "path": path, "dim": meta["dim"], "n_embedded": meta["n_embedded"],
+                "max_id": meta["max_id"], "ids": meta["ids"], "ts": meta["ts"],
+                "util": np.asarray(meta["util"], dtype=np.float32), "dom": meta["dom"],
+                "etype": meta["etype"], "matrix": matrix, "saved_n": n, "legacy": legacy}
+    except Exception as exc:  # truncated or corrupt: rebuild from SQLite
+        logger.warning("grid DB %s: ignoring unreadable vector cache on disk: %s", i, exc)
+        return None
 
 
 def _vector_cache_entry(i: int, conn) -> Optional[dict]:
@@ -2028,10 +3526,18 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         if entry is not None and entry["path"] == path:
             return entry
         return None
+    build_gate = _VECTOR_BUILD_GATE if recall_memory_guard_enabled() else None
+    if build_gate is not None and not build_gate.acquire(timeout=_vector_cache_wait_s()):
+        lock.release()
+        return entry if entry is not None and entry["path"] == path else None
     try:
+        from .darwin_gate import demote_to_background_qos
+        demote_to_background_qos()
         entry = _VECTOR_CACHE.get(i)
         if entry is not None and entry["sig"] == sig and entry["path"] == path:
             return entry
+        global _VECTOR_BUILDS_STARTED  # pylint: disable=global-statement
+        _VECTOR_BUILDS_STARTED += 1
         # The cache key is the DB index, but the index can point at a DIFFERENT
         # file mid-process (tests and tools repoint NOUGEN_VAULT_DIR - same
         # reason init_db keys its guard by vault dir). Appending one vault's
@@ -2039,6 +3545,11 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         # change always forces a full reload. [codex finding, 2026-08-30]
         if entry is not None and entry["path"] != path:
             entry = None
+        if entry is None:
+            # A restart would otherwise rebuild the whole matrix from SQLite
+            # (minutes on a ~300k-row grid); the copy on disk is topped up
+            # by the append path below like any other stale entry.
+            entry = _load_vector_sidecar(i, path, conn)
         count = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
         ).fetchone()
@@ -2054,36 +3565,16 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             SELECT id, timestamp, utility_score, domain_key, event_type, embedding
             FROM shards WHERE embedding IS NOT NULL AND id > ? ORDER BY id ASC
         """, (since_id,))
-        ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
-        dim = entry["dim"] if entry else None
-        for row in cursor:
-            emb = row["embedding"]
-            if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
-                    and len(emb) % 4 == 0 and len(emb) > 0:
-                row_dim = len(emb) // 4
-                if dim is None:
-                    dim = row_dim
-                if row_dim == dim:
-                    ids.append(row["id"])
-                    ts.append(row["timestamp"])
-                    util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
-                    dom.append(row["domain_key"] or "")
-                    etype.append((row["event_type"] or "").upper())
-                    blobs.append(bytes(emb))
-                    continue
-            legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
-                           row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
-        if blobs:
-            new_matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
-        else:
-            new_matrix = np.zeros((0, dim or 0), dtype=np.float32)
+        ids, ts, util, dom, etype, new_matrix, legacy, dim = _scan_embedding_rows(
+            cursor, entry["dim"] if entry else None,
+            max(0, n_embedded - (entry["n_embedded"] if entry else 0)))
         if entry is not None:
             fresh = {
                 "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
                 "ids": entry["ids"] + ids, "ts": entry["ts"] + ts,
                 "util": np.concatenate([entry["util"], np.asarray(util, dtype=np.float32)]),
                 "dom": entry["dom"] + dom, "etype": entry["etype"] + etype,
-                "matrix": np.vstack([entry["matrix"], new_matrix]) if len(ids) else entry["matrix"],
+                "matrix": _RowBlocks.appended(entry["matrix"], new_matrix) if len(ids) else entry["matrix"],
                 "legacy": entry["legacy"] + legacy,
             }
         else:
@@ -2107,37 +3598,87 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
                 SELECT id, timestamp, utility_score, domain_key, event_type, embedding
                 FROM shards WHERE embedding IS NOT NULL ORDER BY id ASC
             """)
-            ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
-            dim = None
-            for row in cursor:
-                emb = row["embedding"]
-                if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
-                        and len(emb) % 4 == 0 and len(emb) > 0:
-                    row_dim = len(emb) // 4
-                    if dim is None:
-                        dim = row_dim
-                    if row_dim == dim:
-                        ids.append(row["id"])
-                        ts.append(row["timestamp"])
-                        util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
-                        dom.append(row["domain_key"] or "")
-                        etype.append((row["event_type"] or "").upper())
-                        blobs.append(bytes(emb))
-                        continue
-                legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
-                               row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
-            matrix = (np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
-                      if blobs else np.zeros((0, dim or 0), dtype=np.float32))
+            ids, ts, util, dom, etype, matrix, legacy, dim = _scan_embedding_rows(cursor, None, n_embedded)
+            since_id = 0  # a full rebuild: save it like one
             fresh = {
                 "sig": _db_write_signature(i), "path": path, "dim": dim,
                 "n_embedded": n_embedded, "max_id": max_id,
                 "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
                 "dom": dom, "etype": etype, "matrix": matrix, "legacy": legacy,
             }
+        # Rows already on disk carry over from the entry this refresh grew from;
+        # a full build starts from zero and is always saved.
+        fresh["saved_n"] = entry.get("saved_n", 0) if (entry is not None and since_id) else 0
         _VECTOR_CACHE[i] = fresh
-        return fresh
+        save_now = since_id == 0 or len(fresh["ids"]) - fresh["saved_n"] >= _VECTOR_SIDECAR_RESAVE_ROWS
     finally:
+        if build_gate is not None:
+            build_gate.release()
         lock.release()
+    # Outside the DB lock: a ~100 MB write must not make concurrent recalls of
+    # this DB wait past NOUGEN_VECTOR_CACHE_WAIT_S and fall back to keyword-only.
+    # `fresh` is never mutated after publication except its saved_n counter.
+    if save_now:
+        _save_vector_sidecar(i, fresh)
+    return fresh
+
+
+#: (db_index, stored_dim, query_dim) triples already warned about this process.
+_DIM_MISMATCH_WARNED: set = set()
+
+
+_GO_LANE_WARNED = False
+
+
+def _go_vector_lane_url() -> Optional[str]:
+    """Where the Go front's vector lane is, when this process should use it.
+
+    Opt-in: NOUGEN_VECTOR_GO=1, and the front must have started this process
+    (it sets NGS_GO_FRONT_URL). With it on, this process never builds the
+    vector cache for a DB the front answers, so it holds no matrix and no
+    per-row lists for that DB.
+    """
+    if os.environ.get("NOUGEN_VECTOR_GO", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    return os.environ.get("NGS_GO_FRONT_URL", "").strip() or None
+
+
+def _go_vector_rows(q_vec, limit: int, domain_key, excluded_types):
+    """Ask the Go front to score the vector lane.
+
+    Returns ({db_index: db_path}, {db_index: [(final_score, id), ...]}) for
+    the DBs it answered, or None when the lane is off or the call failed -
+    then every DB is scored in this process, exactly as without the front.
+    A DB the front hands back, or does not know, is simply absent.
+    """
+    url = _go_vector_lane_url()
+    if url is None:
+        return None
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    body = json.dumps({
+        "embedding": [float(x) for x in q_vec], "limit": int(limit),
+        "domain_key": "*" if domain_key in (None, "*") else domain_key,
+        "excluded_types": sorted(excluded_types),
+    }).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/v1/vector/retrieve", data=body,
+        headers={"Content-Type": "application/json", "X-NGS-Token": os.environ.get("NGS_NODE_TOKEN", "")})
+    try:
+        timeout = float(os.environ.get("NOUGEN_VECTOR_GO_TIMEOUT_S", "") or 5.0)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            out = json.loads(resp.read())
+        paths = {int(k): v for k, v in (out.get("paths") or {}).items()}
+        answered = set(out.get("dbs") or ()) | set(out.get("skipped_dim_mismatch") or ())
+        rows: dict = {}
+        for r in out.get("rows") or ():
+            rows.setdefault(int(r["db"]), []).append((float(r["final_score"]), int(r["id"])))
+        return {i: paths[i] for i in answered if i in paths}, rows
+    except Exception as exc:  # pylint: disable=broad-except
+        global _GO_LANE_WARNED  # pylint: disable=global-statement
+        if not _GO_LANE_WARNED:
+            _GO_LANE_WARNED = True
+            logger.warning("Go vector lane unavailable (%s: %s); scoring in-process", type(exc).__name__, exc)
+        return None
 
 
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
@@ -2172,6 +3713,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     q_vec = np.asarray(query_embedding, dtype=np.float32)
     qdim = int(q_vec.shape[0])
     excluded_types = frozenset() if include_research else frozenset(bulk_ingest_event_types())
+    go_lane = _go_vector_rows(q_vec, limit, domain_key, excluded_types)
 
     def _scan_db(i: int) -> list:
         from . import history  # pylint: disable=import-outside-toplevel
@@ -2183,9 +3725,24 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             # keyword lane.
             if not get_db_path(i).exists():
                 return db_rows
-            conn = get_connection(i)
-            cache = _vector_cache_entry(i, conn)
-            scored = []  # (final_score, id)
+            conn = get_readonly_connection(i)
+            # The Go front answers for a DB only when it names the same file
+            # this request resolves that DB to (a tenant's vault is another
+            # file under the same index); anything else is scored here.
+            delegated = go_lane is not None and go_lane[0].get(i) == str(get_db_path(i))
+            cache = None if delegated else _vector_cache_entry(i, conn)
+            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id)
+            if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
+                # A 384-d query against a 768-d DB (or the reverse) is a provider
+                # switch without a backfill. Say so once per DB rather than
+                # returning an empty lane that reads as "no semantic matches".
+                key = (i, cache["dim"], qdim)
+                if key not in _DIM_MISMATCH_WARNED:
+                    _DIM_MISMATCH_WARNED.add(key)
+                    logger.warning(
+                        "vector lane skipped DB %s: stored embeddings are %d-d, query is %d-d "
+                        "(embedding provider changed?) -- run `nougen embed status` / backfill",
+                        i, cache["dim"], qdim)
             if cache and cache["dim"] == qdim and len(cache["ids"]):
                 sem_scores = np.array(cache["matrix"] @ q_vec)
                 # Mask rows excluded by domain scope / ingest filter by sinking
@@ -2249,6 +3806,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                 item["final_score"] = by_id.get(item["id"], 0.0)
                 db_rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read - degrade
             # per DB: record it, skip it, keep scanning (see keyword lane for
             # the 2026-08-29 incident that mandates this).
@@ -2259,14 +3817,18 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-        finally:
-            if conn is not None:
-                conn.close()
         return db_rows
 
     results = []
-    for _i, db_rows in _run_db_scans(_scan_db):
-        results.extend(db_rows)
+    for _i, scan_res in _run_db_scans(_scan_db):
+        if isinstance(scan_res, tuple):
+            db_rows = scan_res[0]
+        else:
+            db_rows = scan_res
+        if isinstance(db_rows, list):
+            results.extend(db_rows)
+        else:
+            results.append(db_rows)
 
     # Deterministic order: exact score DESC, then (_db_index, id) ASC. Not
     # rounded: decay rescales every score by one shared factor, so exact order
@@ -2277,6 +3839,69 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     history.log_events([(item["id"], item["_db_index"], "ACCESSED") for item in top_results])
 
     return top_results
+
+
+def _parse_weight_map(raw: str) -> dict:
+    """"KEY:1.3,other:0.6" -> {"key": 1.3, "other": 0.6}; malformed entries are skipped."""
+    out: dict = {}
+    for part in (raw or "").split(","):
+        if ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        try:
+            out[key.strip().lower()] = float(val)
+        except ValueError:
+            continue
+    return out
+
+
+#: Operator memory outranks mirrors. Defaults are fallbacks only; the env wins.
+#: Relay 20261026T210020Z: "/search buries operator DECISION shards under doc
+#: mirrors and Bash-error captures". RRF fuses by position, so a DECISION that is
+#: #4 in the keyword lane and a doc dump that is #3 in a vault lane tie; these
+#: priors are the only place the KIND of shard is allowed to speak.
+_RECALL_EVENT_TYPE_WEIGHTS_FALLBACK = "DECISION:1.3,CANON:1.3,CORRECTION:1.25,DOCTRINE:1.2,LOCAL_VAULT:0.8,IMPORT:0.7,INGEST:0.7"
+_RECALL_TAG_WEIGHTS_FALLBACK = "bash-error:0.6,docs:0.8,indexer:0.8"
+_RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK = "Bash error [:0.6"
+
+
+def recall_prior_multiplier(item: dict) -> float:
+    """Multiplier for a candidate's fused score from its event_type, tags and title shape.
+
+    1.0 is neutral. Env-shaped: NOUGEN_RECALL_EVENT_TYPE_WEIGHTS,
+    NOUGEN_RECALL_TAG_WEIGHTS, NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS, each
+    "key:mult,key:mult"; NOUGEN_RECALL_PRIORS=0 disables all three. Several
+    matching tag weights multiply, but one tag is counted once.
+    """
+    if os.environ.get("NOUGEN_RECALL_PRIORS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return 1.0
+    mult = 1.0
+    et_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_EVENT_TYPE_WEIGHTS", _RECALL_EVENT_TYPE_WEIGHTS_FALLBACK))
+    et = str(item.get("event_type") or "").strip().lower()
+    if et and et in et_weights:
+        mult *= et_weights[et]
+    tag_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TAG_WEIGHTS", _RECALL_TAG_WEIGHTS_FALLBACK))
+    if tag_weights:
+        raw_tags = item.get("tags")
+        tags: List[str] = []
+        if isinstance(raw_tags, (list, tuple)):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags:
+            try:
+                parsed = json.loads(str(raw_tags))
+                tags = [str(t) for t in parsed] if isinstance(parsed, list) else [str(raw_tags)]
+            except Exception:
+                tags = [t.strip() for t in str(raw_tags).split(",")]
+        for tag in {t.strip().lower() for t in tags}:
+            if tag in tag_weights:
+                mult *= tag_weights[tag]
+    prefix_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS", _RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK))
+    title = str(item.get("title") or "").lower()
+    for prefix, w in prefix_weights.items():
+        if prefix and title.startswith(prefix):
+            mult *= w
+            break
+    return mult
 
 
 def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
@@ -2322,6 +3947,10 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
             if key not in item_map:
                 item_map[key] = item.copy()
             else:
+                locators = item_map[key].setdefault("source_locators", [])
+                for locator in item.get("source_locators", []):
+                    if locator not in locators:
+                        locators.append(locator)
                 for key_name, val in item.items():
                     if item_map[key].get(key_name) is None and val is not None:
                         item_map[key][key_name] = val
@@ -2332,7 +3961,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3)) * recall_prior_multiplier(item)
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while
@@ -2343,6 +3972,25 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     merged.sort(key=lambda x: (-x["final_score"],
                                str(x.get("_db_index", 0)), str(x.get("id", 0))))
     return merged
+
+
+def _has_exact_query_tokens(query: str, item: dict) -> bool:
+    """Whether a keyword candidate contains every literal FTS query token.
+
+    FTS rescue already admits exact all-terms matches from the ingest population,
+    but RRF can bury them under semantic neighbours. This predicate builds a
+    separate, narrowly scoped RRF lane for literal token matches.
+    """
+    fts_query = _build_fts_match_query(query)
+    if not fts_query:
+        return False
+    tokens = [token.replace('""', '"') for token in
+              re.findall(r'"((?:[^"]|"")*)"', fts_query)]
+    if not tokens:
+        return False
+    text = f"{item.get('title') or ''}\n{item.get('content') or ''}"
+    return all(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text, re.IGNORECASE)
+               for token in tokens)
 
 
 def _get_reranker():
@@ -2405,6 +4053,15 @@ def _norm_title(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
 
 
+def _id_like_token(query) -> bool:
+    """Identifier-shaped query: one token, 6+ chars, contains a digit (video id, commit,
+    request id). Opt-out NOUGEN_TOKEN_EXACT_TIER=0."""
+    if os.environ.get("NOUGEN_TOKEN_EXACT_TIER", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    q = (query or "").strip()
+    return len(q) >= 6 and not any(c.isspace() for c in q) and any(c.isdigit() for c in q)
+
+
 def _title_hit(qnorm: str, title) -> bool:
     """Known-item match: the query IS the title (case/whitespace-insensitive), or a
     long query is the start of a longer title (callers paste truncated titles)."""
@@ -2414,6 +4071,42 @@ def _title_hit(qnorm: str, title) -> bool:
 
 def _title_lane_enabled() -> bool:
     return os.environ.get("NOUGEN_TITLE_LANE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+#: Default per-lane RRF weights. Uniform weights are what weighted-RRF work
+#: (arXiv 2610.24341, 2610.30612) shows losing to tuned ones; values here
+#: must come from tools/recall_eval.py on a held-out split, never a guess.
+RRF_LANES = ("keyword", "vector", "exact", "title", "atoms", "graph")
+_RRF_DEFAULT_WEIGHTS = {lane: 1.0 for lane in RRF_LANES}
+_RRF_DEFAULT_K = 60
+
+
+def _rrf_lane_weights() -> dict:
+    """Per-lane fusion weights; NOUGEN_RRF_WEIGHTS="vector=1.5,title=2" overrides.
+
+    Malformed or unknown entries are ignored, so a bad env value falls back to
+    the defaults instead of breaking recall."""
+    weights = dict(_RRF_DEFAULT_WEIGHTS)
+    for part in os.environ.get("NOUGEN_RRF_WEIGHTS", "").split(","):
+        name, sep, raw = part.partition("=")
+        name = name.strip().lower()
+        if not sep or name not in weights:
+            continue
+        try:
+            val = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(val) and val >= 0:
+            weights[name] = val
+    return weights
+
+
+def _rrf_k() -> int:
+    try:
+        k = int(os.environ.get("NOUGEN_RRF_K", _RRF_DEFAULT_K))
+    except ValueError:
+        return _RRF_DEFAULT_K
+    return k if k > 0 else _RRF_DEFAULT_K
 
 
 def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_research: bool) -> list:
@@ -2437,7 +4130,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                 return rows
             conn = get_connection(i)
             for row in conn.execute(f"""
-                    SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                    SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                            s.embedding, s.tags, s.domain_key, s.density_score
                     FROM shards s WHERE {dom_clause}{ing_clause}s.title LIKE ? ESCAPE '\\'
                     ORDER BY s.id DESC LIMIT ?""", (*dom_params, *ing_params, pattern, limit)):
@@ -2447,6 +4140,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                     item["final_score"] = 1.0
                     rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             logger.error("title lane: grid DB %s unreadable, skipping it: %s: %s", i, type(exc).__name__, exc)
         finally:  # get_connection opens a fresh handle per call; an unclosed one locks the file on Windows
             if conn is not None:
@@ -2454,8 +4148,15 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         return rows
 
     out: list = []
-    for _, rows in _run_db_scans(scan):
-        out.extend(rows)
+    for _, scan_res in _run_db_scans(scan, EXACT_SCAN_LANE):
+        if isinstance(scan_res, tuple):
+            rows = scan_res[0]
+        else:
+            rows = scan_res
+        if isinstance(rows, list):
+            out.extend(rows)
+        else:
+            out.append(rows)
     return out[:limit]
 
 
@@ -2570,6 +4271,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
+    guard = recall_memory_guard_enabled()
+    if guard:
+        limit = bound_search_limit(limit)
+
     if FAST_LOCAL.get():
         # Same global-domain keyword sweep the app uses as its own fallback (app.py search()).
         return _keyword_retrieve(query, limit, None, domain_key or "*", include_research)[:limit]
@@ -2585,6 +4290,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             if get_db_path(i).exists():
                 init_db(i)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             logger.error("grid DB %s unreadable during schema upgrade, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             continue
@@ -2613,6 +4319,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     filtering = bool(scope or as_of or event_after or event_before)
     # Filters run after fusion, so over-fetch while they are on or they starve recall.
     candidate_limit = max(limit * 2, 20) * (5 if filtering else 1)
+    if guard:
+        candidate_limit = min(candidate_limit, bound_search_limit(10**9) * 4)
     use_distill = os.environ.get("NOUGEN_DISTILL_LANES", "1").strip().lower() not in ("0", "false", "no", "off")
 
     def run_parallel_retrieval(active_domain: str) -> list:
@@ -2630,8 +4338,19 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             vector_results = future_vector.result()
             
         lanes = [keyword_results, vector_results]
+        exact_token_results = [item for item in keyword_results
+                               if _has_exact_query_tokens(query, item)]
+        w = _rrf_lane_weights()
+        lane_weights = [w["keyword"], w["vector"]]
+        if exact_token_results:
+            # Literal all-token hits get an independent RRF vote. This prevents
+            # semantic neighbours from displacing exact IDs while preserving
+            # positional fusion within the keyword and vector lanes.
+            lanes.append(exact_token_results)
+            lane_weights.append(w["exact"])
         if _title_lane_enabled():
             lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
+            lane_weights.append(w["title"])
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
             # distillation sidecar exists; before that this is a cheap stat().
@@ -2639,10 +4358,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
                     lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(w["atoms"])
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(w["graph"])
             except Exception as exc:  # a derived index must never break recall
                 logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
-        return reciprocal_rank_fusion(lanes, k=60)
+        return reciprocal_rank_fusion(lanes, k=_rrf_k(), weights=lane_weights)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
@@ -2714,9 +4435,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             relevance = 1.0 if raw_rel > 0 else 0.5
 
         decay = _temporal_decay(item.get("timestamp"), score_now)
-        density = item.get("density_score", 1.0)
+        density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
 
-        u_shard = (1.0 * relevance) * decay * density
+        # Elevated tripartite utility formulation:
+        u_shard = (1.0 * relevance) * decay * max(0.25, density)
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -2730,10 +4452,22 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # the one signal that is unambiguous. Within a tier the tripartite order holds.
     qnorm = _norm_title(query) if _title_lane_enabled() else ""
     for item in scored_results:
-        item["_title_exact"] = _title_hit(qnorm, item.get("title"))
+        # Rescued ingest rows fill empty slots only; they never take the
+        # exact-title tier above filtered memory hits.
+        item["_title_exact"] = (not item.get("_ingest_rescue")) and _title_hit(qnorm, item.get("title"))
+    # Exact-token tier: an identifier-shaped query (one token, 6+ chars, has a digit:
+    # a video id, a PR/commit id, a request id) that appears verbatim in a shard's
+    # title or body ranks with the known-item tier. Vector neighbours of an opaque id
+    # are noise, and the shard that actually contains it was being dropped by fusion
+    # (relay 20261014T154801Z item 3). Natural-language queries never qualify.
+    qtok = (query or "").strip()
+    token_mode = _id_like_token(query)
+    for item in scored_results:
+        item["_token_exact"] = bool(
+            token_mode and (qtok in str(item.get("title") or "") or qtok in str(item.get("content") or "")))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
-                       x.get("_db_index", 0), x.get("id", 0)))
+        key=lambda x: (not (x["_title_exact"] or x["_token_exact"]), bool(x.get("_expired")),
+                       -x["utility_score_tripartite"], x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -2742,8 +4476,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             surviving = scored_results[:max(limit, cutoff)]
         else:
             surviving = scored_results
-        # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"]]
+        # Filter anything below dynamic threshold (e.g. 0.01)
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
@@ -2907,6 +4641,7 @@ def locate_shard(shard_id: int) -> List[int]:
         except sqlite3.Error:
             continue
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk
@@ -2989,6 +4724,7 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
             else:
                 continue
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # Found by tests/test_grid_fanout_guard_invariant.py after TWO
             # careful human reads of this file missed it. It got the
             # open-inside-the-try placement in the first sweep but never the
@@ -3038,6 +4774,7 @@ def decay_utility_scores(factor: float = 0.95):
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk
@@ -3316,3 +5053,245 @@ def compile_recall_packet_dual(result: dict) -> str:
             
     output.append("\nAnghkooey — NouGenShards remembers.")
     return "\n".join(output)
+
+
+# --------------------------------------------------------------------------- search admission
+# The node on :4444 grew from 169 MB to 2.36 GB and then listened without serving when every
+# lane recalled at once (2026-11-15/16). /search has a soft limit (overflow is served from the
+# fast local lane) but the overflow itself was unbounded and nothing reported the wedge.
+# Everything here is behind NOUGEN_RECALL_MEMORY_GUARD=1 (off by default: behaviour unchanged).
+# Knobs: NOUGEN_RECALL_MAX_INFLIGHT (8), NOUGEN_RECALL_MAX_WAITING (16), NOUGEN_RECALL_WAIT_S (2.0),
+# NOUGEN_RECALL_STALL_S (60), NOUGEN_RECALL_MAX_LIMIT (250), NOUGEN_RO_CACHE_KB (64000).
+
+def _search_env_num(name: str, default: float, minimum: float) -> float:
+    """Float from the environment; a missing, empty, non-numeric, NaN, infinite or
+    below-``minimum`` value gives ``default``."""
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return default
+    try:
+        f = float(val)
+    except ValueError:
+        return default
+    if not math.isfinite(f) or f < minimum:
+        return default
+    return f
+
+
+class SearchBusy(RuntimeError):
+    """Raised at once when the search admission queue is full."""
+    def __init__(self, retry_after: float, active: int, waiting: int):
+        self.retry_after = retry_after
+        self.active = active
+        self.waiting = waiting
+        super().__init__(
+            f"search busy: {active} active, {waiting} waiting; retry after {retry_after:g}s")
+
+
+class SearchAdmission:
+    """Hard, process-wide cap on searches: ``max_active`` running, ``max_waiting`` queued
+    for at most ``wait_s``; anything beyond that is refused at once with SearchBusy.
+    ``stats()`` is what a watchdog reads to tell "listening but not serving"."""
+
+    def __init__(self, max_active: int, max_waiting: int, wait_s: float, stall_s: float):
+        self.max_active = max_active
+        self.max_waiting = max_waiting
+        self.wait_s = wait_s
+        self.stall_s = stall_s
+        self._cond = _threading.Condition()
+        self._active = 0
+        self._waiting = 0
+        self._refused = 0
+        self._completed = 0
+        self._last_completed_monotonic = None
+        self._start_times = {}
+        self._next_token = 0
+        self._local = _threading.local()
+
+    def enter(self) -> None:
+        deadline = time.monotonic() + (self.wait_s if self.wait_s > 0 else 0)
+        with self._cond:
+            if self._active < self.max_active:
+                self._take_slot()
+                return
+            if self._waiting >= self.max_waiting:
+                self._refused += 1
+                raise SearchBusy(self.wait_s or 1.0, self._active, self._waiting)
+            self._waiting += 1
+            try:
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._cond.wait(timeout=remaining)
+                    if self._active < self.max_active:
+                        self._take_slot()
+                        return
+                self._refused += 1
+                raise SearchBusy(self.wait_s or 1.0, self._active, self._waiting)
+            finally:
+                self._waiting -= 1
+
+    def _take_slot(self):
+        token = self._next_token
+        self._next_token += 1
+        self._start_times[token] = time.monotonic()
+        self._active += 1
+        if not hasattr(self._local, 'stack'):
+            self._local.stack = []
+        self._local.stack.append(token)
+
+    def leave(self) -> None:
+        stack = getattr(self._local, "stack", None)
+        token = stack.pop() if stack else None
+        with self._cond:
+            if token is None or token not in self._start_times:
+                logger.warning("SearchAdmission.leave() called without matching enter()")
+                return
+            del self._start_times[token]
+            self._active -= 1
+            self._completed += 1
+            self._last_completed_monotonic = time.monotonic()
+            self._cond.notify()
+
+    def stats(self) -> dict:
+        with self._cond:
+            now = time.monotonic()
+            oldest_age = 0.0
+            if self._start_times:
+                oldest_start = min(self._start_times.values())
+                oldest_age = now - oldest_start
+            idle_s = None
+            if self._last_completed_monotonic is not None:
+                idle_s = now - self._last_completed_monotonic
+            stalled = self._active > 0 and oldest_age > self.stall_s
+            return {
+                "max_active": self.max_active,
+                "max_waiting": self.max_waiting,
+                "active": self._active,
+                "waiting": self._waiting,
+                "refused": self._refused,
+                "completed": self._completed,
+                "oldest_active_age_s": round(oldest_age, 3),
+                "idle_s": round(idle_s, 3) if idle_s is not None else None,
+                "stall_s": self.stall_s,
+                "stalled": stalled,
+            }
+
+
+_SEARCH_ADMISSION: Optional[SearchAdmission] = None
+_SEARCH_ADMISSION_LOCK = _threading.Lock()
+_SEARCH_ADMITTED: ContextVar[bool] = ContextVar("nougen_search_admitted", default=False)
+
+
+def search_admission() -> SearchAdmission:
+    global _SEARCH_ADMISSION
+    with _SEARCH_ADMISSION_LOCK:
+        if _SEARCH_ADMISSION is None:
+            max_active = int(_search_env_num("NOUGEN_RECALL_MAX_INFLIGHT", 8, 1))
+            max_waiting = int(_search_env_num("NOUGEN_RECALL_MAX_WAITING", 16, 0))
+            wait_s = _search_env_num("NOUGEN_RECALL_WAIT_S", 2.0, 0)
+            stall_s = _search_env_num("NOUGEN_RECALL_STALL_S", 60.0, 1)
+            _SEARCH_ADMISSION = SearchAdmission(max_active, max_waiting, wait_s, stall_s)
+        return _SEARCH_ADMISSION
+
+
+def reset_search_admission() -> None:
+    global _SEARCH_ADMISSION
+    with _SEARCH_ADMISSION_LOCK:
+        _SEARCH_ADMISSION = None
+
+
+@contextlib.contextmanager
+def admitted_search():
+    """Hold one search slot for the block. Re-entrant through a ContextVar, so a nested
+    retrieve or a lane thread started with copy_context() never takes a second slot."""
+    if _SEARCH_ADMITTED.get() or not recall_memory_guard_enabled():
+        yield
+        return
+    gate = search_admission()  # the same instance leaves, even if the singleton is reset meanwhile
+    gate.enter()
+    token = _SEARCH_ADMITTED.set(True)
+    try:
+        yield
+    finally:
+        _SEARCH_ADMITTED.reset(token)
+        gate.leave()
+
+
+def bound_search_limit(limit, default: int = 3) -> int:
+    try:
+        lim = int(limit)
+    except (TypeError, ValueError):
+        lim = default
+    cap = int(_search_env_num("NOUGEN_RECALL_MAX_LIMIT", 250, 1))
+    if lim < 1:
+        lim = 1
+    if lim > cap:
+        lim = cap
+    return lim
+
+
+def recall_memory_guard_enabled() -> bool:
+    """NOUGEN_RECALL_MEMORY_GUARD=1 turns the recall memory bounds on. Off by default."""
+    val = os.environ.get("NOUGEN_RECALL_MEMORY_GUARD", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def ro_cache_kb(default: int = 64000) -> int:
+    """Read-connection page cache in KiB; NOUGEN_RO_CACHE_KB applies only with the guard on."""
+    if not recall_memory_guard_enabled():
+        return default
+    return min(int(_search_env_num("NOUGEN_RO_CACHE_KB", default, 1000)), 1_000_000)
+
+
+def process_rss_bytes() -> Optional[int]:
+    """Resident set size of this process in bytes, or None. Never raises."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss
+    except Exception:
+        pass
+    try:
+        import resource  # absent on Windows
+        import sys
+        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return ru
+        return ru * 1024
+    except Exception:
+        return None
+
+
+def recall_memory_stats() -> dict:
+    """What recall holds in memory, for the health payload and a watchdog. Never raises."""
+    stats = {
+        "guard": recall_memory_guard_enabled(),
+        "rss_bytes": process_rss_bytes(),
+        "ro_pool_connections": len(_RO_CONN_POOL),
+        "ro_cache_kb": ro_cache_kb(),
+        "vector_matrix_bytes": 0,
+        "vector_matrices": 0,
+        "vector_builds_started": _VECTOR_BUILDS_STARTED,
+        "search": search_admission().stats(),
+    }
+    try:
+        total_bytes = 0
+        cache = _VECTOR_CACHE
+        for entry in list(cache.values()):
+            if not isinstance(entry, dict):
+                continue
+            matrix = entry.get("matrix")
+            if matrix is None:
+                continue
+            try:
+                # After an append the matrix is a _RowBlocks (no nbytes of its own): sum its
+                # blocks, so a cached matrix does not vanish from the total between saves.
+                total_bytes += sum(int(getattr(blk, "nbytes", 0) or 0) for blk in _matrix_blocks(matrix))
+            except Exception:
+                pass
+        stats["vector_matrix_bytes"] = total_bytes
+        stats["vector_matrices"] = len(cache)
+    except Exception:
+        pass
+    return stats

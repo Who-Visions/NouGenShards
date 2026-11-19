@@ -32,8 +32,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Provider brands forbidden in a generalized behaviour or target, matched whole-word.
+# "cursor" is deliberately absent here and handled case-sensitively by _CURSOR_RE, so
+# the common noun stays legal while the product name Cursor does not.
+_BRAND_RE = re.compile(r"\b(?:claude|codex|gemini|openai|anthropic)\b", re.IGNORECASE)
+_CURSOR_RE = re.compile(r"\bCursor\b")
 
 
 class MorphKind(str, Enum):
@@ -176,13 +183,13 @@ class NouGenMorphEngine:
 
     def ingest_candidate(self, candidate: MorphCandidate) -> Tuple[bool, float]:
         """Ingests and scores a candidate against architecture invariants."""
-        # Hard Invariant: Provider brand names must NOT exist in generalized behavior or target
-        forbidden_brands = ["claude", "codex", "cursor", "gemini", "openai", "anthropic"]
-        gen_lower = candidate.generalized_behavior.lower()
-        target_lower = candidate.nougen_target.lower()
-
-        for brand in forbidden_brands:
-            if brand in gen_lower or brand in target_lower:
+        # Hard Invariant: provider brand NAMES must not exist in generalized behavior
+        # or target. Matched on word boundaries, not substrings: the old substring test
+        # quarantined the ordinary word "cursor" (a pagination cursor) and anything
+        # containing "codex"/"gemini" as a fragment. "cursor" is only a brand when it is
+        # the capitalised proper noun Cursor; the rest are brands in any case.
+        for text in (candidate.generalized_behavior, candidate.nougen_target):
+            if _BRAND_RE.search(text) or _CURSOR_RE.search(text):
                 candidate.state = AdoptionState.QUARANTINED
                 self.candidates[candidate.name] = candidate
                 return False, candidate.effective_score()

@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger("nougen_shards.cli")
 from . import core as shards
 from . import keymaker
+from . import hardcade_sfx
 from .models_client import (
     get_best_available_client, OllamaClient,
     OpenAIClient, AnthropicClient, GeminiClient, HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
@@ -20,10 +21,9 @@ from . import nougen_sandbox
 from . import federation
 from . import history
 from . import router
-from .connectors.cloud import push_to_cloud, pull_from_cloud
-from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
+from . import rsi
 from . import assurance
 from . import tenants
 from . import agents
@@ -107,9 +107,24 @@ def cmd_destiny(args):
     """Destiny store: prospective memory and goal graph for the NouGen grid."""
     action = getattr(args, "destiny_action", "list")
     is_json = getattr(args, "json", False)
+    # One authoritative store (issue #1085): NOUGEN_DESTINY_AUTHORITY routes every destiny
+    # command to the fleet gateway; unset keeps the local destinies.db as before.
+    from . import destiny_remote
+    store = destiny_remote.backend()
+    if not is_json and destiny_remote.authority_url():
+        print(f"(destiny authority: {destiny_remote.authority_url()})")
+
+    if action == "flush":
+        if not destiny_remote.authority_url():
+            print("NOUGEN_DESTINY_AUTHORITY is not set; there is no authority to flush to.")
+            return
+        res = destiny_remote.flush_outbox(store)
+        print(json.dumps(res, indent=2) if is_json else
+              f"Outbox: {res['sent']} sent, {res['skipped']} already there, {res['left']} still queued.")
+        return
 
     if action == "create":
-        res = destiny.create_destiny(
+        res = store.create_destiny(
             title=args.title,
             goal=args.goal,
             branch=getattr(args, "branch", None),
@@ -139,7 +154,7 @@ def cmd_destiny(args):
                     print(f"  • Verification: {res['verification']}")
 
     elif action == "get":
-        res = destiny.get_destiny(args.id)
+        res = store.get_destiny(args.id)
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -163,7 +178,7 @@ def cmd_destiny(args):
                         print(f"    - {ev['created_utc']}: {ev['from_status']} -> {ev['to_status']} by {ev['actor'] or 'unknown'} ({ev['evidence']})")
 
     elif action == "update":
-        res = destiny.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
+        res = store.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -173,7 +188,7 @@ def cmd_destiny(args):
                 print(f"✨ Destiny #{res['id']} updated to {res['status']}")
 
     elif action == "link":
-        res = destiny.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
+        res = store.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -183,7 +198,7 @@ def cmd_destiny(args):
                 print(f"✨ Linked {args.kind} '{args.ref}' to Destiny #{args.id} as {args.role}")
 
     elif action == "search":
-        res = destiny.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
+        res = store.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -193,7 +208,7 @@ def cmd_destiny(args):
                 print(f"    Goal: {d['goal'][:100]}")
 
     elif action == "evolve":
-        res = destiny.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
+        res = store.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
         if is_json:
             print(json.dumps(res, indent=2))
         else:
@@ -204,7 +219,7 @@ def cmd_destiny(args):
                 print(f"  • #{ev['destiny_id']} '{ev['title']}' -> {ev['to_status']} ({ev['evidence']})")
 
     else:  # list / unfinished
-        res = destiny.unfinished_destinies(
+        res = store.unfinished_destinies(
             status=getattr(args, "status", None),
             trigger=getattr(args, "trigger", None),
             branch=getattr(args, "branch", None),
@@ -431,6 +446,7 @@ def cmd_pr(args):
 
 def cmd_brain(args):
     """Universal AI Memory Forensic Engine."""
+    from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
     if args.action == "scan":
         candidates = scan_environment(
             project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None, 
@@ -501,8 +517,21 @@ def cmd_auth(args):
             print(f"Error: Unknown provider '{args.provider}'.")
             return
 
-        keymaker.ingest_secret(key_map[provider], args.input)
+        if keymaker.ingest_secret(key_map[provider], args.input) is False:
+            print(f"Error: the {provider} key was empty; nothing was saved.")
+            return 1
         print(f"✅ API key for {provider} saved to vault.")
+
+    elif args.action == "usage":
+        from . import key_usage
+        if not args.provider:
+            print("Error: Usage: nougen auth usage <KEY_NAME> [--json]")
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(key_usage.describe(args.provider), indent=2))
+        else:
+            print(key_usage.format_usage(args.provider))
+        return 0
 
     elif args.action == "check":
         from . import auth_check
@@ -539,6 +568,64 @@ def cmd_auth(args):
                 found = True
         if not found:
             print(" No cloud services connected.")
+
+    elif args.action == "auto-env":
+        target = getattr(args, "target", None) or getattr(args, "input", None) or "."
+        force = getattr(args, "force", False)
+        if target == "--all" or getattr(args, "all", False):
+            results = keymaker.auto_env_all(force=force)
+            if getattr(args, "json", False):
+                print(json.dumps(results, indent=2))
+                return
+            print(f"🔐 Keymaker auto-enved {len(results)} Outpost repositories:")
+            for r in results:
+                if "error" in r:
+                    print(f"  ❌ {r['repo']}: {r['error']}")
+                else:
+                    gi_note = " (.gitignore updated)" if r.get("gitignore_updated") else ""
+                    print(f"  ✅ {r['repo']}: {r['populated_count']} keys -> {r['path']}{gi_note}")
+        else:
+            res = keymaker.auto_env_repo(target, force=force)
+            if getattr(args, "json", False):
+                print(json.dumps(res, indent=2))
+                return
+            gi_note = " (.gitignore updated)" if res.get("gitignore_updated") else ""
+            print(f"✅ Keymaker auto-enved {res['repo']}: {res['populated_count']} keys -> {res['path']}{gi_note}")
+            if res.get("populated_keys"):
+                print(f"   Populated: {', '.join(res['populated_keys'])}")
+            if res.get("missing_vault"):
+                print(f"   Missing in vault: {', '.join(res['missing_vault'])}")
+
+
+def cmd_setup(args):
+    """One step for a new person: set up NouGen, redeem the invite, start the node."""
+    import subprocess
+    from pathlib import Path
+    from . import tenant_onboard
+
+    code = getattr(args, "code", None)
+    if not code:
+        if not sys.stdin.isatty():
+            print("Error: pass the invite code with --code.")
+            return 2
+        code = input("Invite code: ").strip()
+    try:
+        print("Setting up NouGen on this computer...")
+        cmd_init(argparse.Namespace(defaults=True, no_onboarding=False, json=False))
+        print("Joining your NouGen node...")
+        join_url = os.environ.get("NOUGEN_JOIN_URL", "")
+        values = tenant_onboard.redeem_invite(code, join_url)
+        kit_dir = tenant_onboard.write_kit(values["tenant_id"], values["token"], values["tunnel_token"],
+                                           values["port"], root=Path.home() / ".nougen")
+    except tenant_onboard.OnboardError as exc:
+        print(f"Error: {exc}")
+        return 1
+    script = kit_dir / ("join.ps1" if os.name == "nt" else "join.sh")
+    print(f"Your node address: {values['node_url']}")
+    print("Starting your node. Keep this window open.")
+    cmd = (["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] if os.name == "nt"
+           else ["sh", str(script)])
+    return subprocess.call(cmd)
 
 
 def cmd_init(args):
@@ -904,7 +991,16 @@ def cmd_add(args):
     if success:
         print("✅ Shard captured!")
     else:
-        print("ℹ️ Shard already exists.")
+        print(_capture_failure_message(success))
+
+
+def _capture_failure_message(result):
+    """Say why nothing was written; "already exists" only for a real duplicate."""
+    reason = result.get("reason") if isinstance(result, dict) else None
+    if reason == "duplicate":
+        return "ℹ️ Shard already exists."
+    detail = (result.get("error") if isinstance(result, dict) else None) or reason or "unknown"
+    return f"❌ Shard not captured: {detail}"
 
 
 def cmd_get(args):
@@ -1082,11 +1178,89 @@ def cmd_get(args):
         print(f"\n[... {len(content) - 2000} more characters — pass --full]")
 
 
+def cmd_window(args):
+    """Browse the substrate by time: `nougen window march`, `nougen window "last 30 minutes" --query gemini`."""
+    from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+    res = _window.retrieve_window(args.when, query=getattr(args, "query", "") or "",
+                                  limit=getattr(args, "limit", None), tz=getattr(args, "tz", None) or None)
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(_window.format_packet(res))
+
+
+def _search_via_node(query: str, limit: int, fast: bool):
+    """Ask the always-running NGS node to run the search; None means "do it here".
+
+    A fresh CLI process starts with a cold vector cache: measured on phoebus
+    2026-11-12, the cold matrix build alone took 18.5 s against the 9-DB grid, so
+    `nougen search` overran the 20 s recall deadline and printed "INCOMPLETE" for
+    shards written seconds earlier. The node keeps that cache warm and runs the
+    same federated_retrieve, so its answer is the same answer, minus the cold
+    start. Any failure (no token, node down, timeout, bad body) returns None and
+    the caller searches in-process exactly as before.
+
+    Returns (rows, coverage) where coverage is the node's trailer, if any.
+    """
+    if os.environ.get("NOUGEN_SEARCH_VIA_NODE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    from . import recall_hook  # pylint: disable=import-outside-toplevel
+    try:
+        token = recall_hook._node_token()  # pylint: disable=protected-access
+        if not token:
+            return None
+        timeout = float(os.environ.get("NOUGEN_SEARCH_NODE_TIMEOUT_S", "25"))
+        url = os.environ.get("NOUGEN_NODE_URL", recall_hook.DEFAULT_NODE_URL).rstrip("/") + "/search"
+        body = json.dumps({"query": query, "limit": limit, "fast": bool(fast)}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json",
+                                                               "X-NGS-Token": token})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # node unavailable: the in-process path is the fallback
+        print(f"[i] warm node unavailable ({type(exc).__name__}); searching in-process",
+              file=sys.stderr)
+        return None
+    # Only a list, or an object carrying a results list, is a search answer. Anything else ({} or an error
+    # object) is not "no matches": fall back in-process rather than hide local results (Codex review on #1051).
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict) and isinstance(data.get("results"), list):
+        rows = data["results"]
+    else:
+        print("[i] warm node answered an unrecognised body; searching in-process", file=sys.stderr)
+        return None
+    coverage: dict = {}
+    kept = []
+    for row in rows:
+        # The node marks its coverage trailer both ways; the /search contract test pins event_type.
+        if isinstance(row, dict) and (row.get("event_type") == "FEDERATION_STATUS" or row.get("id") == "federation_meta"):
+            text = str(row.get("content") or "")
+            try:
+                coverage = json.loads(text[text.index("{"):])
+            except (ValueError, TypeError):
+                coverage = {"errored": [{"store": "node", "error": text[:200]}]}
+        elif isinstance(row, dict):
+            kept.append(row)
+    return kept, coverage
+
+
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
     domain_key = getattr(args, 'domain', None)
     if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
         domain_key = None
+
+    # "nougen search march" / "search gemini in march": a period in the query
+    # is a time window, natively, same as the MCP gateway and the phone.
+    if isinstance(getattr(args, "query", None), str) and not getattr(args, "no_window", False):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(args.query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest)
+            res["window"] = win.as_dict()
+            print(json.dumps(res, indent=2, default=str) if getattr(args, "json", False) else _window.format_packet(res))
+            return
 
     dual_flag = getattr(args, 'dual', False)
     if dual_flag is not False and type(dual_flag).__name__ not in ('MagicMock', 'Mock') and dual_flag:
@@ -1112,22 +1286,39 @@ def cmd_search(args):
 
     # Use Federation for unified search
     sweep_report: dict = {}
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
-                                            domain_key=domain_key, sweep_report=sweep_report)
+    fast_token = None
+    if getattr(args, 'fast', False):
+        fast_token = shards.FAST_LOCAL.set(True)
+    via_node = None
+    # The node answers for its own vault, keyword path only. Stay in-process for an explicit --semantic
+    # (even when the embedding came back empty), a --domain, --local, or a vault chosen with
+    # NOUGEN_VAULT_DIR (Codex and connector reviews on #1051).
+    vault_override = bool(os.environ.get("NOUGEN_VAULT_DIR"))
+    if (embedding is None and not getattr(args, 'semantic', False) and not domain_key
+            and not getattr(args, 'local', False) and not vault_override):
+        via_node = _search_via_node(args.query, 5, bool(getattr(args, 'fast', False)))
+    try:
+        if via_node is not None:
+            results, sweep_report = via_node
+        else:
+            results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                                    domain_key=domain_key, sweep_report=sweep_report)
+    finally:
+        if fast_token is not None:
+            shards.FAST_LOCAL.reset(fast_token)
     dropped = sweep_report.get("lanes_timed_out") or []
-    if dropped:
-        # stderr, not stdout: --json consumers must keep parsing a clean stream,
-        # but a human reading "No shards found." has to be told the difference
-        # between an empty substrate and a sweep that never finished.
-        print(f"[!] recall INCOMPLETE: lane(s) {', '.join(dropped)} missed the "
-              f"{sweep_report.get('deadline_s')}s deadline; results below are partial",
-              file=sys.stderr)
+    incomplete = bool(dropped or sweep_report.get("errored") or
+                      sweep_report.get("tier2_deferred") or sweep_report.get("lanes_skipped"))
+    if incomplete:
+        # Retain the list-shaped JSON contract; coverage travels on stderr.
+        print("[!] recall INCOMPLETE: results are partial; coverage=" +
+              json.dumps(sweep_report, default=str), file=sys.stderr)
     if not results:
         if getattr(args, 'json', False) is True:
             print("[]")
         else:
-            print("No shards found." if not dropped
-                  else "No shards returned — but the sweep timed out, so this is "
+            print("No shards found." if not incomplete
+                  else "No shards returned — but the sweep was incomplete, so this is "
                        "NOT evidence the substrate is empty.")
         return
 
@@ -1187,6 +1378,98 @@ def cmd_assure(args):
     for caveat in result["caveats"]:
         print(f"Caveat: {caveat}")
     print("Operator gate required: yes")
+
+
+def cmd_forget(args):
+    """Suppress a shard (default, recoverable) or --purge it from every store."""
+    from . import core as _core  # pylint: disable=import-outside-toplevel
+    if args.purge:
+        try:
+            receipt = _core.purge_shard(args.id, args.db, confirm_title=args.confirm_title,
+                                        content_hash=args.content_hash)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            sys.exit(2)
+        print(json.dumps(receipt, indent=2, default=str))
+        return
+    conn = _core.get_connection(args.db)
+    try:
+        row = conn.execute("SELECT title, domain_key, content, timestamp FROM shards WHERE id = ?",
+                           (args.id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        print(f"refused: no shard with id {args.id} in db {args.db}")
+        sys.exit(2)
+    if args.confirm_title and (row["title"] or "") != args.confirm_title:
+        print(f"refused: title mismatch; found {str(row['title'])[:60]!r}")
+        sys.exit(2)
+    ts = row["timestamp"] or ""
+    c_hash = args.content_hash or _core.CanonicalShardRef.compute_hash(
+        row["domain_key"] or "", row["title"] or "", row["content"] or "", str(ts))
+    ref = _core.CanonicalShardRef(db_index=args.db, shard_id=args.id, content_hash=c_hash)
+    ok = _core.shards_forget(ref)
+    print(json.dumps({"suppressed": args.id if ok else None, "db_index": args.db, "recoverable": True,
+                      "note": "row, FTS entry and dedup hash remain; use --purge to delete"}, indent=2))
+    if not ok:
+        sys.exit(2)
+
+
+def cmd_recall_hook(args):
+    """Budgeted per-turn recall for a host (recall_hook.py). Message from arg or stdin."""
+    from . import recall_hook  # pylint: disable=import-outside-toplevel
+    if args.claude_code:
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+        sys.stdout.write(recall_hook.claude_code_hook(raw, limit=args.limit, budget_ms=args.budget_ms) + "\n")
+        return
+    message = args.message if args.message else sys.stdin.buffer.read().decode("utf-8", "replace")
+    result = recall_hook.recall_hook(message, limit=args.limit, budget_ms=args.budget_ms)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(recall_hook.format_block(result))
+
+def cmd_embed(args):
+    """Embedding provider: status, fetch the onnx model, backfill, self-test."""
+    from . import embed_providers as ep  # pylint: disable=import-outside-toplevel
+    if args.embed_cmd == "status":
+        st = ep.provider_status()
+        # Per-DB stored dimension mix, so a provider switch without a backfill is visible.
+        from . import core as _core  # pylint: disable=import-outside-toplevel
+        import sqlite3 as _sq  # pylint: disable=import-outside-toplevel
+        dims = {}
+        for i in range(1, _core.MAX_DB_COUNT + 1):
+            p = _core.get_db_path(i)
+            if not p.exists():
+                continue
+            try:
+                con = _sq.connect(f"file:{p}?mode=ro", uri=True)
+                rows = con.execute("SELECT length(embedding)/4 AS d, count(*) FROM shards "
+                                   "WHERE embedding IS NOT NULL GROUP BY d").fetchall()
+                nulls = con.execute("SELECT count(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
+                con.close()
+                dims[f"db{i}"] = {"by_dim": {str(int(d)): n for d, n in rows if d}, "unembedded": nulls}
+            except Exception as exc:  # pylint: disable=broad-except
+                dims[f"db{i}"] = {"error": str(exc)[:80]}
+        st["stored_dims"] = dims
+        print(json.dumps(st, indent=2))
+        return
+    if args.embed_cmd == "fetch":
+        receipt = ep.fetch_onnx_model(args.repo or ep.DEFAULT_ONNX_REPO, force=args.force)
+        print(json.dumps(receipt, indent=2))
+        return
+    if args.embed_cmd == "selftest":
+        print(json.dumps(ep.timed_self_test(args.repo or ep.DEFAULT_ONNX_REPO), indent=2))
+        return
+    if args.embed_cmd == "backfill":
+        from . import embedding_backfill as bf  # pylint: disable=import-outside-toplevel
+        from . import core as _core  # pylint: disable=import-outside-toplevel
+        vault = str(_core.active_vault_dir())
+        model = args.model or os.environ.get("NOUGEN_EMBED_MODEL") or ep.DEFAULT_OLLAMA_MODEL
+        for db in bf._vault_dbs(vault):  # pylint: disable=protected-access
+            print(json.dumps(bf.backfill_db(db, model, execute=args.execute, batch=args.batch,
+                                            reembed=args.reembed), default=str))
+        return
 
 
 def cmd_mark(args):
@@ -1368,6 +1651,129 @@ def cmd_usage(args):
         print(f"   · {m['provider']}/{m['model']}: {m['total_tokens']:,} tok, ${m['estimated_cost']:.2f}")
 
 
+def cmd_amv(args):
+    """NouGenAMV workload report and non-persisting cost simulator."""
+    from . import amv_usage
+
+    if args.amv_action == "report":
+        rows, malformed = amv_usage.read_usage_events(args.ledger)
+        summary = amv_usage.summarize_events(rows)
+        summary["malformed_lines"] = malformed
+        summary["ledger_path"] = str(args.ledger or amv_usage.default_ledger_path())
+        if args.json:
+            print(json.dumps(summary, indent=2))
+            return
+        print("NouGenAMV observed workload report")
+        print(f"AMV attempts: {summary['events']}; malformed ledger lines: {malformed}")
+        actual_charges = summary['actual_new_api_charges_usd']
+        charges_str = f"${actual_charges:.4f}" if actual_charges is not None else "unavailable (incomplete billed events)"
+        print(f"Verified completed jobs: {summary['verified_completed_jobs']}; actual new API charges: {charges_str}")
+        per_job = summary["actual_cost_per_verified_job_usd"]
+        print("Actual API charges per verified job: " + (f"${per_job:.4f}" if per_job is not None else "unavailable (no verified jobs or unknown charges)"))
+        if not summary["by_stage"]:
+            print("No NouGenAMV stage events have been recorded yet.")
+            return
+        print("Stage                    Runs  Done  Failed  Exact  Est.  Unavail   Input   Output  Frames   GPU s   CPU s    kWh")
+        for stage, data in sorted(summary["by_stage"].items()):
+            print(f"{stage:<24}{data['attempts']:>5}{data['completed']:>6}{data['failed']:>8}"
+                  f"{data['exact_invocations']:>7}{data['estimated_invocations']:>6}{data['unavailable_invocations']:>9}"
+                  f"{data['input_tokens']:>9,}{data['output_tokens']:>9,}{data['video_frames']:>8,}"
+                  f"{data['gpu_seconds']:>8.2f}{data['cpu_seconds']:>8.2f}{data['energy_kwh']:>8.4f}")
+            if data["exact_invocations"] or data["estimated_invocations"]:
+                print(f"  exact input/output/cache: {data['exact_input_tokens']:,} / {data['exact_output_tokens']:,} / {data['exact_cached_tokens']:,}; "
+                      f"estimated: {data['estimated_input_tokens']:,} / {data['estimated_output_tokens']:,} / {data['estimated_cached_tokens']:,}")
+            print(f"  retries: {data['retries']}; cache hits: {data['cache_hits']}; distinct jobs: {data['jobs_seen']}; verified jobs: {data['verified_jobs']}; "
+                  f"assets: {data['asset_count']}; max VRAM/RAM: {data['max_peak_vram_mb'] or 0:.0f}/{data['max_peak_ram_mb'] or 0:.0f} MB; "
+                  f"energy known on {data['energy_known_events']} attempts")
+            if data["energy_known_events"] == 0:
+                print(" " * 24 + "Energy unavailable for this stage.")
+        print("Cloud-equivalent pricing is not applied without an explicit dated rate card.")
+        return
+
+    values = {
+        "shots": args.shots,
+        "input_tokens_per_shot": args.input_tokens_per_shot,
+        "output_tokens_per_shot": args.output_tokens_per_shot,
+        "input_rate": args.input_rate,
+        "output_rate": args.output_rate,
+        "cached_fraction": args.cached_fraction,
+        "cache_rate": args.cache_rate,
+        "energy_kwh": args.energy_kwh,
+        "electricity_rate": args.electricity_rate,
+        "hardware_purchase_usd": args.hardware_purchase_usd,
+        "device_hours": args.device_hours,
+        "expected_hardware_lifetime_hours": args.expected_hardware_lifetime_hours,
+    }
+    if args.interactive:
+        prompts = (
+            ("shots", "Analyzed shots"),
+            ("input_tokens_per_shot", "Estimated input tokens per shot"),
+            ("output_tokens_per_shot", "Estimated output tokens per shot"),
+            ("input_rate", "Illustrative input USD per million tokens"),
+            ("output_rate", "Illustrative output USD per million tokens"),
+        )
+        for key, label in prompts:
+            raw = input(f"{label} [{values[key]}]: ").strip()
+            if raw:
+                values[key] = float(raw) if key.endswith("rate") else int(raw)
+    result = amv_usage.simulate_workload(**values)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+    print(result["label"])
+    print(f"Analyzed video shots: {result['shots']:,}")
+    print(f"Estimated uncached input tokens: {result['input_tokens']:,}")
+    print(f"Estimated cached input tokens:  {result['cached_input_tokens']:,}")
+    print(f"Estimated output tokens:        {result['output_tokens']:,}")
+    print(f"Cloud-equivalent estimate:      ${result['cloud_equivalent_usd']:.3f}")
+    print(f"New API charges:                ${result['new_api_charges_usd']:.2f}")
+    if result["local_energy_kwh"] is not None:
+        energy_cost = result["local_energy_cost_usd"]
+        print(f"Local energy:                   {result['local_energy_kwh']:.4f} kWh")
+        print("Local energy estimate:          " + (f"${energy_cost:.4f}" if energy_cost is not None else "rate not provided"))
+    if result["hardware_allocation_usd"] is not None:
+        print(f"Hardware allocation estimate:   ${result['hardware_allocation_usd']:.4f}")
+    print("This scenario is never written to the production usage ledger.")
+
+
+# Exact failure strings nougen_sandbox.execute_sandboxed returns. Matching these
+# (not any "Error:" prefix) keeps a successful script that prints "Error: ..."
+# recorded instead of silently dropped.
+_SANDBOX_FAILURE_PREFIXES = (
+    "Error: Sandboxed ",
+    "Error: Runtime '",
+    "Error: Shell runtime",
+    "Error: Unsupported language",
+    "Error: Execution timed out",
+    "Error: Sandbox execution failed",
+    "Execution failed (Exit ",
+)
+
+
+def _ctx_execute_and_record(code, bypass_gatekeeper=False):
+    """Run sandboxed code, print it, and record the run so `ctx search` finds it.
+
+    The full output is persisted to the sandbox under a content-hash handle
+    (Rule 0.14); only the handle and a bounded preview go to the event log.
+    """
+    import hashlib
+    if bypass_gatekeeper:
+        output = nougen_sandbox.execute_sandboxed(code, bypass_gatekeeper=True)
+    else:
+        output = nougen_sandbox.execute_sandboxed(code)
+    print(output)
+    if output.startswith(_SANDBOX_FAILURE_PREFIXES):
+        return
+    handle = "ncode_" + hashlib.sha256(output.encode("utf-8")).hexdigest()[:12]
+    nougen_context.store_sandbox(handle, output, summary=code[:200])
+    nougen_context.log_event(
+        "ctx_execute",
+        f"{code[:500]}\n-> {output[:500]}",
+        {"handle": handle, "bytes": len(output.encode("utf-8"))},
+    )
+    print(f"[recorded handle={handle}]", file=sys.stderr)
+
+
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
     if args.action == "init":
@@ -1384,13 +1790,13 @@ def cmd_ctx(args):
                 ans = input("Do you want to override this gate and proceed? [y/N]: ").strip().lower()
                 if ans in ["y", "yes"]:
                     print("🔓 Gate override approved by GM.")
-                    print(nougen_sandbox.execute_sandboxed(args.input, bypass_gatekeeper=True))
+                    _ctx_execute_and_record(args.input, bypass_gatekeeper=True)
                 else:
                     print("🚫 Action aborted.")
             else:
                 print("🚫 Action aborted.")
         else:
-            print(nougen_sandbox.execute_sandboxed(args.input))
+            _ctx_execute_and_record(args.input)
     elif args.action == "search":
         if not args.input:
             print("Error: Usage: nougen ctx search <query> [--limit <n>]")
@@ -1443,7 +1849,7 @@ def cmd_ctx(args):
         if success:
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
-            print("ℹ️ Shard already exists.")
+            print(_capture_failure_message(success))
     elif args.action == "web":
         if not args.input:
             print("Error: Usage: nougen ctx web <url> [--tags <label>]")
@@ -1689,6 +2095,7 @@ def cmd_node(args):
             finally:
                 conn.close()
         
+        from .connectors.cloud import push_to_cloud
         print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
         res = push_to_cloud(all_shards, args.url, args.token)
         print(f"✅ Sync result: {res.get('status')} (Count: {res.get('count')})")
@@ -1701,6 +2108,7 @@ def cmd_node(args):
             print("Error: --token <token> is required for pull.")
             return
         
+        from .connectors.cloud import pull_from_cloud
         print(f"[*] Pulling shards from {args.url}...")
         remote_shards = pull_from_cloud(args.url, args.token)
         print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")
@@ -1752,11 +2160,47 @@ def cmd_connect(args):
 
 
 def cmd_hook(args):
-    """Install auto-capture hooks into the user's shell."""
-    if args.action == "install":
-        print("✅ Auto-capture hook installed into your shell.")
-    else:
-        print("Usage: nougen hook install")
+    """Agent harness hooks: install/uninstall/status for Claude Code, and the runtime entry."""
+    from . import agent_hooks  # pylint: disable=import-outside-toplevel
+    settings = Path(args.settings) if getattr(args, "settings", None) else None
+    if args.action == "run":
+        event = args.event or ""
+        if event not in agent_hooks.EVENTS:
+            print("{}")
+            return
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace") if not sys.stdin.isatty() else "{}"
+        if event == "prompt":
+            try:  # this process only reads; see enter_read_only_process
+                from . import recall_hook  # pylint: disable=import-outside-toplevel
+                recall_hook.enter_read_only_process()
+            except Exception:  # pylint: disable=broad-except
+                pass  # a hook never fails on its own bookkeeping
+        sys.stdout.write(agent_hooks.run(event, raw) + "\n")
+        if event == "prompt" and os.environ.get("NOUGEN_HOOK_HARD_EXIT", "1").strip().lower() not in ("0", "false", "no", "off"):
+            # The answer is written; nothing else is owed. Recall lanes that
+            # missed the budget still hold pool threads, and the interpreter
+            # joins those at exit, so a slow vault kept this process alive
+            # past the host's hook timeout (which then discards the answer).
+            sys.stdout.flush()
+            os._exit(0)  # pylint: disable=protected-access
+        return
+    if args.action in ("install", "uninstall"):
+        rep = agent_hooks.install(settings, uninstall=args.action == "uninstall", dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(rep, indent=2))
+            return
+        verb = "Would " + args.action if rep.get("dry_run") else ("Updated" if rep["changed"] else "Already up to date:")
+        print(f"{verb} Claude Code hooks in {rep['settings']}")
+        if rep.get("backup"):
+            print(f"  backup: {rep['backup']}")
+        if args.action == "install":
+            print("  SessionStart: latest handoff + newest shards | UserPromptSubmit: budgeted recall")
+            print("  Stop: handoff nudge | SessionEnd: auto-handoff if none was written")
+        return
+    if args.action == "status":
+        print(json.dumps(agent_hooks.status(settings), indent=2))
+        return
+    print("Usage: nougen hook {install|uninstall|status|run <event>} [--dry-run] [--settings PATH]")
 
 
 def cmd_ingest(args):
@@ -1840,6 +2284,44 @@ def cmd_evolve(args):
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
 
 
+def cmd_rsi(args):
+    """Recursive Self-Improvement lane: gate-don't-write, propose-only."""
+    is_json = getattr(args, 'json', False)
+    if args.action == "run":
+        if not is_json:
+            print("[RSI] Checking target repo build + self-update health, proposing one improvement...")
+        summary = rsi.run()
+        if is_json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"\n[RSI Cycle Complete] status={summary['status']}")
+            print(f" - timestamp: {summary.get('temporal', {}).get('eastern_full', summary['timestamp_utc'])}")
+            print(f" - repo: {summary['repo']}")
+            print(f" - build ok: {summary['build'].get('ok')}")
+            print(f" - self-update healthy: {summary['self_update_health'].get('ok')}")
+            exa = summary.get("exa_temporal_latest", {})
+            print(f" - exa temporal latest: ok={exa.get('ok')} ({len(exa.get('hits') or [])} hits since {exa.get('start_published_date', 'n/a')})")
+            prop = summary.get("proposal", {})
+            if prop.get("title"):
+                print(f" - Proposal: {prop['title']} (risk={prop.get('risk')})")
+                print(f"   {prop.get('description', '')}")
+            else:
+                print(f" - No proposal this cycle: {prop.get('reason') or prop.get('error', 'unknown')}")
+            print(f" - Report: {summary['report_path']}")
+    elif args.action == "status":
+        reports_dir = rsi._reports_dir()
+        files = sorted(reports_dir.glob("rsi_*.json"), reverse=True)
+        if not files:
+            print(json.dumps({"status": "no_runs_yet"}) if is_json else "No RSI runs recorded yet.")
+            return
+        with open(files[0], "r", encoding="utf-8") as f:
+            latest = json.load(f)
+        if is_json:
+            print(json.dumps(latest, indent=2))
+        else:
+            print(f"Latest RSI run: {latest['timestamp_utc']} - status={latest['status']}")
+
+
 def cmd_dashboard(args):
     """Launches the Cortex HUD (Visual Dashboard)."""
     import uvicorn
@@ -1859,17 +2341,51 @@ def cmd_dashboard(args):
 
 
 def cmd_tenant(args):
-    """Mint additional node credentials without persisting plaintext tokens."""
-    if args.action != "mint":
-        return
+    """Mint, onboard or check isolated node tenants (plaintext tokens are never persisted)."""
+    from . import tenant_onboard
+
+    target = args.tenant_id
     try:
-        token = tenants.mint_tenant(args.tenant_id, args.label)
-    except tenants.TenantRegistryError as exc:
+        if args.action == "mint":
+            if not target or not args.label:
+                print("Error: mint needs a tenant id and --label", file=sys.stderr)
+                return
+            token = tenants.mint_tenant(target, args.label)
+            print(f"Tenant: {target}")
+            print(f"Token: {token}")
+            print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+            return
+        if not target:
+            print(f"Error: {args.action} needs the tenant's email address", file=sys.stderr)
+            return
+        if args.action == "status":
+            checks = tenant_onboard.status(target)
+            for ok, line in checks:
+                print(("OK   " if ok else "FIX  ") + line)
+            print("ALL GOOD" if all(ok for ok, _ in checks) else "Not ready yet - see FIX lines above.")
+            return
+        res = tenant_onboard.onboard(
+            target, name=args.name, tenant_id=args.id, label=args.label,
+            domain=args.domain, port=args.port, rotate=args.rotate, dry_run=args.dry_run,
+            dedicated=getattr(args, 'dedicated', False))
+    except (tenants.TenantRegistryError, tenant_onboard.OnboardError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return
-    print(f"Tenant: {args.tenant_id}")
-    print(f"Token: {token}")
-    print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+    if args.json:
+        print(json.dumps(res.as_dict(), indent=2))
+        return
+    print(f"Tenant {res.tenant_id} for {res.email}")
+    for line in res.steps:
+        print(f"  - {line}")
+    if res.kit_dir:
+        print()
+        print("NEXT (the only thing left): send the person this folder, privately:")
+        print(f"    {res.kit_dir}")
+        print("  It holds their tokens and lives in a temporary folder: delete it once it is")
+        print("  sent. 'nougen tenant onboard <email>' rebuilds it any time.")
+        print("  On Windows they right-click join.ps1 > Run with PowerShell. That is all.")
+        print(f"  Their address: {res.node_url}  ({res.probe_reading})")
+        print("  Check any time with: nougen tenant status " + res.email)
 
 
 def cmd_facts(args):
@@ -1922,6 +2438,9 @@ def get_parser():
                         help="Create the substrate only; skip capability discovery")
     p_init.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_setup = subparsers.add_parser("setup", help="Set up NouGen and join with your invite code")
+    p_setup.add_argument("--code", help="Your invite code (asked for if omitted)")
+
     p_add = subparsers.add_parser("add", help="Save shard")
     p_add.add_argument("content", nargs="?")
     p_add.add_argument("--tags")
@@ -1943,12 +2462,36 @@ def get_parser():
     p_search.add_argument("--json", action="store_true", help="Machine-readable output")
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
+    p_search.add_argument("--fast", action="store_true", help="Ultra low-latency fast local keyword search (skips remote/external lanes)")
+    p_search.add_argument("--no-window", action="store_true", help="Treat a time-looking query ('march') as plain text")
+    p_search.add_argument("--local", action="store_true",
+                          help="Search in this process only; skip the warm NGS node (NOUGEN_SEARCH_VIA_NODE=0 does the same)")
+
+    p_window = subparsers.add_parser("window", help="Browse the substrate by time ('march', 'last week', 'yesterday 7pm')")
+    p_window.add_argument("when", help="Time phrase: month, date, year, quarter, clock time, 'last N minutes/hours/days', range")
+    p_window.add_argument("--query", help="Narrow to shards in the window mentioning this text")
+    p_window.add_argument("--limit", type=int, help="Max records to list")
+    p_window.add_argument("--tz", help="IANA zone for day boundaries (default NOUGEN_TZ or UTC)")
+    p_window.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
     p_assure.add_argument("--evidence", action="append", default=[],
                           help="Evidence item; repeat for multiple items")
     p_assure.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_rdacc = subparsers.add_parser("rd-accel", help="METR-style R&D acceleration report")
+    p_rdacc.add_argument("--jsonl", help="Generation records, one JSON per line")
+    p_rdacc.add_argument("--ledger", help="RSI evaluation ledger sqlite (promotions as generations)")
+    p_rdacc.add_argument("--breakpoint", required=True, help="YYYY-MM-DD")
+    p_rdacc.add_argument("--json", action="store_true")
+
+    p_sub = subparsers.add_parser("subscribe", help="Proactive surfacing: subscribe to tags/keywords, surface new shards")
+    p_sub.add_argument("action", choices=["add", "rm", "list", "surface", "peek"])
+    p_sub.add_argument("name", nargs="?")
+    p_sub.add_argument("--tag", action="append", default=[])
+    p_sub.add_argument("--keyword", action="append", default=[])
+    p_sub.add_argument("--json", action="store_true")
 
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
@@ -1961,12 +2504,45 @@ def get_parser():
                         help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
-    p_auth.add_argument("action", choices=["set-key", "list", "check"])
+    p_auth.add_argument("action", choices=["set-key", "list", "check", "auto-env", "usage"])
     p_auth.add_argument("provider", nargs="?")
     p_auth.add_argument("input", nargs="?")
+    p_auth.add_argument("--all", action="store_true", help="Auto-env all Outpost repositories")
+    p_auth.add_argument("--force", action="store_true", help="Overwrite existing environment variables")
     p_auth.add_argument("--json", action="store_true", help="Machine-readable output")
     p_auth.add_argument("--timeout", type=float, default=10.0,
                         help="Per-provider probe timeout in seconds (auth check)")
+
+    p_forget = subparsers.add_parser("forget", help="Suppress a shard (recoverable) or --purge it from every store")
+    p_forget.add_argument("id", type=int)
+    p_forget.add_argument("--db", type=int, required=True, help="Cluster DB index (1-9)")
+    p_forget.add_argument("--purge", action="store_true",
+                          help="Delete the row, its FTS entry and its dedup hash; irreversible")
+    p_forget.add_argument("--confirm-title", dest="confirm_title", default=None,
+                          help="Exact current title; required for --purge unless --content-hash is given")
+    p_forget.add_argument("--content-hash", dest="content_hash", default=None,
+                          help="CanonicalShardRef content hash (16 hex chars)")
+    p_rh = subparsers.add_parser("recall-hook", help="Budgeted per-turn recall for a host (prints a compact block)")
+    p_rh.add_argument("message", nargs="?", default=None, help="Message to recall against (stdin if omitted)")
+    p_rh.add_argument("--limit", type=int, default=5)
+    p_rh.add_argument("--budget-ms", type=int, default=800, dest="budget_ms")
+    p_rh.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    p_rh.add_argument("--claude-code", action="store_true", dest="claude_code",
+                      help="Claude Code UserPromptSubmit adapter: hook JSON on stdin, hookSpecificOutput on stdout")
+    p_embed = subparsers.add_parser("embed", help="Embedding provider: status | fetch | selftest | backfill")
+    embed_sub = p_embed.add_subparsers(dest="embed_cmd", required=True)
+    embed_sub.add_parser("status", help="Resolved provider, onnx model presence, stored dims per DB")
+    p_ef = embed_sub.add_parser("fetch", help="Download the onnx model files into ~/.nougen/models")
+    p_ef.add_argument("--repo", default=None)
+    p_ef.add_argument("--force", action="store_true")
+    p_es = embed_sub.add_parser("selftest", help="Embed one string in-process and time it")
+    p_es.add_argument("--repo", default=None)
+    p_eb = embed_sub.add_parser("backfill", help="Embed rows with embedding IS NULL via the resolved provider")
+    p_eb.add_argument("--model", default=None, help="ollama model name, or 'onnx[:repo]'")
+    p_eb.add_argument("--execute", action="store_true", help="Write (default is a dry run)")
+    p_eb.add_argument("--batch", type=int, default=64)
+    p_eb.add_argument("--reembed", action="store_true",
+                      help="Also re-embed rows whose stored dimension differs from the provider's (after a provider switch)")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
@@ -1989,6 +2565,33 @@ def get_parser():
     p_usage.add_argument("--period", default=None,
                          help="Reporting window (24h | week | month | quarter | year | all)")
     p_usage.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_amv = subparsers.add_parser("amv", help="NouGenAMV workload accounting laboratory")
+    amv_actions = p_amv.add_subparsers(dest="amv_action", required=True)
+    p_amv_report = amv_actions.add_parser("report", help="Report observed AMV stage usage and compute")
+    p_amv_report.add_argument("--ledger", help="Usage JSONL path (defaults to FLEET_USAGE_LEDGER)")
+    p_amv_report.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_amv_sim = amv_actions.add_parser("simulate", help="Simulate cloud-equivalent and local energy costs")
+    p_amv_sim.add_argument("--shots", type=int, default=250)
+    p_amv_sim.add_argument("--input-tokens-per-shot", type=int, default=1800)
+    p_amv_sim.add_argument("--output-tokens-per-shot", type=int, default=250)
+    p_amv_sim.add_argument("--input-rate", type=float, default=0.50,
+                           help="Illustrative USD per million uncached input tokens")
+    p_amv_sim.add_argument("--output-rate", type=float, default=1.05,
+                           help="Illustrative USD per million output tokens")
+    p_amv_sim.add_argument("--cache-rate", type=float,
+                           help="Illustrative USD per million cached input tokens; defaults to input rate")
+    p_amv_sim.add_argument("--cached-fraction", type=float, default=0.0)
+    p_amv_sim.add_argument("--energy-kwh", type=float, help="Measured or estimated local energy for scenario")
+    p_amv_sim.add_argument("--electricity-rate", type=float, help="USD per kWh for scenario")
+    p_amv_sim.add_argument("--hardware-purchase-usd", type=float,
+                           help="Optional hardware cost used only for allocation simulation")
+    p_amv_sim.add_argument("--device-hours", type=float,
+                           help="Device hours allocated to this scenario")
+    p_amv_sim.add_argument("--expected-hardware-lifetime-hours", type=float,
+                           help="Expected usable lifetime for the hardware allocation")
+    p_amv_sim.add_argument("--interactive", action="store_true", help="Prompt to edit the illustrative inputs")
+    p_amv_sim.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_stats = subparsers.add_parser("stats", help="Historical analytics")
     p_stats.add_argument("--period", choices=["24h", "week", "month", "quarter", "year"],
@@ -2036,8 +2639,12 @@ def get_parser():
     p_connect = subparsers.add_parser("connect", help="Connect agent")
     p_connect.add_argument("--mcp", action="store_true")
 
-    p_hook = subparsers.add_parser("hook", help="Auto-capture")
-    p_hook.add_argument("action")
+    p_hook = subparsers.add_parser("hook", help="Agent hooks: wire the vault into Claude Code (install|uninstall|status|run)")
+    p_hook.add_argument("action", choices=["install", "uninstall", "status", "run"])
+    p_hook.add_argument("event", nargs="?", default=None, help="for run: session-start | prompt | stop | session-end | pre-tool | post-tool")
+    p_hook.add_argument("--settings", default=None, help="settings.json to edit (default: ~/.claude/settings.json or $CLAUDE_CONFIG_DIR)")
+    p_hook.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_hook.add_argument("--json", action="store_true")
 
     p_ingest = subparsers.add_parser("ingest", help="Ingest file")
     p_ingest.add_argument("file")
@@ -2059,9 +2666,19 @@ def get_parser():
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_tenant = subparsers.add_parser("tenant", help="Manage isolated node tenants")
-    p_tenant.add_argument("action", choices=["mint"])
-    p_tenant.add_argument("tenant_id", help="Lowercase tenant slug")
-    p_tenant.add_argument("--label", required=True, help="Human-readable tenant label")
+    p_tenant.add_argument("action", choices=["mint", "onboard", "status"],
+                          help="onboard <email> does everything; status <email> checks it; "
+                               "mint <tenant_id> only issues a token")
+    p_tenant.add_argument("tenant_id", nargs="?", help="mint: tenant slug; onboard/status: the person's email")
+    p_tenant.add_argument("--label", help="Human-readable tenant label")
+    p_tenant.add_argument("--name", help="onboard: the person's name (derives the tenant slug and label)")
+    p_tenant.add_argument("--id", help="onboard: override the derived tenant slug")
+    p_tenant.add_argument("--domain", help="onboard: tenant hostname domain (default: env/existing tenants)")
+    p_tenant.add_argument("--port", type=int, help="onboard: the tenant node's local port (default NGS_PORT or 4444)")
+    p_tenant.add_argument("--rotate", action="store_true", help="onboard: issue a fresh token and repair everything")
+    p_tenant.add_argument("--dedicated", action="store_true", help="onboard: the kit makes this tenant the OWNER of the machine it runs on (single-tenant machines only)")
+    p_tenant.add_argument("--dry-run", action="store_true", help="onboard: show the plan, change nothing")
+    p_tenant.add_argument("--json", action="store_true", help="onboard: machine-readable result")
 
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -2103,6 +2720,10 @@ def get_parser():
     p_evolve.add_argument("action", choices=["run"])
     p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
     p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_rsi = subparsers.add_parser("rsi", help="Recursive Self-Improvement lane (gate-don't-write, same family as dream/evolve)")
+    p_rsi.add_argument("action", choices=["run", "status"])
+    p_rsi.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
@@ -2264,10 +2885,18 @@ def get_parser():
     p_tree.add_argument("--health", metavar="URL", help="Inspect node /health URL over HTTP")
     p_tree.add_argument("--json", action="store_true", help="JSON output")
 
-    p_tube = subparsers.add_parser("tube", help="YouTube/Media transcript ingestion & dedupe")
-    p_tube.add_argument("tube_action", choices=["pull"], default="pull", nargs="?")
+    p_cua = subparsers.add_parser("cua", help="Computer-Using Agent & Open Kitchen interactive controller")
+    p_cua.add_argument("cua_action", choices=["status", "handoff", "card", "panel"], default="status", nargs="?")
+    p_cua.add_argument("--goal", default="Browse & inspect target", help="Goal for headless handoff session")
+    p_cua.add_argument("--title", default=None, help="Title for ActionCard or GenerativePanel")
+    p_cua.add_argument("--summary", default=None, help="Summary for ActionCard")
+
+    p_tube = subparsers.add_parser("tube", aliases=["nougentube"], help="YouTube/Media transcript ingestion & dedupe")
+    p_tube.add_argument("tube_action", choices=["pull", "ingest", "preview"], default="ingest", nargs="?")
     p_tube.add_argument("url", help="YouTube video or playlist URL")
     p_tube.add_argument("--dry-run", action="store_true", help="Do not capture shards")
+    p_tube.add_argument("--limit", type=int, default=1, help="Max videos to ingest")
+
 
     p_arxiv = subparsers.add_parser("arxiv", help="Autonomous arXiv research & shard capture")
     p_arxiv.add_argument("arxiv_action", choices=["search", "ingest"], default="search")
@@ -2383,6 +3012,10 @@ def get_parser():
     p_destiny_create.add_argument("--actor", default=None)
     p_destiny_create.add_argument("--json", action="store_true")
 
+    p_destiny_flush = destiny_sub.add_parser(
+        "flush", help="Replay destiny writes queued while NOUGEN_DESTINY_AUTHORITY was unreachable")
+    p_destiny_flush.add_argument("--json", action="store_true")
+
     p_destiny_get = destiny_sub.add_parser("get", help="Get destiny by ID")
     p_destiny_get.add_argument("id", type=int, help="Destiny ID")
     p_destiny_get.add_argument("--json", action="store_true")
@@ -2414,6 +3047,17 @@ def get_parser():
     p_destiny_evolve.add_argument("--json", action="store_true")
 
     # War Games: deterministic adversarial scenarios (docs/wargames-doctrine.md §83).
+    p_st = subparsers.add_parser("stadium", help="Stadium model: shard tickets, rosters, verified call-ups")
+    st_sub = p_st.add_subparsers(dest="stadium_action")
+    st_sub.add_parser("health", help="Which vaults (stadiums) can answer right now")
+    p_st_t = st_sub.add_parser("ticket", help="Every seat holding a ticket (file_hash), across vaults")
+    p_st_t.add_argument("ticket")
+    p_st_c = st_sub.add_parser("callup", help="Bring one shard on stage: roster, budget, hash-verified")
+    p_st_c.add_argument("ticket")
+    p_st_c.add_argument("--roster", nargs="*", default=None, help="Tickets allowed this play (default: just this one)")
+    p_st_c.add_argument("--budget", type=int, default=5, help="Call-ups allowed this play")
+    p_st_c.add_argument("--full", action="store_true", help="Print the whole content, not a preview")
+
     p_wg = subparsers.add_parser("wargame", help="War Games: fight a scenario against adaptive failure")
     wg_sub = p_wg.add_subparsers(dest="wargame_action")
     p_wg_list = wg_sub.add_parser("list", help="List built-in scenarios")
@@ -2447,6 +3091,12 @@ def get_parser():
     p_facts_resolve.add_argument("--entity", action="append", default=[], help="Expected canonical entity; repeat as needed")
     p_facts_resolve.add_argument("--scope", help="Additional exact JSON scope filter")
     p_facts_resolve.add_argument("--as-of", help="Reference date/time; 'today' queries require an exact date match")
+
+    # sync: Fleet repository auto-sync and upstream rebase
+    p_sync = subparsers.add_parser("sync", help="Auto-sync and rebase fleet git repositories to latest upstream")
+    p_sync.add_argument("--repo", default=None, help="Explicit repository path to synchronize")
+    p_sync.add_argument("--no-push", action="store_true", help="Fetch and rebase only, do not push")
+    p_sync.add_argument("--json", action="store_true", help="Machine-readable output")
 
     # wake daemon
     p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
@@ -2496,7 +3146,40 @@ def get_parser():
     p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
     p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
 
+    # Breakthrough to Success NLP Engine (NouGenMorph)
+    p_nlp = subparsers.add_parser("nlp", help="Breakthrough NLP Engine: WFO, Values, Decision Destroyer, Timeline, Directives")
+    p_nlp.add_argument("nlp_action", nargs="?", default="wfo",
+                       choices=["wfo", "values", "destroy", "timeline", "directives", "breakthrough"],
+                       help="NLP engine action to execute")
+    p_nlp.add_argument("target", nargs="?", default="", help="Goal statement, limiting decision, or comma-separated values")
+    p_nlp.add_argument("--days", type=int, default=7, help="Horizon days for timeline future-pacing")
+    p_nlp.add_argument("--json", action="store_true", help="Emit JSON output")
+
     return parser
+
+
+def cmd_nlp(args):
+    """Breakthrough to Success NLP Engine CLI handler."""
+    import json as _json
+    from .nlp import BreakthroughEngine
+    engine = BreakthroughEngine()
+    action = getattr(args, "nlp_action", "wfo")
+    target = getattr(args, "target", "") or ""
+    if action == "wfo":
+        out = engine.wfo.evaluate(target).to_dict()
+    elif action == "values":
+        vals = [v.strip() for v in target.split(",") if v.strip()] if target else ["Freedom", "Competency", "Security", "Self-Expression", "Belonging"]
+        h = engine.values.build_hierarchy(vals)
+        out = {"hierarchy": [v.to_dict() for v in h]}
+    elif action == "destroy":
+        out = engine.destroyer.destroy_limiting_decision(target).to_dict()
+    elif action == "timeline":
+        out = engine.timeline.future_pace(target, horizon_days=getattr(args, "days", 7)).to_dict()
+    elif action == "directives":
+        out = engine.unconscious.audit_telemetry().to_dict()
+    else:
+        out = engine.run_breakthrough(target, horizon_days=getattr(args, "days", 7))
+    print(_json.dumps(out, indent=2))
 
 
 def cmd_mrsb(args):
@@ -2639,7 +3322,10 @@ def cmd_cf(args):
             etag = res.get("result", {}).get("etag", "live")
             print(f"✅ Deployed [{res['worker_name']}] successfully! (ETag: {etag})")
             print(f"  • Entry Point: {res['entry_point']}")
-            print(f"  • Live URL:    https://{res['worker_name']}.whoentertains.workers.dev")
+            from . import endpoints
+            live = endpoints.worker_live_url(res['worker_name'])
+            if live:
+                print(f"  • Live URL:    {live}")
         except Exception as e:
             print(f"❌ Deploy failed: {e}")
             sys.exit(1)
@@ -3286,26 +3972,84 @@ def cmd_tree(args):
         sys.exit(1)
 
 
+def cmd_cua(args):
+    """NouGen CUA (Computer-Using Agent) & Open Kitchen controller."""
+    import time
+    from nougen_morph import (
+        ActionCard,
+        HeadlessHandoffSession,
+        GenerativePanel,
+        AtmosphericSkyEngine,
+        SecuredVaultDetokenizer,
+    )
+    action = getattr(args, "cua_action", "status")
+
+    if action == "status":
+        print("🖥️  NouGen CUA (Computer-Using Agent) & Open Kitchen Engine")
+        print("   Status: ONLINE & AVAILABLE")
+        print("   Prims: HeadlessHandoffSession · OpenKitchenAbortController · ActionCard · GenerativePanel")
+        _ = SecuredVaultDetokenizer()
+        print("   Vault: Zero-Knowledge Tokenized Ready")
+        sky = AtmosphericSkyEngine.get_atmospheric_state()
+        print(f"   Atmosphere: {sky['phase'].upper()} (Lat: {sky['coordinates']['lat']}, Lon: {sky['coordinates']['lon']})")
+        return
+
+    if action == "handoff":
+        goal = args.goal
+        session = HeadlessHandoffSession()
+        _ = session.start(goal=goal)
+        print(f"🚀 Started CUA Handoff Session: {session.session_id}")
+        print(f"   Goal: {goal}")
+        print("   Open Kitchen Feed: Monitoring active (abort armed)")
+        return
+
+    if action == "card":
+        card = ActionCard(
+            card_id=f"card_{int(time.time())}",
+            title=args.title or "Interactive Subroutine",
+            summary=args.summary or "Proactive execution card",
+            action_type="cli_task",
+            payload={"task": args.title or "task"},
+            suggested_button_label="Execute"
+        )
+        print(f"🎴 Action Card Created: [{card.card_id}] {card.title}")
+        print(f"   Summary: {card.summary}")
+        print(f"   Status: {card.status}")
+        return
+
+    if action == "panel":
+        panel = GenerativePanel(
+            panel_id=f"panel_{int(time.time())}",
+            title=args.title or "Cortex Panel",
+            widget_type="metrics",
+            config={"view": "compact"}
+        )
+        print(f"📊 Generative Panel Assembled: [{panel.panel_id}] {panel.title}")
+        print(f"   Widget: {panel.widget_type} · Config: {panel.config}")
+        return
+
+
 def cmd_tube(args):
     """NouGenTube media transcript ingester."""
-    action = getattr(args, "tube_action", "pull")
-    if action == "pull":
-        url = args.url
-        print(f"📺 NouGenTube pulling: {url}")
-        try:
-            prev_argv = sys.argv
-            sys.argv = ["tube", url]
-            if getattr(args, "dry_run", False):
-                sys.argv.append("--dry-run")
-            try:
-                tube.main()
-            finally:
-                sys.argv = prev_argv
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
-            sys.exit(1)
+    action = getattr(args, "tube_action", "ingest")
+    url = getattr(args, "url", None)
+    dry_run = getattr(args, "dry_run", False) or (action == "preview")
+    limit = getattr(args, "limit", 1)
+
+    print(f"📺 NouGenTube {'previewing' if dry_run else 'ingesting'}: {url} (limit: {limit})")
+    try:
+        cmd_args = [url]
+        if dry_run:
+            cmd_args.append("--dry-run")
+        if limit:
+            cmd_args.extend(["--limit", str(limit)])
+        tube.main(cmd_args)
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 
 def cmd_arxiv(args):
@@ -3376,26 +4120,30 @@ def cmd_msg(args):
         emit(peers if isinstance(peers, dict) else {"peers": peers}, plain=_plain_peers, args=args)
         return
 
-    node, agent_target = bus.parse_destination(target)
+    from .nougenmsg import target_unknown
+    refusal = target_unknown(target)
+    if refusal:
+        def _plain_refusal(p, style):
+            yield f"Not sent: {p['error']}"
+            yield f"Resolvable now: {' '.join(p['resolvable'])}"
+        emit(refusal, plain=_plain_refusal, args=args)
+        return
 
     if getattr(args, "dry_run", False):
-        preview = {
-            "target": target,
-            "resolved_node": node,
-            "resolved_agent": agent_target,
-            "would_call": ("emit_fleet" if node == "fleet" else "emit_node"),
-            "message": msg_text,
-        }
+        from .nougenmsg import resolve_target
+        resolution = resolve_target(target).as_dict()
+        preview = {"target": target, "deliveries": resolution["deliveries"],
+                   "would_call": "send_resolved", "message": msg_text}
         def _plain_dry_run(p, style):
-            yield f"[dry-run] --to {p['target']!r} resolves to node={p['resolved_node']!r} agent={p['resolved_agent']!r}"
-            yield f"[dry-run] would call {p['would_call']}(...) — nothing sent"
+            for d in p["deliveries"]:
+                yield f"[dry-run] --to {p['target']!r} -> node={d['node']!r} lane={d['lane']!r} ({d['how']})"
+            yield "[dry-run] nothing sent"
         emit(preview, plain=_plain_dry_run, args=args)
         return
 
-    if node == "fleet":
-        res = bus.emit_fleet(msg_text, target=agent_target)
-    else:
-        res = bus.emit_node(node, agent_target, msg_text)
+    # Send to exactly what the live resolver named (never the legacy parse, which read
+    # a lane it did not know as "every agent on this node").
+    res = bus.send_resolved(target, msg_text)
     def _plain_send(p, style):
         yield f"Message dispatched to {target}: {p}"
     emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)
@@ -3419,47 +4167,19 @@ def cmd_evidence(args):
             sys.exit(1)
 
 
-RELAY_DIR_ENV_VARS = ("NOUGEN_RELAY_DIR", "FLEET_RELAY_DIR")
-EX_CONFIG = 78
+from . import relay_registry as _relay_registry
 
-
-def _relay_registry_candidates():
-    """Where the fleet registry clone may live, most explicit first.
-
-    A NouGenShards checkout carries its own legacy `.handoffs/` (the older
-    per-repo handoff system), so simply running the relay CLI from this repo
-    silently reads the wrong board. The registry must be located explicitly.
-    """
-    for var in RELAY_DIR_ENV_VARS:
-        raw = os.environ.get(var, "").strip()
-        if raw:
-            yield Path(raw).expanduser()
-    # An installed (editable) nougen_relay is normally the registry clone's
-    # own src/ tree, so the clone is two levels above the package.
-    try:
-        import nougen_relay as _relay_pkg
-    except ImportError:
-        _relay_pkg = None
-    pkg_file = getattr(_relay_pkg, "__file__", None)
-    if pkg_file:
-        pkg_path = Path(pkg_file).resolve()
-        if len(pkg_path.parents) > 2:
-            yield pkg_path.parents[2]
-    here = Path(__file__).resolve()
-    # src/nougen_shards/cli.py -> repo root is parents[2]; the fleet keeps
-    # NouGenRelay either beside the repo or beside the repo's parent folder
-    # (The Observatory/NouGenRelay next to The Observatory/NouGen/nougenshards).
-    for depth in (3, 4):
-        if len(here.parents) > depth:
-            yield here.parents[depth] / "NouGenRelay"
+# Preserve the CLI module's historical discovery hooks for callers and tests;
+# the implementation lives in relay_registry so other entry points share it.
+RELAY_DIR_ENV_VARS = _relay_registry.RELAY_DIR_ENV_VARS
+EX_CONFIG = _relay_registry.EX_CONFIG
+RELAY_REGISTRY_BRANCH = _relay_registry.RELAY_REGISTRY_BRANCH
+_checkout_branch = _relay_registry._checkout_branch
+_relay_registry_candidates = _relay_registry._relay_registry_candidates
 
 
 def find_relay_registry():
-    """Return the NouGenRelay clone that holds a `.handoffs/` registry, or None."""
-    for cand in _relay_registry_candidates():
-        if (cand / ".handoffs").is_dir() and (cand / "src" / "nougen_relay").is_dir():
-            return cand
-    return None
+    return _relay_registry.find_relay_registry(candidates=_relay_registry_candidates())
 
 
 def _import_relay_main(registry):
@@ -3474,6 +4194,32 @@ def _import_relay_main(registry):
         sys.path.insert(0, src)
     from nougen_relay.cli import main as relay_main  # noqa: E402
     return relay_main
+
+
+def _relay_core_path(relay_main):
+    """core.py of the nougen_relay that was ACTUALLY imported (installed or registry src)."""
+    mod = sys.modules.get(getattr(relay_main, "__module__", "") or "")
+    return Path(mod.__file__).parent / "core.py" if getattr(mod, "__file__", None) else None
+
+
+def _with_create_publish(forwarded, registry, core_py=None):
+    """`nougen relay create` always targets the registry, so publish the leg.
+
+    A leg left untracked is invisible to every other node. Older relay
+    checkouts have no --publish flag, so it is only added when the
+    relay implementation that will run knows it (`core_py`, which
+    cmd_relay takes from the imported module); opt out with --no-publish.
+    """
+    if forwarded[:1] != ["create"] or "--publish" in forwarded:
+        return forwarded
+    if "--no-publish" in forwarded:
+        return [a for a in forwarded if a != "--no-publish"]
+    core_py = Path(core_py) if core_py else Path(registry) / "src" / "nougen_relay" / "core.py"
+    try:
+        supported = '"--publish"' in core_py.read_text(encoding="utf-8")
+    except OSError:
+        supported = False
+    return [*forwarded, "--publish"] if supported else forwarded
 
 
 def cmd_relay(args):
@@ -3493,6 +4239,7 @@ def cmd_relay(args):
         forwarded = forwarded[1:]
     prev_cwd = os.getcwd()
     prev_argv = sys.argv
+    forwarded = _with_create_publish(forwarded, registry, _relay_core_path(relay_main))
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
     action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
@@ -3623,6 +4370,12 @@ def cmd_tunnel(args):
         else:
             print(f"❌ Failed to start tunnel: {exc}")
         sys.exit(1)
+
+
+def cmd_stadium(args):
+    """Stadium model: read-only shard tickets and verified call-ups (see nougen_shards.stadium)."""
+    from . import stadium  # pylint: disable=import-outside-toplevel
+    raise SystemExit(stadium.cli_main(args))
 
 
 def cmd_time(args):
@@ -3825,6 +4578,86 @@ def cmd_open(args):
     open_main(forwarded)
 
 
+def cmd_subscribe(args):
+    from . import shard_subscriptions as ss
+    if args.action in ("add", "rm") and not args.name:
+        print(f"subscribe {args.action} needs a name", file=sys.stderr)
+        sys.exit(2)
+    if args.action == "add":
+        try:
+            out = ss.subscribe(args.name, tags=args.tag, keywords=args.keyword)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+    elif args.action == "rm":
+        out = {"removed": ss.unsubscribe(args.name)}
+    elif args.action == "list":
+        out = ss.list_subscriptions()
+    else:
+        try:
+            out = ss.surface(args.name, advance=(args.action == "surface"))
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+    if args.json or args.action in ("add", "rm", "list"):
+        print(json.dumps(out, indent=2))
+        return 0
+    for name, hits in out.items():
+        print(f"[{name}] {len(hits)} new")
+        for h in hits:
+            print(f"  {h['ref']}  {h['timestamp']}  {h['title']}")
+    return 0
+
+
+def cmd_rd_accel(args):
+    from dataclasses import asdict
+    from datetime import date as _date
+    from . import rd_acceleration as rd
+    if bool(args.jsonl) == bool(args.ledger):
+        print("give exactly one of --jsonl or --ledger", file=sys.stderr)
+        return 2
+    gens = rd.load_jsonl(args.jsonl) if args.jsonl else rd.from_evaluation_ledger(args.ledger)
+    rep = rd.assess(gens, _date.fromisoformat(args.breakpoint))
+    if args.json:
+        print(json.dumps({"generations": len(gens), **asdict(rep)}))
+    else:
+        print(f"generations={len(gens)} ratio={rep.ratio:.2f} "
+              f"ci=[{rep.ci_low:.2f}, {rep.ci_high:.2f}] pattern={rep.pattern} "
+              f"reaction_window_shrinking={rep.reaction_window_shrinking}")
+        for n in rep.notes:
+            print(f"  note: {n}")
+    return 0
+
+
+def cmd_sync(args):
+    """Synchronize, autostash, and rebase fleet git repositories."""
+    from .fleet_sync import FleetSyncManager
+    explicit = [Path(args.repo)] if getattr(args, "repo", None) else None
+    auto_push = not getattr(args, "no_push", False)
+    manager = FleetSyncManager()
+    results = manager.sync_all(explicit_paths=explicit, auto_push=auto_push)
+    
+    if getattr(args, "json", False):
+        import json as _json
+        print(_json.dumps([r.__dict__ for r in results], indent=2))
+        return
+
+    print("=" * 80)
+    print("🔄 NouGen Fleet Auto-Sync Engine — Upstream Rebase & Alignment")
+    print("=" * 80)
+    for r in results:
+        if r.status == "skipped":
+            continue
+        icon = "✅" if r.status in ("synced", "up_to_date", "pushed") else "⚠️" if "dirty" in r.status else "❌"
+        print(f"{icon} {r.repo_name:<28} [{r.branch:<25}] status: {r.status}")
+        if r.details:
+            print(f"   Details: {r.details}")
+        if r.error:
+            print(f"   Error:   {r.error}")
+    print("=" * 80)
+    print("✨ Sync cycle complete. All working trees aligned.")
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -3843,11 +4676,17 @@ def main():
         # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
         # positional swallow a leading option, so `nougen relay --help` and
         # `nougen relay -h` would die here instead of reaching the engine.
-        cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
+        hardcade_sfx.run_cli(
+            "relay", sys.argv[2:], cmd_relay,
+            argparse.Namespace(command="relay", relay_args=sys.argv[2:]),
+        )
         return
     if sys.argv[1] == "open":
         cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
         return
+    if sys.argv[1] in ("auto", "boost", "plan", "compact", "find", "policy", "market", "console"):
+        from . import surface
+        sys.exit(surface.main(sys.argv[1:]))
 
     parser = get_parser()
 
@@ -3862,7 +4701,7 @@ def main():
     # automatically interpret `nougen <query>` as `nougen search "<query>"`
     if len(sys.argv) > 1 and sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
         query_str = " ".join(sys.argv[1:])
-        cmd_search(argparse.Namespace(
+        hardcade_sfx.run_cli("search", [], cmd_search, argparse.Namespace(
             command="search",
             query=query_str,
             semantic=False,
@@ -3875,24 +4714,25 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
+        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
+        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
-        "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
+        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,
+
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
-        "facts": cmd_facts, "mrsb": cmd_mrsb,
-        "wargame": cmd_wargame,
+        "facts": cmd_facts, "mrsb": cmd_mrsb, "sync": cmd_sync,
+        "wargame": cmd_wargame, "nlp": cmd_nlp, "stadium": cmd_stadium,
     }
     if args.command in cmds:
-        cmds[args.command](args)
+        hardcade_sfx.run_cli(args.command, sys.argv[2:], cmds[args.command], args)
     else:
         parser.print_help()
 

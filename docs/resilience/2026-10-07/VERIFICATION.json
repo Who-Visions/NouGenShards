@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-07",
+  "scope": "local reference primitives and bounded differential regression",
+  "methodology_requirements": 28,
+  "operational_scenarios_planned": 46,
+  "reference_tests": {"passed": 21, "failed": 0},
+  "repository_tests": {"passed": 23, "failed": 0},
+  "repository_whitespace_check": "passed",
+  "confirmed_repository_defect": "reference mutation contaminated candidate input and hid a counterexample",
+  "repository_fix": "candidate receives a separate deserialization of the frozen input",
+  "reference_code_sha256": "8fc9c6f74db1d8635ee9b1af4fd628184f1c0f0e1be0223b39d2db686bafa79a",
+  "reference_tests_sha256": "bd509c20218d66dabb20856889c60b2900c44f55f064cce63ab0434ce56ef4dd",
+  "live_fleet_deployment": false,
+  "full_production_certification": false,
+  "remaining_live_checks": ["real backend idempotency", "network partitions", "disk full", "storage corruption", "distributed clock faults", "platform isolation", "production signing", "live canary and rollback"]
+}

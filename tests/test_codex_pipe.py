@@ -48,6 +48,32 @@ class CodexPipeTests(unittest.TestCase):
         self.assertEqual(result['status'], 'saved')
         self.assertEqual(Path(result['file']).parent, Path(self.temp.name))
 
+    def test_preflight_paused_usage_saves_without_sending(self):
+        paused = {'ok': True, 'paused': True, 'available_at': 'later'}
+        with patch('nougen_shards.codex_status.status', return_value=paused), \
+                patch.object(codex_pipe, 'request') as req:
+            result = codex_pipe.deliver('hold me')
+        req.assert_not_called()
+        self.assertEqual(result['status'], 'saved')
+        self.assertIn('usage limit', result['error'])
+
+    def test_preflight_status_probe_failure_names_receiver(self):
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+                patch.object(codex_pipe, 'request', side_effect=OSError('[WinError 2]')) as req:
+            result = codex_pipe.deliver('x')
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(req.call_args[0][0], {'op': 'status'})
+        self.assertIn('not listening', result['error'])
+        self.assertFalse(result['pipe_delivered'])
+
+    def test_preflight_ok_sends_and_attaches_check(self):
+        replies = [{'status': 'listening'}, {'status': 'saved', 'pipe_delivered': True}]
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+                patch.object(codex_pipe, 'request', side_effect=replies):
+            result = codex_pipe.deliver('go')
+        self.assertTrue(result['pipe_delivered'])
+        self.assertTrue(result['preflight']['ready'])
+
     def test_offline_fallback_uses_unique_files(self):
         with patch.object(codex_pipe, 'request', side_effect=OSError('offline')):
             first = codex_pipe.deliver('first')
@@ -65,7 +91,10 @@ class CodexPipeTests(unittest.TestCase):
 
     def test_non_windows_queues_native_and_preserves_sender(self):
         done = subprocess.CompletedProcess([], 0, 'Queued message fixture', '')
-        with patch.object(codex_pipe.os, 'name', 'posix'), \
+        # Pin the usage preflight: it reads this machine's real Codex rate-limit snapshot,
+        # so on a box whose Codex window is spent the message is saved, not queued.
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+             patch.object(codex_pipe.os, 'name', 'posix'), \
              patch.object(codex_pipe, 'native_destination', return_value=('fixture-thread', 'codex')), \
              patch.object(codex_pipe.subprocess, 'run', return_value=done) as run:
             result = codex_pipe.deliver('seat reply', {'original_sender': 'whoart/session-123'})
@@ -91,7 +120,10 @@ class CodexPipeTests(unittest.TestCase):
         receipt = {'status': 'saved', 'file': 'retained.json', 'pipe_delivered': False}
         with patch.object(codex_pipe, 'deliver', return_value=receipt), \
              patch('builtins.open') as write:
-            self.assertEqual(AgentPinger.ping_codex('offline'), receipt)
+            result = AgentPinger.ping_codex('offline')
+            self.assertIn('codex_limits', result)
+            result.pop('codex_limits')
+            self.assertEqual(result, receipt)
             write.assert_not_called()
 
     def test_banner_source_cannot_inject_markdown_lines(self):
@@ -479,3 +511,42 @@ class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_newest_codex_thread_picks_latest_rollout(tmp_path):
+    import os as _os
+    from nougen_shards import codex_pipe as cp
+    day = tmp_path / "2026" / "11" / "12"
+    day.mkdir(parents=True)
+    old = day / "rollout-2026-11-12T01-00-00-11111111-1111-1111-1111-111111111111.jsonl"
+    new = day / "rollout-2026-11-12T02-00-00-22222222-2222-2222-2222-222222222222.jsonl"
+    old.write_text("{}"); new.write_text("{}")
+    (day / "notes.jsonl").write_text("{}")
+    _os.utime(old, (1000, 1000)); _os.utime(new, (2000, 2000))
+    assert cp.newest_codex_thread(tmp_path) == "22222222-2222-2222-2222-222222222222"
+
+
+def test_watchdog_without_sessions_is_unavailable(tmp_path):
+    from nougen_shards import codex_pipe as cp
+    assert cp.watchdog(tmp_path)["status"] == "unavailable"
+
+
+def test_watchdog_activates_newest_thread(tmp_path, monkeypatch):
+    from nougen_shards import codex_pipe as cp
+    (tmp_path / "rollout-x-33333333-3333-3333-3333-333333333333.jsonl").write_text("{}")
+    seen = {}
+    monkeypatch.setattr(cp, "activate", lambda t=None: seen.setdefault("t", t) and {"status": "ready"})
+    cp.watchdog(tmp_path)
+    assert seen["t"] == "33333333-3333-3333-3333-333333333333"
+
+
+def test_native_exe_falls_back_to_desktop_app_install(tmp_path, monkeypatch):
+    from nougen_shards import codex_pipe as cp
+    exe = tmp_path / "OpenAI" / "Codex" / "bin" / "9e1da79431da526b" / "codex.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.delenv("NOUGEN_CODEX_EXE", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    assert cp._native_codex_executable() == str(exe)

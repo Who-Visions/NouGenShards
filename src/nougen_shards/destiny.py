@@ -30,6 +30,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class _Refused(Exception):
+    """A create that must not land: raised inside the transaction so the
+    insert rolls back instead of returning an error dict over a committed row."""
+
+
 STATUSES = ("dormant", "active", "fulfilled", "failed", "superseded")
 #: Legal lifecycle edges. Anything else is refused with an error dict.
 TRANSITIONS = {
@@ -60,11 +66,18 @@ def default_branch() -> str:
 
 
 def db_path() -> Path:
-    raw = os.environ.get("NOUGEN_DESTINY_DB", "").strip()
-    if raw:
-        return Path(raw)
+    """Destinies store for the active identity.
+
+    Owner: ``NOUGEN_DESTINY_DB`` override, else ``<vault>/destinies.db``. A tenant
+    request always resolves inside its own vault; the env override never applies
+    to it, so an operator setting cannot point tenants at the owner's store.
+    """
     from . import core
-    return Path(core.GLOBAL_DIR) / "destinies.db"
+    if not core.is_tenant_context():
+        raw = os.environ.get("NOUGEN_DESTINY_DB", "").strip()
+        if raw:
+            return Path(raw)
+    return Path(core.active_vault_dir()) / "destinies.db"
 
 
 def _now() -> str:
@@ -194,22 +207,39 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
     if provenance is not None and not isinstance(provenance, str):
         provenance = json.dumps(provenance)
     now = _now()
-    with _connect() as conn:
-        cur = conn.execute(
-            """INSERT INTO destinies (title, goal, status, branch, trigger, required_events,
-               forbidden_outcomes, acceptable_variance, verification, confidence, deadline,
-               supersedes, provenance, created_utc, updated_utc)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (title, goal, status, branch, trigger, json.dumps(_as_list(required_events)),
-             json.dumps(_as_list(forbidden_outcomes)), acceptable_variance, verification,
-             confidence, deadline, supersedes, provenance, now, now))
-        did = cur.lastrowid
-        conn.execute("INSERT INTO destiny_events (destiny_id, from_status, to_status, actor, evidence, created_utc) VALUES (?,?,?,?,?,?)",
-                     (did, None, status, actor, "created", now))
-        if supersedes:
-            _transition(conn, supersedes, "superseded", actor, f"superseded by destiny {did}", now)
-            conn.execute("UPDATE destinies SET superseded_by=?, updated_utc=? WHERE id=?", (did, now, supersedes))
-        row = conn.execute("SELECT * FROM destinies WHERE id=?", (did,)).fetchone()
+    try:
+        with _connect() as conn:
+            if supersedes is not None:
+                # BEGIN IMMEDIATE serializes supersede writers: the check, the
+                # insert and the transition below are one atomic unit, so a
+                # concurrent fulfil/supersede cannot slip between them.
+                conn.execute("BEGIN IMMEDIATE")
+                tgt = conn.execute("SELECT status FROM destinies WHERE id=?", (supersedes,)).fetchone()
+                if tgt is None:
+                    raise _Refused(f"cannot supersede destiny {supersedes}: not found")
+                if "superseded" not in TRANSITIONS.get(tgt["status"], ()):
+                    raise _Refused(f"cannot supersede destiny {supersedes}: it is {tgt['status']}, a terminal record is preserved")
+            cur = conn.execute(
+                """INSERT INTO destinies (title, goal, status, branch, trigger, required_events,
+                   forbidden_outcomes, acceptable_variance, verification, confidence, deadline,
+                   supersedes, provenance, created_utc, updated_utc)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (title, goal, status, branch, trigger, json.dumps(_as_list(required_events)),
+                 json.dumps(_as_list(forbidden_outcomes)), acceptable_variance, verification,
+                 confidence, deadline, supersedes, provenance, now, now))
+            did = cur.lastrowid
+            conn.execute("INSERT INTO destiny_events (destiny_id, from_status, to_status, actor, evidence, created_utc) VALUES (?,?,?,?,?,?)",
+                         (did, None, status, actor, "created", now))
+            if supersedes is not None:
+                # A refused transition must refuse the whole creation: ignoring
+                # it used to leave the new row plus a dangling superseded_by.
+                moved = _transition(conn, supersedes, "superseded", actor, f"superseded by destiny {did}", now)
+                if "error" in moved:
+                    raise _Refused(moved["error"])
+                conn.execute("UPDATE destinies SET superseded_by=?, updated_utc=? WHERE id=?", (did, now, supersedes))
+            row = conn.execute("SELECT * FROM destinies WHERE id=?", (did,)).fetchone()
+    except _Refused as exc:
+        return {"error": str(exc)}
     return _row_to_dict(row)
 
 

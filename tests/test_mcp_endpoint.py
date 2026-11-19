@@ -24,8 +24,6 @@ os.environ["NGS_NODE_TOKEN"] = TEST_TOKEN
 os.environ["NOUGEN_HOME"] = _tmp
 os.environ["NOUGEN_VAULT_DIR"] = os.path.join(_tmp, ".vault")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
 import app as node  # noqa: E402
 import nougen_shards.core as core  # noqa: E402
 
@@ -47,7 +45,7 @@ def _rpc(method, params=None, id_=1):
 # tests share one lifespan-entered client (module scope) instead of the
 # per-test clients the REST suite uses.
 @pytest.fixture(scope="module")
-def client():
+def client(shared_mcp_client):
     from pathlib import Path
     vault = Path(tempfile.mkdtemp(prefix="ngs_mcp_vault_"))
     saved = (core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN)
@@ -56,8 +54,7 @@ def client():
     node.NODE_TOKEN = TEST_TOKEN
     core.init_db(1)
     try:
-        with TestClient(node.app) as c:  # context manager runs the lifespan
-            yield c
+        yield shared_mcp_client  # lifespan entered once per process (conftest)
     finally:
         core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN = saved
 
@@ -169,3 +166,111 @@ def test_mcp_node_status(client):
     result = _call_tool(client, "node_status", {})
     text = "".join(c.get("text", "") for c in result["content"])
     assert "ignited" in text
+
+
+def test_mcp_search_and_alias_tools_return_no_coroutines(client):
+    """Verify that offloaded tools and alias delegations never return unawaited coroutines."""
+    import inspect
+    # Test search alias directly via sync contract
+    res_search = node.search_tool.fn("streamable connector", limit=1)
+    assert not inspect.iscoroutine(res_search), "search_tool.fn returned a coroutine"
+    assert isinstance(res_search, list)
+
+    # Test via HTTP MCP endpoint
+    result = _call_tool(client, "search", {"query": "streamable connector", "limit": 1})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "<coroutine object" not in text
+    assert not result.get("isError")
+
+
+# --- newly advertised handlers (registered call paths) ------------------------
+
+def test_mcp_control_plane_context_select_registered_call_path(client):
+    result = _call_tool(client, "control_plane_context_select", {"query": "test query"})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "graph-context-v1" in text
+    assert "replay_hash" in text
+
+
+def test_mcp_control_plane_pareto_route_registered_call_path(client):
+    import json
+    routes = [{
+        "id": "r1", "quality": 0.9, "truth": 0.9, "latency_ms": 5,
+        "cost_usd": 0.01, "robustness": 0.9, "memory_fidelity": 0.9, "safety_score": 0.99
+    }]
+    weights = {k: 1.0 for k in [
+        "quality", "truth", "latency_ms", "cost_usd",
+        "robustness", "memory_fidelity", "safety_score"
+    ]}
+    result = _call_tool(client, "control_plane_pareto_route", {
+        "routes_json": json.dumps(routes),
+        "policy_weights_json": json.dumps(weights),
+    })
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert '"chosen": "r1"' in text
+
+
+def test_mcp_control_plane_adherence_evaluate_registered_call_path(client):
+    import json
+    result = _call_tool(client, "control_plane_adherence_evaluate", {
+        "declared_edges_json": json.dumps([["a", "b"]]),
+        "observed_events_json": json.dumps([["a", "b"]]),
+    })
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert '"coverage": 1.0' in text
+
+
+def test_mcp_formal_verification_suite_registered_call_path(client):
+    result = _call_tool(client, "formal_verification_suite", {})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "information_dynamics_bounded_models_v1" in text
+
+
+def test_mcp_arxiv_paper_empty_ref_validation_call_path(client):
+    result = _call_tool(client, "arxiv_paper", {"ref": ""})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "ref is required and cannot be empty" in text
+
+
+def test_mcp_recall_window_start_end_aliases_and_phrases(client):
+    """Connectors advertise start/end; the node only knew since/until, so the
+    bounds were dropped and the newest shards came back with no era filter."""
+    _call_tool(client, "capture_experience", {
+        "title": "March era witness", "content": "lived in march",
+        "original_timestamp": "2026-03-19T14:05:00Z",
+    })
+    _call_tool(client, "capture_experience", {
+        "title": "November era witness", "content": "lived in november",
+        "original_timestamp": "2026-11-02T10:00:00Z",
+    })
+    def titles(args):
+        res = _call_tool(client, "recall_window", args)
+        return "".join(c.get("text", "") for c in res["content"])
+    # Phrase bounds resolve in `tz`; pinned to UTC here because the operator
+    # shell may carry NOUGEN_TZ=America/New_York (March 1 would start 05:00Z).
+    # Edge of the era, with the microseconds core.capture() really stamps:
+    # a phrase-derived lower bound must not drop the first second of March.
+    _call_tool(client, "capture_experience", {
+        "title": "First-second witness", "content": "stamped at the stroke of march",
+        "original_timestamp": "2026-03-01T00:00:00.123456Z",
+    })
+    march_only = titles({"start": "2026-03-01", "end": "2026-03-31", "limit": 10})
+    assert "March era witness" in march_only and "November era witness" not in march_only
+    assert "March era witness" in titles({"since": "2026-03", "until": "2026-03"})
+    when = titles({"when": "march 2026", "tz": "UTC"})
+    assert "March era witness" in when and "First-second witness" in when
+    phrase = titles({"since": "march 2026", "until": "march 2026", "tz": "UTC"})
+    assert "March era witness" in phrase and "First-second witness" in phrase
+    assert "November era witness" not in phrase
+    # A returned shard timestamp (fractional) is reusable as a bound.
+    # (Bounds compare lexicographically, so pair fractional bounds with the
+    # fractional-stamped shard; a bare "...00Z" stamp sorts after "...00.9Z".)
+    frac = titles({"since": "2026-03-01T00:00:00.000000Z", "until": "2026-03-01T00:00:00.999999Z"})
+    assert "First-second witness" in frac and "March era witness" not in frac
+    # pure helpers
+    assert node._era_bound("2026-03", None, start=True) == "2026-03"
+    assert node._era_bound("2026-03-19T14:05:00.123456Z", None, start=True) == "2026-03-19T14:05:00.123456Z"
+    assert node._era_bound("march 2026", "UTC", start=True) == "2026-03-01T00:00:00"
+    assert node._era_bound("march 2026", "UTC", start=False) == "2026-03-31T23:59:59"
+    assert node._exclusive_to_inclusive("2026-04-01T00:00:00Z") == "2026-03-31T23:59:59"
+    assert node._inclusive_lower("2026-03-01T00:00:00Z") < "2026-03-01T00:00:00.000001Z"

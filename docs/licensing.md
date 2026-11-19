@@ -1,33 +1,23 @@
 # Licensing & Permitted Use
 
-**NouGenShards is source-available software, not open source.**
+**NouGenShards is proprietary, source-available software. It is not open source.** Public visibility does not grant general reuse rights. Use is governed by the [Who Visions Source-Available License v1.1](../LICENSE.md).
 
-This means that while the code is visible and you can run it on your own machine, you do not have the same rights to redistribute or commercially exploit it as you would with an MIT or Apache-licensed project.
+## Who owns what
 
-## ✅ What is Permitted
+Who Visions LLC owns the original NouGenShards code and documentation covered by the license. The license grants limited permissions and does not transfer ownership. Third-party code, assets, data, and other materials with separate notices remain governed by their own terms. For example, `tools/ai_video_transcriber/` has its own Apache-2.0 license.
 
-### Personal & Educational Use
-You are free to download, install, and run NouGenShards for your own personal use, learning, and local experimentation.
+## Permitted use
 
-### Inspection & Trust
-The source is available so you can verify how we handle your data. You can see that your shards stay on your disk and that your keys are stored in a local vault.
+Under v1.1, you may inspect the covered source, run it locally for personal, non-commercial, educational use, and fork it for personal experimentation or to contribute back to the original project.
 
-### Contributions
-We welcome forks and pull requests for personal experimentation or to contribute improvements back to the main Who Visions project.
+## Uses that require written permission
 
-## ❌ What is Prohibited
+Without prior written permission from Who Visions LLC, you may not use covered NouGenShards materials commercially, sell or redistribute them for a fee, host them as a service, or use them to build a competing product.
 
-### Commercial Reuse
-You may not use the NouGenShards source code for any commercial purpose (e.g., inside a product you sell) without written permission or an active commercial subscription from Who Visions.
+You also may not provide any covered code or documentation to an AI model or service operated by another person or company, including as a prompt, context, reference material, training data, evaluation or benchmark data, or a dataset or retrieval corpus. You may not use it to train, fine-tune, evaluate, benchmark, or improve AI models or services, or to reproduce or expose it through model outputs. This applies to commercial and non-commercial services, including services offered by OpenAI (ChatGPT and Codex) and Anthropic (Claude).
 
-### Competing Services
-You are strictly prohibited from using the code to build or host a competing "AI Memory" or "Agent Substrate" service.
+## Earlier versions
 
-### Distribution for Profit
-You may not sell, sublicense, or redistribute the Software for a fee.
+Version 1.1 applies to copies distributed or accessed under those terms on or after October 9, 2026. It does not withdraw permissions validly granted for earlier copies under earlier license versions.
 
-### Intelligence Training
-You may not use this Software to train or develop competing AI models or retrieval algorithms.
-
----
-*For commercial licensing inquiries, please email contact@whovisions.com.*
+For the complete terms and third-party boundaries, read [LICENSE.md](../LICENSE.md) and [NOTICE.md](../NOTICE.md). For commercial licensing, contact contact@whovisions.com.

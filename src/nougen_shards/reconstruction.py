@@ -21,6 +21,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def resolve_fact_snapshot(records: Sequence[dict], canonical_key: str,
     Newer same-scope snapshot outranks stale historical rollups.
     Completeness gate: missing machine != zero. Blade-only does not satisfy fleet scope.
     """
-    expected = list(expected_machines or ["blade1tb", "phoebus", "whoart"])
+    expected = list(expected_machines or [local_node(), *configured_fleet_nodes()])
     candidates = []
     for r in records:
         if r.get("canonical_key") != canonical_key and r.get("key") != canonical_key:
@@ -113,13 +114,13 @@ def compile_retrieval_intent(query: str, now_year: int = 2026,
     Parses intent, metric namespace, scope, and canonical key deterministically.
     """
     n = query.lower().strip()
-    expected = list(expected_machines or ["blade1tb", "phoebus", "whoart"])
+    expected = list(expected_machines or [local_node(), *configured_fleet_nodes()])
     
     metric = "unknown"
     if any(term in n for term in ("token", "tokens", "usage", "ytd")):
         metric = "token_usage"
     
-    scope = "fleet" if any(term in n for term in ("all-machine", "all machine", "fleet", "three-machine", "blade phoebus whoart")) else "local"
+    scope = "fleet" if any(term in n for term in ("all-machine", "all machine", "fleet", "three-machine")) else "local"
     
     year = now_year if any(term in n for term in ("ytd", "this year", str(now_year))) else None
     period = "YTD" if "ytd" in n or "this year" in n else None
@@ -137,7 +138,7 @@ def compile_retrieval_intent(query: str, now_year: int = 2026,
         temporal_period=period,
         temporal_year=year,
         scope=scope,
-        expected_machines=expected if scope == "fleet" else (entities or ["blade1tb"]),
+        expected_machines=expected if scope == "fleet" else (entities or [local_node()]),
         entities=entities,
     )
 

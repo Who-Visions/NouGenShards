@@ -22,6 +22,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 
 class StatusLevel(str, Enum):
@@ -62,7 +63,7 @@ def classify_node_offline_reason(
             "status": StatusLevel.GREEN,
             "reason": f"Node {node_name} is online and serving.",
         }
-    if normalized in ("whoart", "whoart-laptop") and not route_reachable and not scheduled_activity:
+    if normalized in configured_fleet_nodes() and not route_reachable and not scheduled_activity:
         return {
             "category": "planned_offline",
             "status": StatusLevel.UNKNOWN,
@@ -175,7 +176,7 @@ def classify_shards_status(payload: Dict[str, Any],
     origin = payload.get("origin") or payload.get("node") or "unknown"
     blade_confirmed = payload.get("blade_confirmed")
     if blade_confirmed is None:
-        blade_confirmed = origin.lower() in ("blade1tb", "blade", "local")
+        blade_confirmed = origin.lower() in (local_node(), "local")
 
     ok = bool(payload.get("up")) and bool(payload.get("health_up", True))
     ev = {
@@ -336,8 +337,9 @@ def classify_node_dimensions(
         m_status = StatusLevel.UNKNOWN
         m_reason = "nougenmsg route not tested"
 
+    _peers = configured_fleet_nodes()
     id_confirmed = identity_confirmed if identity_confirmed is not None else (
-        bool(vault_ok or msg_ok or execution_live or relay_live) and node.lower() in ("blade", "blade1tb", "phoebus", "whoart")
+        bool(vault_ok or msg_ok or execution_live or relay_live) and (not _peers or node.lower() in (local_node(), *_peers))
     )
 
     s_auth = shard_auth_valid if shard_auth_valid is not None else (

@@ -66,6 +66,7 @@ def test_project_status():
     assert status["pricing"]["usd"] == 9.99
 
 
+@needs_project
 def test_recall_shards():
     """Verify shard recall surfaces Mrs. B and recursion intelligence."""
     results = mrsb.recall_shards("Mrs. B", limit=3)

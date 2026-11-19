@@ -28,8 +28,15 @@ from pathlib import Path
 from typing import Optional
 
 from . import core
+import threading
+import time
 
 logger = logging.getLogger(__name__)
+
+# Discovery cache for zero-latency skill lookups (Module 19: Stabilize Reasoning)
+_SKILLS_CACHE_LOCK = threading.Lock()
+_CACHED_SKILLS: Optional[tuple[float, list[Skill]]] = None
+_CACHE_TTL_S = 30.0  # 30-second TTL to balance freshness and sub-millisecond retrieval
 
 # Directory name searched under each root, and under the vault.
 _FALLBACK_SKILLS_DIRNAME = "skills"
@@ -125,6 +132,7 @@ class Skill:
     description: str
     path: Path
     body: str = field(repr=False, default="")
+    tier: str = ""
 
     @property
     def summary(self) -> str:
@@ -149,7 +157,30 @@ def _load_file(path: Path, fallback_name: str) -> Optional[Skill]:
             if candidate:
                 description = candidate[:200]
                 break
-    return Skill(name=name, description=description, path=path, body=body)
+    return Skill(name=name, description=description, path=path, body=body,
+                 tier=meta.get("tier", "").strip().upper())
+
+
+def _include_candidates() -> bool:
+    return os.environ.get("NOUGEN_SKILLS_INCLUDE_CANDIDATES", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cache_ttl_s() -> float:
+    """Cache TTL in seconds; ``NOUGEN_SKILLS_CACHE_TTL_S`` overrides the default."""
+    raw = _env("NOUGEN_SKILLS_CACHE_TTL_S")
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("bad NOUGEN_SKILLS_CACHE_TTL_S=%r, using %ss", raw, _CACHE_TTL_S)
+    return _CACHE_TTL_S
+
+
+def invalidate_cache() -> None:
+    """Clear the cached default-roots skill discovery roster."""
+    global _CACHED_SKILLS
+    with _SKILLS_CACHE_LOCK:
+        _CACHED_SKILLS = None
 
 
 def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
@@ -158,6 +189,17 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
     Earlier roots win on name collision, so an explicitly configured directory
     can shadow a packaged skill of the same name.
     """
+    global _CACHED_SKILLS
+    now = time.monotonic()
+
+    # Serve from cache if using default roots and TTL is still valid
+    if roots is None:
+        with _SKILLS_CACHE_LOCK:
+            if _CACHED_SKILLS is not None:
+                cached_time, cached_list = _CACHED_SKILLS
+                if (now - cached_time) < _cache_ttl_s():
+                    return cached_list
+
     found: dict[str, Skill] = {}
     for root in roots if roots is not None else resolve_skill_roots():
         if not root.is_dir():
@@ -177,10 +219,19 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
             elif entry.suffix.lower() == ".md" and entry.name != "SKILL.md":
                 skill = _load_file(entry, entry.stem)
 
+            if skill and skill.tier == "CANDIDATE" and not _include_candidates():
+                # Dream-evolved candidates are unverified; they must not govern live work.
+                continue
             if skill and skill.name not in found:
                 found[skill.name] = skill
 
-    return sorted(found.values(), key=lambda s: s.name)
+    result = sorted(found.values(), key=lambda s: s.name)
+    if roots is None:
+        with _SKILLS_CACHE_LOCK:
+            # Stamp after the scan: on a large root a scan can outlast the TTL,
+            # and a start-time stamp would hand back an already-expired entry.
+            _CACHED_SKILLS = (time.monotonic(), result)
+    return result
 
 
 def get(name: str, roots: Optional[list[Path]] = None) -> Optional[Skill]:
@@ -239,7 +290,17 @@ def match(task: str, roots: Optional[list[Path]] = None) -> list[Skill]:
         if overlap >= threshold:
             scored.append((overlap, skill))
 
-    scored.sort(key=lambda pair: (-pair[0], pair[1].name))
+    # Reported outcomes break ties between equally relevant skills. The bonus is
+    # under one matched term, so it reorders and never adds or removes a skill;
+    # a missing or unreadable outcome store just means no reordering.
+    try:
+        from . import skill_playbook
+        bonus = skill_playbook.bonuses() if len(scored) > 1 else {}
+    except Exception as exc:  # the registry must keep answering without the sidecar
+        logging.getLogger(__name__).debug("skill outcome bonus unavailable: %s", exc)
+        bonus = {}
+
+    scored.sort(key=lambda pair: (-(pair[0] + bonus.get(pair[1].name.lower(), 0.0)), pair[1].name))
     return [skill for _, skill in scored]
 
 

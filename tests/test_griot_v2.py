@@ -1,3 +1,4 @@
+import pytest
 """Unit tests for nougen_shards.griot_v2 (HURRICANE KICK Griot v2 Golden Tests)."""
 from datetime import datetime, timezone
 import json
@@ -188,3 +189,10 @@ def test_ytd_retrieval_prefilters_historical_rows(tmp_path):
 
     assert packet.candidate_total == 1
     assert [artifact.compound_id for artifact in packet.artifacts] == ["2@db1"]
+
+
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """These tests assume the owner's three-machine fleet. Declare it here, not in code."""
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "blade1tb")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "whoart,phoebus")

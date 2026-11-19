@@ -1,0 +1,114 @@
+[
+ {
+  "name": "evidence-bundle-export-import",
+  "kind": "mechanism",
+  "donor_source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+  "donor_behavior": "rea's Workspace & Evidence family: binary sessions, evidence-import / evidence-export, an open-question ledger that persists what is not yet known",
+  "generalized_behavior": "An investigation's findings travel as a self-contained bundle (export/import) with an explicit ledger of open questions; a handoff carries the bundle, not a chat summary.",
+  "nougen_target": "relay close-out legs + shards: a leg may carry an evidence bundle id and an open_questions list, so the receiving lane inherits findings and the unknowns, not prose",
+  "score": 0.0721,
+  "effective_score": 0.0721,
+  "verifiability_ceiling": 0.6,
+  "state": "quarantined",
+  "metrics": {
+   "usefulness": 0.75,
+   "generalizability": 0.9,
+   "verifiability": 0.3,
+   "compatibility": 0.85,
+   "reversibility": 1.0,
+   "integration_cost": 0.1
+  },
+  "evidence": [
+   {
+    "source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+    "claim": "rea exposes evidence-export/evidence-import and an open-question ledger",
+    "confidence": 0.85,
+    "type": "static"
+   }
+  ]
+ },
+ {
+  "name": "passive-observation-default",
+  "kind": "pattern",
+  "donor_source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+  "donor_behavior": "rea's browser/runtime families observe via loopback CDP and V8 Inspector target discovery WITHOUT executing code in the target; Electron analysis is static ASAR mapping, renderer observed without execution",
+  "generalized_behavior": "Observation defaults to passive and read-only; any step that executes or mutates the subject is a separate, explicitly-opted capability, never the default path.",
+  "nougen_target": "NouGen inspection tools (brain_scan, analyze_file_sandboxed, arxiv preview modes): read-only is the default, mutation requires an explicit commit flag \u2014 already the arxiv_radar pattern, generalised",
+  "score": 0.1395,
+  "effective_score": 0.1395,
+  "verifiability_ceiling": 0.6,
+  "state": "quarantined",
+  "metrics": {
+   "usefulness": 0.7,
+   "generalizability": 0.95,
+   "verifiability": 0.3,
+   "compatibility": 0.95,
+   "reversibility": 1.0,
+   "integration_cost": 0.05
+  },
+  "evidence": [
+   {
+    "source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+    "claim": "rea separates passive observation families from any execution; arxiv_radar already gates commit behind NOUGEN_ARXIV_MCP_ALLOW_MUTATION",
+    "confidence": 0.85,
+    "type": "static"
+   }
+  ]
+ },
+ {
+  "name": "provider-abstraction-over-backends",
+  "kind": "pattern",
+  "donor_source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+  "donor_behavior": "rea routes one tool surface over many providers (Hopper, Ghidra, CDP, Playwright, V8, static .NET, ASAR) behind a stable family taxonomy",
+  "generalized_behavior": "A capability is a stable verb surface; concrete backends are interchangeable providers behind it, so a tool contract never names its backend.",
+  "nougen_target": "fleet.py already does this over route kinds; generalise the 'provider, not tool' rule to shard/relay backends too (the shards.nougenai.com two-worker front door is the same idea)",
+  "score": 0.121,
+  "effective_score": 0.121,
+  "verifiability_ceiling": 0.6,
+  "state": "quarantined",
+  "metrics": {
+   "usefulness": 0.6,
+   "generalizability": 0.95,
+   "verifiability": 0.3,
+   "compatibility": 1.0,
+   "reversibility": 1.0,
+   "integration_cost": 0.05
+  },
+  "evidence": [
+   {
+    "source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+    "claim": "rea presents 118 tools in 10 families across 7+ providers; fleet.py ranks over route kinds",
+    "confidence": 0.85,
+    "type": "static"
+   }
+  ]
+ },
+ {
+  "name": "authorized-subject-boundary",
+  "kind": "anti_pattern",
+  "donor_source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+  "donor_behavior": "rea is framed for analysing software you are entitled to inspect; the capability is dual-use and the licence/ownership boundary is what separates legitimate use from abuse",
+  "generalized_behavior": "A powerful intake capability carries an explicit entitlement gate: the subject must be open, owned, or observed-behaviour-only, and that gate is enforced at intake, not left to intent.",
+  "nougen_target": "valerion/nougenmorph intake: a donor whose body is proprietary/decompiled third-party code is quarantined by rule; only open, owned, or behaviour-level donors pass \u2014 reinforces the ownership-and-licence-boundary candidate from the AI-unlock video",
+  "score": 0.228,
+  "effective_score": 0.228,
+  "verifiability_ceiling": 0.6,
+  "state": "quarantined",
+  "metrics": {
+   "usefulness": 0.8,
+   "generalizability": 0.95,
+   "verifiability": 0.3,
+   "compatibility": 1.0,
+   "reversibility": 1.0,
+   "integration_cost": 0.0
+  },
+  "evidence": [
+   {
+    "source": "morluto/rea v4.0.1 (MIT) README + product-catalog, via Antigravity-lane shard (2026-10-06 ~08:4x EDT)",
+    "claim": "rea's own framing and the AI-unlock video both name the licence boundary as the dividing line",
+    "confidence": 0.85,
+    "type": "static"
+   }
+  ]
+ }
+]

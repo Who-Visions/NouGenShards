@@ -176,3 +176,32 @@ def test_nougen_ctx_skill_frontmatter_and_content():
     assert "ctx_search" in text
     assert "ctx_batch_execute" in text
 
+
+
+def test_cache_ttl_env_override_and_post_scan_stamp(tmp_path, monkeypatch):
+    """TTL is env-configurable and the cache is stamped after the scan."""
+    from nougen_shards import skills as sk
+
+    root = tmp_path / "skills"
+    (root / "alpha").mkdir(parents=True)
+    (root / "alpha" / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: Use when testing the cache.\n---\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOUGEN_SKILLS_DIR", str(root))
+    monkeypatch.setenv("NOUGEN_SKILLS_CACHE_TTL_S", "3600")
+    assert sk._cache_ttl_s() == 3600.0
+    monkeypatch.setenv("NOUGEN_SKILLS_CACHE_TTL_S", "junk")
+    assert sk._cache_ttl_s() == sk._CACHE_TTL_S
+
+    monkeypatch.setenv("NOUGEN_SKILLS_CACHE_TTL_S", "3600")
+    sk.invalidate_cache()
+    first = sk.discover()
+    (root / "beta").mkdir()
+    (root / "beta" / "SKILL.md").write_text(
+        "---\nname: beta\ndescription: Use when testing.\n---\nbody\n", encoding="utf-8"
+    )
+    assert sk.discover() is first  # served from cache inside the TTL
+    sk.invalidate_cache()
+    assert {s.name for s in sk.discover()} == {"alpha", "beta"}
+    sk.invalidate_cache()

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import logging
 import os
 import re
@@ -80,6 +81,12 @@ LEXICON: dict[str, set[str]] = {
     "immigration": {"uscis", "tps", "ead", "i-130", "i-485", "i-765", "i-821", "i-864", "asylum", "green card",
                     "deport", "deported", "residency", "petition", "biometrics", "immigration", "imigrasyon",
                     "rezidans", "depote", "lapolis", "avoka"},
+    # Words agent builders use about memory. No default audience lists this family, so adding it changes no
+    # default resolution; a registry audience can claim it (see the agent-builder audience in a spot registry).
+    # _WORD drops digits, so FTS5 is counted as "fts".
+    "agent-memory": {"agent", "agents", "agent's", "context", "memory", "recall", "recalling", "session",
+                     "sessions", "sqlite", "fts", "wal", "index", "indexing", "embedding", "embeddings", "vector",
+                     "rag", "nougenshards", "forgets", "forgot"},
     "family": {"cousin", "kouzen", "mother", "manman", "father", "papa", "wife", "madanm", "husband", "mari",
                "son", "daughter", "pitit", "family", "fanmi", "brother", "sister", "frè", "sè"},
 }
@@ -488,6 +495,9 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
         lang = sum(sig.languages.get(code, 0) for code in a.languages)
         scored.append((aff * 3 + tagh * 2 + chan + lang * lang_w, a.key))
     scored.sort(key=lambda t: (-t[0], t[1]))
+    # With no evidence every audience scores 0 and the tie-break picks the alphabetically first key. That
+    # fallback stays (callers expect a Persona), but it is marked unresolved so nobody reads it as a match.
+    resolved = scored[0][0] > 0
     best_key = scored[0][1]
     best = next(a for a in audiences if a.key == best_key)
     secondary = tuple(k for s, k in scored[1:] if s > 0)[:2]
@@ -524,7 +534,7 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
         values=best.values, pains=best.pains, support=best.support,
         segment=segment_test(sig, best),
         contract=best.contract,
-        evidence={"scores": scored[:4], "median_words": sig.median_words, "register_evidence": sig.register_evidence,
+        evidence={"resolved": resolved, "scores": scored[:4], "median_words": sig.median_words, "register_evidence": sig.register_evidence,
                   "imperative_ratio": sig.imperative_ratio, "correction_ratio": sig.correction_ratio,
                   "market_decides": list(market.decides), "ocean_vector": ocean_dict},
     )
@@ -1377,7 +1387,13 @@ def _main(argv: Optional[list[str]] = None) -> int:
             print(f"persona generation failed: {exc}", file=__import__("sys").stderr)
             return 2
         return 0
+    if not p.evidence.get("resolved", True):
+        print("# warning: no audience matched the signals (every score is 0); "
+              f"'{p.audience}' is the alphabetical fallback, not a match", file=sys.stderr)
     if a.check:
+        if not p.evidence.get("resolved", True):
+            print(f"# check UNRESOLVED: no audience matched, so there is no contract to check against (persona {p.fingerprint()})")
+            return 2
         viol = check_output(a.check.read_text(encoding="utf-8"), p)
         for x in viol:
             print("VIOLATION " + x)

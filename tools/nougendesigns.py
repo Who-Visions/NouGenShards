@@ -43,7 +43,7 @@ def validate(spec):
         if not isinstance(value, str) or not value or re.search(r'[;{}\n\r]', value):
             errors.append(f'invalid token value: {key}')
     for theme, values in spec.get('themes', {}).items():
-        if theme not in ('light', 'dark') or not isinstance(values, dict):
+        if theme == 'default' or not re.fullmatch(r'[a-z][a-z0-9-]*', theme) or not isinstance(values, dict):
             errors.append(f'invalid theme: {theme}')
             continue
         for key, value in values.items():
@@ -84,6 +84,26 @@ def render(spec):
     return {'DESIGN.md': prose, 'tokens.css': css, 'manifest.json': canonical(manifest),
             'mutations.json': canonical(spec.get('componentMutations', []))}
 
+
+def compile_inline_css(spec, stylesheet_text):
+    """Inline generated tokens.css with a consumer stylesheet that @imports it."""
+    tokens_css = render(spec)['tokens.css'].strip()
+    body = re.sub(r'^\s*@import\s+["\'][^"\']*tokens\.css["\']\s*;\s*', '', stylesheet_text, flags=re.M).strip()
+    return f'{tokens_css}\n\n{body}'.strip()
+
+
+_JOIN_BEGIN = '// BEGIN GENERATED NOUGEN-CORE CSS'
+_JOIN_END = '// END GENERATED NOUGEN-CORE CSS'
+
+
+def sync_join_worker(spec, stylesheet_text, worker_text):
+    """Replace the generated JOIN_CSS block in worker.js from the compiled design package."""
+    start = worker_text.index(_JOIN_BEGIN)
+    end = worker_text.index(_JOIN_END, start) + len(_JOIN_END)
+    css = compile_inline_css(spec, stylesheet_text)
+    block = f'{_JOIN_BEGIN}\nconst JOIN_CSS = {json.dumps(css)};\n{_JOIN_END}'
+    return worker_text[:start] + block + worker_text[end:]
+
 def contrast(a, b):
     def lum(color):
         if not re.fullmatch(r'#[0-9a-fA-F]{6}', color):
@@ -97,8 +117,12 @@ def contrast(a, b):
 def lint(spec, css=''):
     errors = validate(spec)
     ratios = []
-    for theme in ['default', *sorted(spec.get('themes', {}))]:
-        tokens = {**spec.get('tokens', {}), **spec.get('themes', {}).get(theme, {})}
+    variants = [('default', {})]
+    for theme, overrides in sorted(spec.get('themes', {}).items()):
+        if isinstance(overrides, dict):
+            variants.append((theme, overrides))
+    for theme, overrides in variants:
+        tokens = {**spec.get('tokens', {}), **overrides}
         for pair in spec.get('contrastPairs', []):
             try:
                 ratio = contrast(tokens[pair['ink']], tokens[pair['ground']])
@@ -255,6 +279,8 @@ def main():
         p.add_argument('spec', type=Path)
         if command in ('compile', 'check'):
             p.add_argument('output', type=Path)
+            p.add_argument('--join-worker', type=Path)
+            p.add_argument('--join-css', type=Path)
         else:
             p.add_argument('--css', type=Path)
     p = sub.add_parser('inspect'); p.add_argument('source', type=Path)
@@ -298,19 +324,26 @@ def main():
                          'artifacts': sorted(files), 'lintErrors': report['errors']}))
         return int(not report['passed'])
     if args.command == 'diff':
-        a, b = [json.loads(p.read_text()) for p in (args.before, args.after)]
+        a, b = [json.loads(p.read_text(encoding='utf-8')) for p in (args.before, args.after)]
         print(canonical({k: {'before': a.get(k), 'after': b.get(k)} for k in sorted(a.keys() | b.keys()) if a.get(k) != b.get(k)})); return 0
     spec = json.loads(args.spec.read_text(encoding='utf-8'))
     if args.command == 'lint':
-        result = lint(spec, args.css.read_text() if args.css else render(spec)['tokens.css'])
+        result = lint(spec, args.css.read_text(encoding='utf-8') if args.css else render(spec)['tokens.css'])
         print(canonical(result)); return int(not result['passed'])
     files = render(spec)
     if args.command == 'check':
-        stale = [name for name, body in files.items() if not (args.output / name).exists() or (args.output / name).read_text() != body]
+        stale = [name for name, body in files.items() if not (args.output / name).exists() or (args.output / name).read_text(encoding='utf-8') != body]
+        if args.join_worker and args.join_css:
+            expected_worker = sync_join_worker(spec, args.join_css.read_text(encoding='utf-8'), args.join_worker.read_text(encoding='utf-8'))
+            if args.join_worker.read_text(encoding='utf-8') != expected_worker:
+                stale.append(str(args.join_worker))
         print(canonical({'passed': not stale, 'stale': stale})); return int(bool(stale))
     args.output.mkdir(parents=True, exist_ok=True)
     for name, body in files.items():
         (args.output / name).write_text(body, encoding='utf-8', newline='\n')
+    if args.join_worker and args.join_css:
+        synced = sync_join_worker(spec, args.join_css.read_text(encoding='utf-8'), args.join_worker.read_text(encoding='utf-8'))
+        args.join_worker.write_text(synced, encoding='utf-8', newline='\n')
     print(f'compiled {len(files)} artifacts'); return 0
 
 if __name__ == '__main__':

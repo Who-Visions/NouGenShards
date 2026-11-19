@@ -21,7 +21,14 @@ def report(n=500, cost=0.10, ece=0.05):
                       p95_latency_ms=20.0, cost_per_1000=1.0)
 
 
-GATE_OK = dict(fallback_tested=True, replay_stable=True)
+GATE_OK = dict(
+    fallback_tested=True,
+    replay_stable=True,
+    held_out_candidate=report(),
+    held_out_baseline=report(),
+    ood_candidate=report(),
+    ood_baseline=report(),
+)
 
 
 def test_dominance_respects_each_objectives_direction():
@@ -101,7 +108,26 @@ def test_candidate_harness_cannot_promote_without_passing_the_gate():
     assert ledger.live is None
     assert ledger.negative_evidence[0]["harness"] == "h2" and ledger.negative_evidence[0]["parent"] == "h1"
     untested = ledger.promote("h2", report(), report())                    # fallback/replay not tested
-    assert untested["promoted"] is False and len(untested["failed_gates"]) == 2
+    assert untested["promoted"] is False
+    assert any("fallback" in failure for failure in untested["failed_gates"])
+    assert any("replay" in failure for failure in untested["failed_gates"])
+    assert any("held-out validation is not measured" == failure for failure in untested["failed_gates"])
+    assert any("OOD validation is not measured" == failure for failure in untested["failed_gates"])
+
+
+def test_ood_regression_blocks_promotion_even_when_primary_metrics_pass():
+    ledger = C.HarnessLedger()
+    ledger.propose("h1")
+    evidence = {
+        **GATE_OK,
+        "ood_candidate": report(cost=0.20),
+        "ood_baseline": report(cost=0.10),
+    }
+    result = ledger.promote("h1", report(cost=0.05), report(cost=0.10), **evidence)
+    assert result["promoted"] is False
+    assert result["failed_gates"] == ["OOD weighted cost regressed: 0.200 > 0.100"]
+    assert ledger.live is None
+    assert ledger.negative_evidence[0]["harness"] == "h1"
 
 
 def test_passing_harness_promotes_and_rollback_restores_the_previous_one():

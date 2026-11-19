@@ -26,3 +26,21 @@ broken scheme, it is a stale process.
 
 Other platforms: a systemd user unit or Windows Task Scheduler entry that
 runs the same Python scripts with the same env vars.
+
+## Low-disk guard (`com.nougen.diskguard`)
+
+`disk_guard.sh` runs every 5 minutes and exits at once while the data volume has 8 GB or more free.
+Below that it does three things:
+
+- Logs what is holding the space to `~/.nougen/logs/disk_guard.log`, including large files that were
+  deleted but are still held open by a running process.
+- Clears only caches that rebuild themselves: Homebrew, Chrome, Codex, Electron, npm, the Claude
+  updater cache, and logs older than 7 days.
+- Sends a macOS notification with free space before and after.
+
+It never touches models, vaults, repos, agent memory or user files. Install it with the same steps
+as above: copy the script to `~/.nougen/bin/disk_guard.sh`, fill in `__HOME__`, and bootstrap.
+
+It was added after phoebus hit 0 bytes free on 2026-11-06 and every write failed: shards, relay and
+the agent's own shell. The space came and went in bursts (600 MB to 36 GB free in an hour), so the
+log is how to find the process that writes in bursts.

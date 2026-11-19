@@ -37,6 +37,13 @@ def wake(monkeypatch, tmp_path):
     monkeypatch.setenv("KAEDRA_DIR", str(tmp_path / "nonexistent_kaedra"))
     monkeypatch.setattr("shutil.which", lambda *a, **k: None)
     _purge_wake_modules()
+    # tools/ must be FIRST on sys.path at this import, not merely on it.
+    # tests/wake/ is a package too, and collecting it makes pytest put tests/
+    # at the front; whichever comes first wins the name "wake". Serially the
+    # order happens to favour tools/. Under pytest-xdist it depends on which
+    # files a worker collected first, and these tests then got tests/wake
+    # (no _ADAPTERS, no status) about one run in three.
+    monkeypatch.syspath_prepend(str(TOOLS))
     return importlib.import_module("wake")
 
 

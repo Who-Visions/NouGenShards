@@ -73,9 +73,14 @@ if sys.stdout and hasattr(sys.stdout, "isatty"):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-PYTHON_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
-if not PYTHON_EXE.exists():
-    PYTHON_EXE = Path(sys.executable)
+PYTHONW_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "pythonw.exe"
+if not PYTHONW_EXE.exists():
+    PYTHONW_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+if not PYTHONW_EXE.exists():
+    candidate_w = sys.executable.replace("python.exe", "pythonw.exe")
+    PYTHONW_EXE = Path(candidate_w) if Path(candidate_w).exists() else Path(sys.executable)
+
+PYTHON_EXE = PYTHONW_EXE
 
 
 def _load_nodes() -> dict:

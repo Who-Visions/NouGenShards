@@ -1,0 +1,87 @@
+"""Fleet MCP worker must never present model text or canned strings as execution/deployment results.
+
+2026-10-04 audit: execute_sandboxed_code fell back to dav1d_exec with prompt=<code>; on the node a
+prompt routes to the dav1d chat persona (ollama), so a model's guess (including a fabricated
+SHA-256) came back as if the code had run. Other handlers returned hardcoded success strings.
+"""
+import re
+from pathlib import Path
+
+WORKER = Path(__file__).resolve().parents[1] / "tools" / "nougen-fleet-mcp-patched.js"
+SRC = WORKER.read_text(encoding="utf-8")
+
+
+def _handler(name: str) -> str:
+    start = SRC.index(f"  async {name}(args, env) {{")
+    nxt = re.compile(r"\n  async \w+\(args, env\) \{").search(SRC, start + 10)
+    return SRC[start:nxt.start() if nxt else len(SRC)]
+
+
+def test_execution_handlers_have_no_model_fallback():
+    for name in ("execute_sandboxed_code", "batch_execute_sandboxed"):
+        body = _handler(name)
+        assert "dav1d_exec" not in body, name
+        assert "ask_dav1d" not in body and "ask_iris" not in body, name
+        assert "toolError(" in body, name
+
+
+def test_no_canned_success_strings():
+    banned = [
+        "Batch sandboxed commands processed.",
+        "File analysis completed for:",
+        "Ollama local GPU inference simulated response.",
+        "No specialized skill override needed",
+        "[Cloudflare Edge AI]: ${args.prompt}",
+    ]
+    for phrase in banned:
+        assert phrase not in SRC, phrase
+
+
+def test_deploy_tool_does_not_claim_deployed():
+    body = _handler("cf_deploy_worker")
+    assert '"deployed"' not in body
+    assert "toolError(" in body
+
+
+def test_static_worker_list_is_labeled():
+    assert "static_config_not_live" in _handler("cf_list_workers")
+
+
+def test_shards_status_validates_health_body():
+    body = _handler("shards_status")
+    # The health verdict must come from the response body, never res.ok
+    # alone: a paused HF Space answered every path with HTTP 206 + a
+    # generic HTML shell and read as "health ok" for nine days
+    # (2026-10-14 to 2026-10-23) while the platform had it paused.
+    assert "healthBodyProvesNode" in body
+    assert "invalid_health_body" in body
+    assert 'res.ok ? "ok"' not in body
+
+
+def test_health_body_proof_requires_node_json():
+    # The proof is the node's own /health contract from app.py:
+    # a JSON object carrying status "ignited" and a node name.
+    assert "function healthBodyProvesNode" in SRC
+    assert '"ignited"' in SRC
+
+
+def test_dav1d_results_carry_engine_attestation():
+    # 2026-11-06: an ollama dav1d:e2b answer was read as an AGY CLI run of a video.
+    assert "attestEngine(raw)" in _handler("dav1d_exec")
+    assert 'att.engine !== "agy-cli"' in _handler("dav1d_exec")
+    assert "attestEngine(raw)" in _handler("ask_dav1d")
+
+
+def test_nougentube_requires_retrieval_evidence():
+    body = _handler("nougentube")
+    assert "transcriptEvidence(" in body
+    assert "retrieved: false" in body
+    assert '"captured-stub"' in SRC  # documented as not evidence
+
+
+def test_media_evidence_reads_transcript_and_sharded():
+    # Codex review on #964: Whisper/native routes return transcript + sharded.
+    start = SRC.index("function transcriptEvidence(")
+    body = SRC[start:SRC.index('__name(transcriptEvidence, "transcriptEvidence");', start)]
+    assert "s.transcript_available !== false" in body
+    assert "hasTranscript && s.sharded === true" in body

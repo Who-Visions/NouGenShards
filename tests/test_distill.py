@@ -157,3 +157,75 @@ def test_sent_roundtrip(vault):
     distill.mark_sent("s1", ["1@1", "2@3"])
     assert distill.held_keys("s1") == {"1@1", "2@3"}
     assert distill.held_keys("other") == set()
+
+
+def test_distill_structured_shard_for_twitch_and_stream_session(vault):
+    twitch_body = (
+        "SOURCE: https://dev.twitch.tv/docs/api/reference/#start-commercial\n"
+        "ENDPOINT: POST https://api.twitch.tv/helix/channels/commercial\n"
+        "SCOPES: channel:edit:commercial\n\n"
+        "Start Commercial\n\n"
+        "Starts a commercial on the specified channel.\n\n"
+        "NOTE : Only partners and affiliates may run commercials and they must be streaming live at the time.\n"
+    )
+    tk = cap("Twitch Helix API: Start Commercial (POST /channels/commercial)", twitch_body,
+             tags=["twitch", "twitch-api", "helix", "nougenstream"], domain_key="NouGenQtApp")
+    session_body = (
+        "# NouGenStream session 2026-11-06 01:00 (45 min)\n\n"
+        "| | |\n|---|---|\n"
+        "| Start / end (UTC) | 2026-11-06T06:00:00Z / 2026-11-06T06:45:00Z |\n"
+        "| Duration | 45.0 min |\n"
+        "| Peak viewers | 12 |\n"
+        "| Frames encoded (live) | 81000 |\n"
+        "| Average capture fps | 30.0 |\n"
+        "| Encoder | h264_nvenc |\n"
+        "| Recorded | yes |\n"
+        "| Phone camera used | yes |\n\n"
+        "## Network and governor\n"
+        "Viewer backlog drops: 0. Lowest live bitrate: 3500 kbps. Lowest resolution: 100%.\n"
+        "Policy decisions: 8 allowed, 1 queued for approval, 1 approved, 0 rejected, 0 denied.\n"
+        "Privacy mask: on 2 time(s), 14 s total (triggers not recorded).\n\n"
+        "## Resident AI\n"
+        "Model: Yukiai:e2b. Tool calls: 5. Directed instructions: 2."
+    )
+    sk = cap("NouGenStream session 2026-11-06 01:00 (45m)", session_body,
+             tags=["nougenstream", "session-summary", "stream-audit"], domain_key="stream:nougenstream")
+    conn = distill.connect()
+    assert distill.distill_structured_shard(conn, tk) == "done"
+    assert distill.distill_structured_shard(conn, tk) == "skip"
+    assert distill.distill_structured_shard(conn, sk) == "done"
+
+    twitch_hits = [f"{h['id']}@{h['_db_index']}" for h in distill.atoms_lane("channel:edit:commercial commercial", conn=conn)]
+    assert tk in twitch_hits
+    session_hits = [f"{h['id']}@{h['_db_index']}" for h in distill.atoms_lane("h264_nvenc privacy mask", conn=conn)]
+    assert sk in session_hits
+    graph_hits = [f"{h['id']}@{h['_db_index']}" for h in distill.graph_lane("what uses NouGenStream", conn=conn)]
+    assert tk in graph_hits and sk in graph_hits
+
+    asset_body = (
+        "# NouGenStream Premium Visual Asset Kit\n"
+        "Palette: Purple Obsidian (#07050b void, #120b1c glass, #7b3fe4 accent, #e9e0ff text).\n"
+        "- `assets/premium/icons/nougenstream-icon.svg`: Clean vector master (256x256 viewBox)\n"
+        "- `assets/premium/overlays/privacy-mode.png`: 1920x1080 RGBA privacy shield overlay\n"
+    )
+    ak = cap("NouGenStream Premium Visual Asset Kit (argon/assets)", asset_body,
+             tags=["nougenstream", "visual-pack", "assets"], domain_key="stream:nougenstream")
+    assert distill.distill_structured_shard(conn, ak) == "done"
+    asset_hits = [f"{h['id']}@{h['_db_index']}" for h in distill.atoms_lane("7b3fe4 privacy-mode.png", conn=conn)]
+    assert ak in asset_hits
+
+
+
+
+def test_extract_structured_keeps_dotted_models_and_full_asset_paths():
+    # Review on #961: a dotted model name must survive, and nested asset paths must keep their prefix.
+    s = distill.extract_structured(
+        "NouGenStream session 2026-11-06 01:00 (45m)",
+        "## Resident AI\nModel: qwen3.5:cloud. Tool calls: 5. Directed instructions: 2.")
+    assert s and {"name": "qwen3.5:cloud", "kind": "tool"} in s["entities"]
+    a = distill.extract_structured(
+        "NouGenStream Premium Visual Asset Kit (argon/assets)",
+        "# Kit\n- `assets/premium/overlays/privacy-mode.png`: 1920x1080 RGBA privacy shield overlay\n")
+    names = {e["name"] for e in a["entities"]}
+    assert "assets/premium/overlays/privacy-mode.png" in names
+    assert "overlays/privacy-mode.png" not in names

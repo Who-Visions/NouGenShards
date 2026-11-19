@@ -106,9 +106,20 @@ def _derive_threshold_hours(times):
     return max(FLOOR_HOURS, STALE_FACTOR * med)
 
 
+
+def _resolve_handoff_dir():
+    """Mirror nougen_shards.handoff: NOUGEN_HANDOFF_DIR env, else ~/.nougen/handoffs.
+    The runtime CLI defaults there even before the folder exists, so a legacy
+    repo .handoffs is never the live registry (2026-11-01: the lane sat STALE at
+    260h while fresh handoffs landed in ~/.nougen/handoffs)."""
+    env = os.environ.get("NOUGEN_HANDOFF_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".nougen" / "handoffs"
+
 def check_lanes():
     vault = _resolve_vault_dir()
-    handoffs = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
+    handoffs = _resolve_handoff_dir()
     # (lane, glob patterns) — thresholds are derived per lane, not hardcoded.
     lanes = [
         # One lane per artifact type: a combined glob takes the newest across

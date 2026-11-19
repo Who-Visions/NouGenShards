@@ -28,6 +28,9 @@ from typing import Any, Dict, List, Optional
 RADAR_REPO_ENV = "NOUGEN_RADAR_DIR"
 
 
+VENDORED_RADAR_DIR = Path(__file__).resolve().parent / "radar_tools"
+
+
 def find_radar_root() -> Optional[Path]:
     """Locate the canonical nougen-radar repository root."""
     env_path = os.environ.get(RADAR_REPO_ENV)
@@ -43,6 +46,9 @@ def find_radar_root() -> Optional[Path]:
         Path.home() / "The Observatory" / "tools",
         Path.home() / ".nougen" / "tools",
         Path.home() / "Observatory" / "tools",
+        # Last resort: the copy vendored into this package, so tenant nodes that
+        # cannot reach the private nougen-radar repo still get working tools.
+        VENDORED_RADAR_DIR,
     ]
     for c in candidates:
         root_dir = c.parent if c.name == "tools" else c
@@ -309,9 +315,25 @@ def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: i
 MAX_FULLTEXT_CHARS = int(os.environ.get("NOUGEN_ARXIV_MCP_MAX_FULLTEXT_CHARS", "24000"))
 
 
+def _accepts_refresh(fn: Any) -> bool:
+    """True when ``fn`` declares ``refresh`` (or **kwargs); decided by signature, never by catching TypeError."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "refresh" in params or any(q.kind is inspect.Parameter.VAR_KEYWORD for q in params.values())
+
+
 def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = None,
                     max_chars: Optional[int] = None, refresh: bool = False) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
+    if not isinstance(ref, str) or not ref.strip():
+        return {
+            "status": "error",
+            "error": "ref required: ref is required and cannot be empty (pass an arXiv id, 'arXiv:<id>' or abs URL)",
+            "action": action,
+            "available": True,
+        }
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
         return {
@@ -326,10 +348,7 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
             data = paper.lookup(aid)
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
-            try:
-                p = paper.fulltext(aid, refresh=refresh)
-            except TypeError:
-                p = paper.fulltext(aid)
+            p = paper.fulltext(aid, refresh=refresh) if _accepts_refresh(paper.fulltext) else paper.fulltext(aid)
             text = p.read_text(encoding="utf-8")
             cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
             clipped = text[:cap]

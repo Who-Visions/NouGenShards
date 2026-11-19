@@ -35,19 +35,52 @@ for _s in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252; never
         pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error, urllib.parse
+try:
+    from nougen_shards.response_contract import response_metadata
+except ModuleNotFoundError:  # direct ``python tools/fleet.py`` checkout execution
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+    from nougen_shards.response_contract import response_metadata
 
-MCP_CONFIG = os.path.expanduser(r"~\.gemini\antigravity-ide\mcp_config.json")
+def _default_mcp_config() -> str:
+    home = os.path.expanduser("~")
+    candidates = [
+        os.path.join(home, ".gemini", "antigravity-ide", "mcp_config.json"),
+        os.path.join(home, ".gemini", "config", "mcp_config.json"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                srvs = data.get("mcpServers", data) if isinstance(data, dict) else {}
+                if isinstance(srvs, dict) and any(
+                    isinstance(v, dict) and v.get("type") == "openai-compatible"
+                    for v in srvs.values()
+                ):
+                    return path
+            except Exception:
+                pass
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+MCP_CONFIG = _default_mcp_config()
 
 # Rule 0.5 priority: lower number = tried first
 PRIORITY = [
     ("hf-space",     1),
     ("openrouter",   2),
     ("arliai",       3),
+    ("nvidia",       3),
     ("lmstudio",     4),
     ("local",        4),
     ("ollama-cloud", 5),
     ("vertex",       6),   # BILLED — opt-in only, see vertex_lane.py
 ]
+PROBE_MAX_TOKENS = int(os.environ.get("NOUGEN_PROBE_MAX_TOKENS", "2048") or 2048)
+DIVERSIFY_MIN_TOKENS = 1400
 def _load_local_routes():
     """Load tenant-local routes from explicit configuration only.
 
@@ -144,6 +177,8 @@ def _root_cause(fails: list[str]) -> str:
     joined = " ".join(fails).lower()
     if "privacyerror" in joined:
         hint = "privacy mode refused every route; use a local lane or unset NOUGEN_PRIVACY"
+    elif "identity_mismatch" in joined:
+        hint = "upstream returned a different model than requested (identity_mismatch); re-point the route to the served model id"
     elif " 401" in joined or " 403" in joined:
         hint = "auth refused; a registry key is stale"
     elif " 429" in joined:
@@ -177,45 +212,49 @@ def breaker_reset() -> None:
 
 # Free OpenRouter models spanning DIFFERENT LABS. Consensus across one model family
 # only reproduces that family's blind spots -- decorrelate by vendor.
-# Refreshed 2026-09-25 from GET /api/v1/models (":free" suffix). OpenRouter governs
+# Refreshed 2026-11-11 from GET /api/v1/models (":free" suffix). OpenRouter governs
 # free capacity GLOBALLY per model, not per account -- more keys on one slug buy
 # nothing; more slugs do. Verify slugs against the live list before adding.
 OR_DIVERSE = [
-    ("google-31b",   "google/gemma-4-31b-it:free"),
-    ("nvidia-super", "nvidia/nemotron-3-super-120b-a12b:free"),
+    ("liquid",       "liquid/lfm-3-1.7b:free"),
     ("cohere",       "cohere/north-mini-code:free"),
-    ("qwen",         "qwen/qwen3.8-27b:free"),
-    ("tml-small",    "thinkingmachines/inkling-small:free"),
-    ("nvidia-light", "nvidia/nemotron-3.5-lightning:free"),
-    ("dots",         "dots-studio/dots-3-note-preview:free"),
-    ("google-moe",   "google/gemma-4-26b-a4b-it:free"),
-    ("poolside-s",   "poolside/laguna-s-2.1:free"),
-    ("nvidia-ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
-    ("zai",          "z-ai/glm-5.2:free"),
+    ("recursive",    "recursive/flint-v1.0:free"),
+    ("tml-small",    "thinkingmachines/inkling-2-small:free"),
+    ("baidu-flash",  "baidu/ernie-5.5-flash-preview:free"),
     ("nvidia-omni",  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
-    ("tml",          "thinkingmachines/inkling:free"),
-    ("poolside-xs",  "poolside/laguna-xs-2.1:free"),
-    ("ling-fin",     "inclusionai/ling-3.0-flash-fin:free"),
-    ("liquid",       "liquid/lfm-2.5-2.6b:free"),
+    ("nvidia-light", "nvidia/nemotron-3.5-lightning:free"),
+    ("google-moe",   "google/gemma-4-26b-a4b-it:free"),
+    ("google-31b",   "google/gemma-4-31b-it:free"),
+    ("nvidia-ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    ("nvidia-vl",    "nvidia/nemotron-3.5-super-vl:free"),
 ]
 # Server-side fallback chain sent as "models": OpenRouter hops to the next slug on a
 # 429/404 inside one request instead of returning the error to us. Hard cap is 3
 # entries total, so: primary + one decorrelated vendor + the random free router.
 OR_FALLBACK_DEPTH = 1
 OR_FREE_ROUTER = "openrouter/free"
-OR_FREE_CACHE = os.path.expanduser(r"~\.nougen\fleet_or_free.json")
+OR_FREE_CACHE = os.path.join(os.path.expanduser("~"), ".nougen", "fleet_or_free.json")
 
 
-def refresh_or_diverse(max_age_s: int = 6 * 3600) -> list[tuple[str, str]]:
+def refresh_or_diverse(max_age_s: int = 6 * 3600, timeout: int = 15) -> list[tuple[str, str]]:
     """Rebuild OR_DIVERSE from GET /api/v1/models so deprecated ':free' slugs
     never reach a request. Cached on disk; the hardcoded list is the fallback."""
     global OR_DIVERSE
     try:
         if os.path.exists(OR_FREE_CACHE) and time.time() - os.path.getmtime(OR_FREE_CACHE) < max_age_s:
-            OR_DIVERSE = [tuple(x) for x in json.load(open(OR_FREE_CACHE, encoding="utf-8"))]
+            with open(OR_FREE_CACHE, encoding="utf-8") as fh:
+                cached = [
+                    (str(x[0]), str(x[1]))
+                    for x in json.load(fh)
+                    if isinstance(x, (list, tuple)) and len(x) == 2 and x[0] and x[1]
+                ]
+            if cached:
+                OR_DIVERSE = cached
+                return OR_DIVERSE
+        if privacy_mode():
             return OR_DIVERSE
         url = "https://openrouter.ai/api/v1/models?sort=throughput-high-to-low"
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "nougen-fleet"}), timeout=30) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "nougen-fleet"}), timeout=timeout) as r:
             data = json.load(r)["data"]
         live = []
         for m in data:
@@ -231,7 +270,8 @@ def refresh_or_diverse(max_age_s: int = 6 * 3600) -> list[tuple[str, str]]:
         if live:
             OR_DIVERSE = live
             os.makedirs(os.path.dirname(OR_FREE_CACHE), exist_ok=True)
-            json.dump(live, open(OR_FREE_CACHE, "w", encoding="utf-8"))
+            with open(OR_FREE_CACHE, "w", encoding="utf-8") as fh:
+                json.dump(live, fh)
     except Exception:
         pass
     return OR_DIVERSE
@@ -248,15 +288,49 @@ def _rank(kind: str) -> int:
     return dict(PRIORITY).get(kind, 9)
 
 
+class ResponseContractError(RuntimeError):
+    """An HTTP success that did not satisfy the complete-response contract."""
+    def __init__(self, metadata: dict):
+        self.metadata = metadata
+        self.status = metadata.get("status")
+        self.reason = metadata.get("reason")
+        super().__init__(f"response {metadata.get('status')}: {metadata.get('reason')} "
+                         f"(requested={metadata.get('requested_model')}, "
+                         f"actual={metadata.get('actual_model')})")
+
+
+def _format_exception_note(ex: Exception, http_detail_limit: int = 400, fallback_raw: bool = False) -> str:
+    """Format dispatcher failure reasons cleanly, surfacing ResponseContractError states directly."""
+    if isinstance(ex, ResponseContractError):
+        meta = ex.metadata
+        status = meta.get("status") or "contract_error"
+        if status == "identity_mismatch":
+            return (f"identity_mismatch (requested={meta.get('requested_model')}, "
+                    f"actual={meta.get('actual_model')})")
+        return str(ex)
+    code = getattr(ex, "code", "")
+    try:
+        if hasattr(ex, "read"):
+            raw = ex.read()[:http_detail_limit].decode("utf-8", "replace")
+            m = re.search(r'"raw":"([^"]{0,60})|"message":"([^"]{0,60})', raw)
+            detail = next((g for g in (m.groups() if m else ()) if g), raw[:120] if fallback_raw else "")
+        else:
+            detail = str(ex)[:120]
+    except Exception:
+        detail = ""
+    return " ".join(part for part in (type(ex).__name__, str(code) if code else "", detail) if part)
+
 class Fleet:
     def __init__(self, config_path: str = MCP_CONFIG, include_local: bool = True,
-                 include_vertex: bool | None = None, privacy: bool | None = None):
+                 include_vertex: bool | None = None, privacy: bool | None = None,
+                 diversify: bool | None = None):
         self.routes: list[dict] = []
         self.privacy = privacy_mode() if privacy is None else privacy
         if self.privacy:
             include_vertex = False
         if os.path.exists(config_path):
-            cfg = json.load(open(config_path, encoding="utf-8"))
+            with open(config_path, encoding="utf-8") as fh:
+                cfg = json.load(fh)
             servers = cfg.get("mcpServers", cfg)
             for name, e in servers.items():
                 if not isinstance(e, dict):
@@ -286,9 +360,26 @@ class Fleet:
         self.routes.sort(key=lambda r: (_rank(r["kind"]), r["name"]))
         self.healthy: list[dict] = []
         self._lock = threading.Lock()
+        self._or_spread_pending_refresh = False
+        self._diversify_opt_out = diversify is False
+        # Auto-spread colliding OpenRouter accounts immediately (without blocking __init__
+        # on a network fetch) so ask()/map() do not hammer one rate-limited pool.
+        if not self._is_private() and (diversify is True or (diversify is None and self._needs_openrouter_diversify())):
+            self.diversify(refresh=False)
+            self._or_spread_pending_refresh = True
+
+    def _is_private(self) -> bool:
+        return bool(getattr(self, "privacy", False) or privacy_mode())
+
+    def _needs_openrouter_diversify(self) -> bool:
+        or_routes = [r for r in self.routes if r.get("kind") == "openrouter"]
+        if len(or_routes) <= 1 or not OR_DIVERSE:
+            return False
+        distinct_models = {r.get("model") for r in or_routes}
+        return len(distinct_models) < min(len(or_routes), len(OR_DIVERSE))
 
     # ---------- model diversity ----------
-    def diversify(self) -> list[dict]:
+    def diversify(self, refresh: bool = True) -> list[dict]:
         """Expand OpenRouter accounts across DIFFERENT model vendors.
 
         8 accounts all pointed at one model is account diversity, not model
@@ -298,15 +389,20 @@ class Fleet:
         or_routes = [r for r in self.routes if r["kind"] == "openrouter"]
         if not or_routes:
             return self.routes
-        refresh_or_diverse()
+        if refresh and not self._is_private():
+            refresh_or_diverse()
+            self._or_spread_pending_refresh = False
         extra = []
         # Every key becomes a route; keys cycle through vendors so no slug is hit
         # by more keys than necessary (the per-model pool is global anyway).
         for i, base in enumerate(or_routes):
             tag, model = OR_DIVERSE[i % len(OR_DIVERSE)]
-            acct = base["name"].replace("openrouter-", "")
-            extra.append({**base, "name": f'or-{tag}-{acct}', "model": model, "vendor": tag,
-                          "min_tokens": max(base.get("min_tokens", 0), 1024),
+            acct = base.get("account") or base["name"]
+            if acct.startswith("openrouter-"):
+                acct = acct[len("openrouter-"):]
+            extra.append({**base, "name": f'or-{tag}-{acct}', "account": acct,
+                          "model": model, "vendor": tag,
+                          "min_tokens": max(base.get("min_tokens", 0), DIVERSIFY_MIN_TOKENS),
                           "fallbacks": [m for _, m in OR_DIVERSE[(i + 1) % len(OR_DIVERSE):][:OR_FALLBACK_DEPTH]]
                                        + [OR_FREE_ROUTER]})
         # keep non-openrouter routes, replace the duplicated openrouter block
@@ -322,10 +418,10 @@ class Fleet:
         return g
 
     # ---------- transport ----------
-    def _call(self, route: dict, prompt, timeout: int = 120,
-              max_tokens: int = 2048, temperature: float = 0.0) -> str:
+    def _call_once(self, route: dict, prompt, timeout: int = 120,
+                   max_tokens: int = 2048, temperature: float = 0.0) -> dict:
         """prompt: a string (sent as one user message) or a ready chat list [{"role", "content"}, ...]."""
-        if (getattr(self, "privacy", False) or privacy_mode()) and not is_private_url(route["url"]):
+        if self._is_private() and not is_private_url(route["url"]):
             raise PrivacyError(f"privacy mode: refused cloud route {route['name']} "
                                f"({urllib.parse.urlsplit(route['url']).hostname})")
         # Reasoning models spend a hidden budget before emitting content and
@@ -337,39 +433,106 @@ class Fleet:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if route.get("fallbacks"):
-            payload["models"] = [route["model"], *route["fallbacks"]]
+        # OpenRouter models reason by default and can spend the whole budget, returning nothing.
+        if route.get("kind") == "openrouter" and os.environ.get("NOUGEN_OPENROUTER_REASONING", "").lower() != "on":
+            payload["reasoning"] = {"enabled": False}
+        # Keep this request pinned to its declared model. Server-side fallback
+        # can silently turn one reviewer into a different model.
         body = json.dumps(payload).encode()
         hdrs = {"Content-Type": "application/json", **route["headers"]}
         # Vertex-style routes carry a short-lived token minted per call, not a
         # static key baked into the registry.
         if route.get("token_fn"):
             hdrs["Authorization"] = f'Bearer {route["token_fn"]()}'
+        call_started = time.monotonic()
         req = urllib.request.Request(route["url"] + "/chat/completions", data=body, headers=hdrs)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            j = json.load(r)
-        return (j.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                j = json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code != 400 or "reasoning" not in payload or b"Reasoning is mandatory" not in e.read():
+                raise
+            del payload["reasoning"]  # a few endpoints refuse to turn it off
+            payload["max_tokens"] = max(payload["max_tokens"], 2048)  # and they spend the budget reasoning first
+            req = urllib.request.Request(route["url"] + "/chat/completions", data=json.dumps(payload).encode(), headers=hdrs)
+            # Bound the retry by what's left of the caller's original timeout, not the
+            # full value again -- the first attempt already spent part of the budget.
+            retry_timeout = max(1, timeout - (time.monotonic() - call_started))
+            with urllib.request.urlopen(req, timeout=retry_timeout) as r:
+                j = json.load(r)
+        choice = (j.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        content = message.get("content", "") or ""
+        meta = response_metadata(route["model"], j.get("model"), content,
+                                 choice.get("finish_reason"), message.get("refusal"))
+        return {"content": content, **meta.to_dict(), "usage": j.get("usage") or {},
+                "route": route.get("name")}
+
+    def call_with_metadata(self, route: dict, prompt, timeout: int = 120,
+                           max_tokens: int = 2048, temperature: float = 0.0) -> dict:
+        """Return response text and provider-derived metadata, retrying length once."""
+        deadline = time.monotonic() + timeout
+        effective_tokens = max(max_tokens, route.get("min_tokens", 0))
+        result = self._call_once(route, prompt, timeout, effective_tokens, temperature)
+        attempts = [dict(result, max_tokens=effective_tokens)]
+        remaining = deadline - time.monotonic()
+        token_starved = (
+            result["reason"] == "token_limit"
+            or (
+                result["status"] == "empty"
+                and result.get("finish_reason") in {"length", "max_tokens", "max_output_tokens"}
+            )
+        )
+        if not result["complete"] and token_starved and effective_tokens < 8192 and remaining > 0:
+            retry_tokens = min(max(effective_tokens * 2, 4096), 8192)
+            try:
+                result = self._call_once(route, prompt, remaining, retry_tokens, temperature)
+                attempts.append(dict(result, max_tokens=retry_tokens))
+            except Exception as exc:
+                # Keep the original partial response when the bounded retry
+                # fails; never replace it with a success or discard its evidence.
+                result["retry_error"] = {"type": type(exc).__name__,
+                                         "http_status": getattr(exc, "code", None)}
+                attempts.append({"status": "failed", **result["retry_error"],
+                                 "requested_model": route["model"], "max_tokens": retry_tokens})
+            result["retry"] = {"kind": "pinned_model_token_limit", "max_tokens": retry_tokens}
+        result["attempts"] = attempts
+        return result
+
+    def _call(self, route: dict, prompt, timeout: int = 120,
+              max_tokens: int = 2048, temperature: float = 0.0) -> str:
+        """String-compatible call; incomplete responses surface as typed failures."""
+        result = self.call_with_metadata(route, prompt, timeout, max_tokens, temperature)
+        if not result["complete"] or not result["identity_verified"]:
+            raise ResponseContractError(result)
+        return result["content"]
+
 
     # ---------- health ----------
-    def probe(self, timeout: int = 25, workers: int = 16, verbose: bool = True) -> list[dict]:
+    def probe(self, timeout: int = 25, workers: int = 16, verbose: bool = True,
+              max_tokens: int = PROBE_MAX_TOKENS, diversify: bool | None = None) -> list[dict]:
         """Health-check every route in parallel. Populates self.healthy."""
+        if not self._is_private() and (
+            diversify is True
+            or (
+                diversify is None
+                and not getattr(self, "_diversify_opt_out", False)
+                and (self._needs_openrouter_diversify() or getattr(self, "_or_spread_pending_refresh", False))
+            )
+        ):
+            self.diversify(refresh=True)
+        self.healthy = []
+
         def check(rt):
             t0 = time.time()
             try:
-                # 128 not 8: reasoning models (nemotron, gpt-oss, minimax) spend tokens
-                # thinking before content; at 8 they return empty and probe as dead.
-                out = self._call(rt, "Reply with the single word: OK", timeout=timeout, max_tokens=128)
+                # Default PROBE_MAX_TOKENS (2048, >= 1400): reasoning models that ignore or refuse
+                # reasoning=False spend tokens thinking before content and look dead at 128.
+                out = self._call(rt, "Reply with the single word: OK", timeout=timeout, max_tokens=max_tokens)
                 ok = bool(out.strip())
                 return rt, ok, round(time.time() - t0, 1), out.strip()[:24]
             except Exception as ex:
-                code = getattr(ex, "code", "")
-                try:
-                    detail = ex.read()[:400].decode("utf-8", "replace") if hasattr(ex, "read") else ""
-                    m = re.search(r'"raw":"([^"]{0,60})|"message":"([^"]{0,60})', detail)
-                    detail = next((g for g in (m.groups() if m else ()) if g), "")
-                except Exception:
-                    detail = ""
-                return rt, False, round(time.time() - t0, 1), f"{type(ex).__name__} {code} {detail}".strip()
+                return rt, False, round(time.time() - t0, 1), _format_exception_note(ex)
         results = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for rt, ok, dt, note in ex.map(check, self.routes):
@@ -400,20 +563,47 @@ class Fleet:
                     _breaker_record(key, None)
                     return out
                 reasons.append("empty")
+            except ResponseContractError as ex:
+                reasons.append(_format_exception_note(ex))
             except Exception as ex:
                 reasons.append(f"{type(ex).__name__} {getattr(ex, 'code', '')}".strip())
         _breaker_record(key, "; ".join(sorted(set(reasons))) or "no routes")
         raise RuntimeError("no route answered")
 
-    def map(self, prompts: list[str], workers: int | None = None, retries: int = 2, **kw):
+    def map(self, prompts: list[str], workers: int | None = None, retries: int = 2,
+            max_requests: int | None = None, **kw):
         """Fan a list of prompts across ALL healthy routes concurrently.
-        Returns list of (index, route_name, output) in completion order."""
+        Returns list of (index, route_name, output) in completion order.
+
+        max_requests caps the TOTAL upstream calls across every prompt and retry
+        (default: len(prompts) + max(2, len(prompts)//2)). Without it a dead pool
+        cost prompts*(retries+1) requests; one failing call was once retried 21
+        times. A first attempt always runs while budget remains; a retry that finds
+        the budget spent fails fast instead of hammering the pool."""
         pool = self.healthy or self.routes
         if not pool:
             raise RuntimeError("no routes")
         workers = workers or min(len(pool) * 2, 24)
+        if max_requests is None:
+            max_requests = len(prompts) + max(2, len(prompts) // 2)
         cyc = itertools.cycle(pool)
-        assign = [(i, p, next(cyc)) for i, p in enumerate(prompts)]
+        cyc_lock = threading.Lock()  # itertools.cycle is not thread-safe across workers
+        budget = [0]
+        budget_lock = threading.Lock()
+
+        def _next_route():
+            with cyc_lock:
+                return next(cyc)
+
+        def _take_budget():
+            with budget_lock:
+                if budget[0] >= max_requests:
+                    return False
+                budget[0] += 1
+                return True
+
+        with cyc_lock:
+            assign = [(i, p, next(cyc)) for i, p in enumerate(prompts)]
 
         def run(item):
             i, prompt, rt = item
@@ -422,6 +612,8 @@ class Fleet:
                 return i, f"FAILED({tripped})", ""
             last = None
             for attempt in range(retries + 1):
+                if not _take_budget():
+                    return i, f"FAILED(budget exhausted after {budget[0]} requests)", ""
                 if attempt:  # back off before re-trying; never hammer a failing pool
                     time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
                 try:
@@ -430,13 +622,8 @@ class Fleet:
                         return i, rt["name"], out
                     last = "empty"
                 except Exception as ex:  # keep the reason: "HTTPError 429 rate limit" beats a bare class name
-                    code = getattr(ex, "code", "")
-                    try:
-                        detail = ex.read()[:120].decode("utf-8", "replace") if hasattr(ex, "read") else str(ex)[:120]
-                    except Exception:
-                        detail = ""
-                    last = f"{type(ex).__name__} {code} {detail}".strip()
-                rt = next(cyc)          # rotate to a different route on failure
+                    last = _format_exception_note(ex, http_detail_limit=120, fallback_raw=True) or type(ex).__name__
+                rt = _next_route()      # rotate to a different route on failure
             return i, f"FAILED({last})", ""
         out = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -462,6 +649,7 @@ if __name__ == "__main__":
           f"({sum(1 for r in f.routes if r['kind']=='hf-space')} hf-space, "
           f"{sum(1 for r in f.routes if r['kind']=='openrouter')} openrouter, "
           f"{sum(1 for r in f.routes if r['kind']=='arliai')} arliai, "
+          f"{sum(1 for r in f.routes if r['kind']=='nvidia')} nvidia, "
           f"{sum(1 for r in f.routes if r['kind'] in ('local','lmstudio'))} local, "
           f"{sum(1 for r in f.routes if r['kind']=='ollama-cloud')} ollama-cloud, "
           f"{sum(1 for r in f.routes if r['kind']=='vertex')} vertex)\n")

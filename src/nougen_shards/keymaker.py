@@ -8,7 +8,9 @@ import ctypes.wintypes
 import hashlib
 import logging
 import os
+import re
 import sqlite3
+import stat
 import csv
 import json
 from datetime import datetime
@@ -29,6 +31,14 @@ _DPAPI_MAX_LAYERS = int(os.getenv("NOUGEN_KEYMAKER_MAX_LAYERS", "8"))
 # Marker prefix for values stored in the OS keyring (macOS Keychain / Secret Service).
 _KEYRING_PREFIX = "keyring1:"
 _KEYRING_SERVICE = "nougenshards-vault"
+# Marker prefix for values encrypted at rest with the machine-local AES-256-GCM
+# fallback (headless Linux: no DPAPI, no OS keyring backend). The 32-byte key
+# lives in the vault dir itself, 0600, so a tenant's rows encrypt under the
+# tenant key, never the owner's. See _local_encrypt (leg 20261116T165939Z).
+_LOCAL_ENC_PREFIX = "enc1:"
+_LOCAL_ENC_KEY_FILENAME = ".vault_enc_key"
+_LOCAL_ENC_KEY_BYTES = 32
+_LOCAL_ENC_NONCE_BYTES = 12
 
 # ---------------------------------------------------------------------------
 # Two-tier keyring cache: avoids repeated macOS Keychain ACL prompts that
@@ -103,8 +113,10 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     not pre-cached or if GUI prompts are disabled, skips cleanly without blocking.
     """
     _load_keyring_cache()
-    if ref in _KEYRING_CACHE:
+    if _KEYRING_CACHE.get(ref):
         return _KEYRING_CACHE[ref]
+    # A blank cached value is a failed write, not a secret: treat it as a miss so
+    # the probe chain keeps looking instead of handing callers an empty string.
 
     # Rule 0.2 & Zero Friction: If running in non-interactive/automation environment,
     # or if NOUGEN_DISABLE_KEYCHAIN_POPUP is set (defaulted to active on macOS),
@@ -136,8 +148,9 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     return value
 
 def _is_encrypted(stored: str) -> bool:
-    """True if the stored value is protected (DPAPI or keyring), not legacy plaintext."""
-    return str(stored).startswith((_DPAPI_PREFIX, _KEYRING_PREFIX))
+    """True if the stored value is protected (DPAPI, keyring, or the local
+    AES-256-GCM fallback), not legacy plaintext."""
+    return str(stored).startswith((_DPAPI_PREFIX, _KEYRING_PREFIX, _LOCAL_ENC_PREFIX))
 
 
 class _DataBlob(ctypes.Structure):
@@ -146,12 +159,28 @@ class _DataBlob(ctypes.Structure):
 
 
 def _dpapi_call(func_name: str, data: bytes) -> bytes:
-    """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    """Invokes CryptProtectData/CryptUnprotectData on the given bytes.
+
+    When user-scope CryptProtectData fails (e.g. PIN logon session lock where
+    user master key is locked with 0x8009000B / ERROR_ACCESS_DENIED), falls back
+    to machine-scope DPAPI (CRYPTPROTECT_LOCAL_MACHINE = 0x4) so vault_put and
+    keymaker_import still encrypt at rest and remain decryptable by
+    CryptUnprotectData(flags=0) on this machine.
+    """
+    # A vault synced from a Windows node can carry DPAPI rows onto macOS/Linux.
+    # Raise the OSError callers already handle, not AttributeError on `windll`,
+    # which escaped _export_to_csv and failed ingest_secret after its commit.
+    if not hasattr(ctypes, "windll"):
+        raise OSError(f"{func_name} unavailable: DPAPI is Windows-only")
     blob_in = _DataBlob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
                                               ctypes.POINTER(ctypes.c_char)))
     blob_out = _DataBlob()
     func = getattr(ctypes.windll.crypt32, func_name)
-    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+    ok = func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out))
+    if not ok and func_name == "CryptProtectData":
+        # CRYPTPROTECT_LOCAL_MACHINE = 0x4 fallback when user DPAPI master key is locked
+        ok = func(ctypes.byref(blob_in), None, None, None, None, 0x4, ctypes.byref(blob_out))
+    if not ok:
         raise OSError(f"{func_name} failed (DPAPI)")
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
@@ -165,8 +194,14 @@ def _protect(value: str, key: Optional[str] = None) -> str:
 
     Windows  -> DPAPI (user-bound).
     Other OS -> OS keyring (macOS Keychain / freedesktop Secret Service) if `keyring`
-                is installed; the DB then stores only a reference, not the secret.
-                If keyring is unavailable, refuse unless NOUGEN_ALLOW_PLAINTEXT_VAULT=1.
+                is installed and a backend answers; the DB then stores only a
+                reference, not the secret.
+                If no keyring backend is usable (headless Linux: the package is
+                absent, or installed with no Secret Service behind it), fall
+                back to machine-local AES-256-GCM (enc1:, see _local_encrypt)
+                keyed by a 0600 file in the vault dir itself. The write lands
+                encrypted; only NOUGEN_ALLOW_PLAINTEXT_VAULT=1 stores plaintext,
+                as an explicit operator opt-in.
     """
     if os.name == "nt":
         encrypted = _dpapi_call("CryptProtectData", value.encode("utf-8"))
@@ -174,22 +209,29 @@ def _protect(value: str, key: Optional[str] = None) -> str:
 
     try:
         import keyring  # pylint: disable=import-outside-toplevel
-        ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-        keyring.set_password(_KEYRING_SERVICE, ref, value)
-        # Headless reads never touch the Keychain (no popups); they only consult this
-        # cache. Without seeding it here, a secret ingested from a headless session was
-        # written to the Keychain and then unreadable to every headless session.
-        _load_keyring_cache()
-        _KEYRING_CACHE[ref] = value
-        _save_keyring_cache()
-        return _KEYRING_PREFIX + ref
     except ImportError:
-        if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
-            return value
-        raise RuntimeError(
-            "No OS keyring backend available on this platform. "
-            "Install it with 'pip install keyring', or set "
-            "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from None
+        keyring = None
+    if keyring is not None:
+        try:
+            ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+            keyring.set_password(_KEYRING_SERVICE, ref, value)
+        except Exception as exc:
+            # No usable OS keyring backend on this machine (headless Linux):
+            # fall through to the local encrypted store, never plaintext and
+            # never an uncaught failure of the whole write (leg 20261116T165939Z).
+            logger.debug("OS keyring write failed (%s); using local encrypted vault",
+                         type(exc).__name__)
+        else:
+            # Headless reads never touch the Keychain (no popups); they only consult this
+            # cache. Without seeding it here, a secret ingested from a headless session was
+            # written to the Keychain and then unreadable to every headless session.
+            _load_keyring_cache()
+            _KEYRING_CACHE[ref] = value
+            _save_keyring_cache()
+            return _KEYRING_PREFIX + ref
+    if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
+        return value
+    return _local_encrypt(value)
 
 
 def _as_dpapi_blob(stored: str) -> Optional[bytes]:
@@ -202,8 +244,172 @@ def _as_dpapi_blob(stored: str) -> Optional[bytes]:
     return raw if raw[:8] == _DPAPI_MAGIC else None
 
 
-def _unprotect(stored: str) -> str:
+def _publish_local_enc_key(path: Path, encoded: bytes) -> bool:
+    """Atomically publish a minted local vault key at `path`.
+
+    The key is written to a temp file in the same directory and hard-linked
+    into place, so the key file is never visible half-written and a competing
+    writer's key is never overwritten (the link fails when the target
+    exists). Returns True when this call published the key, False when
+    another writer won the race. On filesystems without hard links, falls
+    back to O_EXCL create + write; readers retry a not-yet-populated file
+    (see _local_enc_key), so that window cannot fail vault_put either.
+    """
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{_LOCAL_ENC_KEY_FILENAME}.", dir=str(path.parent)
+    )
+    tmp = Path(tmp_name)
+    try:
+        os.write(fd, encoded)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(tmp, path)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        # No hard links on this filesystem: create the key file directly.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, encoded)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _local_enc_key(create: bool = True, key_dir: Optional[Path] = None) -> bytes:
+    """Load-or-create the machine-local AES key for the enc1 fallback.
+
+    The key file lives in the active secrets vault dir (tenant-scoped via
+    vault_dir()), so a tenant's rows encrypt under the tenant key, never the
+    owner's. Created 0600; a pre-existing world-readable file is repaired
+    to 0600 on read. With create=False a missing key raises OSError instead
+    of minting one (reads must never invent a key they cannot decrypt with).
+
+    `key_dir` overrides the directory the key is READ from (decrypting a row
+    that lives in another store — see _read_secret_row). It is ignored on the
+    create path: a key is only ever minted under the active vault, never
+    written into a foreign store. Publication is atomic (see
+    _publish_local_enc_key), and a not-yet-populated file is retried briefly
+    before it fails loudly — a persistently short file is a broken vault,
+    not an absent secret.
+    """
+    import secrets as _secrets
+    import time
+
+    if create:
+        key_dir = None  # never mint a key outside the active vault
+    path = (key_dir or vault_dir()) / _LOCAL_ENC_KEY_FILENAME
+    for _attempt in range(3):
+        if path.is_file():
+            try:
+                raw = base64.b64decode(path.read_text("utf-8").strip(), validate=True)
+            except Exception as exc:
+                # Unreadable right now: a concurrent writer may be mid-publish.
+                if _attempt < 2:
+                    time.sleep(0.05)
+                    continue
+                raise RuntimeError(
+                    f"local vault key at {path} is not valid base64"
+                ) from exc
+            if len(raw) != _LOCAL_ENC_KEY_BYTES:
+                # Empty/short file: a concurrent writer may be mid-publish —
+                # wait briefly and re-read. A file that stays short is
+                # genuinely corrupt and still fails loudly below.
+                if _attempt < 2:
+                    time.sleep(0.05)
+                    continue
+                raise RuntimeError(
+                    f"local vault key at {path} is not {_LOCAL_ENC_KEY_BYTES} bytes"
+                )
+            if os.name != "nt":
+                try:
+                    if stat.S_IMODE(os.stat(path).st_mode) != 0o600:
+                        os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            return raw
+        if not create:
+            raise OSError(f"local vault key not found at {path}")
+        raw = _secrets.token_bytes(_LOCAL_ENC_KEY_BYTES)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = base64.b64encode(raw).decode("ascii").encode("ascii")
+        if _publish_local_enc_key(path, encoded):
+            if os.name != "nt":
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            return raw
+        # Another writer published first; loop and re-read their key.
+    raise RuntimeError(f"could not establish local vault key at {path}")
+
+
+def _local_encrypt(value: str) -> str:
+    """AES-256-GCM encrypt with the machine-local vault key.
+
+    Wire format: ``enc1:`` + base64(nonce || ciphertext). `cryptography` is
+    a hard dependency of this package; its absence here is fail-closed.
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise RuntimeError(
+            "No OS keyring backend and the 'cryptography' package is missing; "
+            "cannot store this secret encrypted. Install 'cryptography' or set "
+            "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from exc
+    import secrets as _secrets
+
+    nonce = _secrets.token_bytes(_LOCAL_ENC_NONCE_BYTES)
+    blob = AESGCM(_local_enc_key(create=True)).encrypt(nonce, value.encode("utf-8"), None)
+    return _LOCAL_ENC_PREFIX + base64.b64encode(nonce + blob).decode("ascii")
+
+
+def _local_decrypt(stored: str, key_dir: Optional[Path] = None) -> str:
+    """Decrypt an enc1: row with the machine-local vault key.
+
+    `key_dir` is the vault directory holding the row's key file (the store
+    the row was read from); without it the active vault's key is used.
+    Raises OSError (the type _read_secret_row already handles) on a missing
+    key, a corrupt row, or a failed authentication tag — a row copied into a
+    vault whose key differs reads as absent, never as a leak.
+    """
+    key = _local_enc_key(create=False, key_dir=key_dir)
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise OSError(
+            "cannot decrypt local vault row: 'cryptography' package is missing") from exc
+    try:
+        payload = base64.b64decode(stored[len(_LOCAL_ENC_PREFIX):], validate=True)
+        nonce, blob = payload[:_LOCAL_ENC_NONCE_BYTES], payload[_LOCAL_ENC_NONCE_BYTES:]
+        return AESGCM(key).decrypt(nonce, blob, None).decode("utf-8")
+    except (ValueError, OSError):
+        raise
+    except Exception as exc:
+        # InvalidTag and friends: wrong key or tampered row.
+        raise OSError(
+            f"local vault row failed authentication: {type(exc).__name__}") from exc
+
+
+def _unprotect(stored: str, key_dir: Optional[Path] = None) -> str:
     """Decrypts a stored value; passes through legacy plaintext rows untouched.
+
+    `key_dir` overrides where an enc1: row's key file is read from (the store
+    the row came from); the other layers ignore it.
 
     Peels EVERY DPAPI layer, not just one. A value that is re-protected -- by a
     migration, a re-ingest, or a second pass of the ingest tool -- ends up
@@ -228,6 +434,8 @@ def _unprotect(stored: str) -> str:
                 return current
             current = _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
         return current
+    if stored.startswith(_LOCAL_ENC_PREFIX):
+        return _local_decrypt(stored, key_dir=key_dir)
     if stored.startswith(_KEYRING_PREFIX):
         ref = stored[len(_KEYRING_PREFIX):]
         value = _keyring_get(ref)
@@ -278,25 +486,67 @@ def find_legacy_stores(roots=None) -> list:
 
     `get_secret` returning None reads exactly like "never ingested" rather than
     "you are pointed at the wrong file", which is why this is worth surfacing.
+    Uses targeted os.scandir with heavy-directory pruning so Windows AppData /
+    node_modules / .git trees never turn a cold probe into a 12-second walk.
     """
     canonical = resolve_secrets_vault_dir().resolve()
     if roots is None:
         home = Path.home()
         roots = [home / "Watchtower", home / ".nougen" / "secrets", home]
     seen, found = set(), []
+    db_names = (DB_FILENAME, "agent_secrets.db")
+    skip_dirs = frozenset({
+        "appdata", "node_modules", ".git", ".cache", ".cargo", ".gradle",
+        ".bun", ".venv", "onedrive", ".rustup", ".npm", ".local",
+    })
     for root in roots:
+        root_p = Path(root)
         try:
             # A dead SMB symlink (Watchtower) raises OSError from exists() itself.
-            if not Path(root).exists():
+            if not root_p.exists():
                 continue
             candidates: list = []
-            for db_name in (DB_FILENAME, "agent_secrets.db"):
-                candidates += list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
-                candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
-                candidates += list(Path(root).glob(f"*/{db_name}"))
-                direct = Path(root) / db_name
+            for db_name in db_names:
+                direct = root_p / db_name
                 if direct.is_file():
                     candidates.append(direct)
+            with os.scandir(root_p) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_dir(follow_symlinks=True):
+                            continue
+                    except OSError:
+                        continue
+                    sub = Path(entry.path)
+                    for db_name in db_names:
+                        for c in (sub / db_name, sub / _LEGACY_VAULT_DIRNAME / db_name):
+                            try:
+                                if c.is_file():
+                                    candidates.append(c)
+                            except OSError:
+                                pass
+                    if entry.name.lower() in skip_dirs:
+                        continue
+                    try:
+                        with os.scandir(sub) as it2:
+                            for entry2 in it2:
+                                try:
+                                    if not entry2.is_dir(follow_symlinks=True):
+                                        continue
+                                except OSError:
+                                    continue
+                                if entry2.name.lower() in skip_dirs:
+                                    continue
+                                vdir = Path(entry2.path) / _LEGACY_VAULT_DIRNAME
+                                for db_name in db_names:
+                                    c2 = vdir / db_name
+                                    try:
+                                        if c2.is_file():
+                                            candidates.append(c2)
+                                    except OSError:
+                                        pass
+                    except OSError:
+                        pass
         except OSError:
             continue
         for path in candidates:
@@ -321,7 +571,7 @@ def find_legacy_stores(roots=None) -> list:
 # rows) so that "wrong store" and "never ingested" become distinguishable, and
 # a divergence fails loud instead of None.
 ENV_VAULT_PROBE = "NOUGEN_VAULT_PROBE"          # "0" disables discovery (tests)
-ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # warn (default) | error | adopt
+ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # adopt (default) | warn (default when the store is pinned) | error
 _DIVERGENCE_MODES = ("warn", "error", "adopt")
 
 
@@ -333,12 +583,24 @@ def _probe_enabled() -> bool:
     return os.getenv(ENV_VAULT_PROBE, "1").strip() != "0"
 
 
+def _default_divergence_mode() -> str:
+    """adopt when nobody chose the active store (it was discovered), warn when it was pinned.
+
+    A pinned store (NOUGEN_SECRETS_VAULT_DIR) is an explicit choice, so a key elsewhere is
+    reported, not used. A discovered store is just the probe's best guess: a key that lives
+    in another live store is returned read-only (with the same warning) instead of dropped,
+    which is what left 134 Blade keys looking absent on 2026-11-05.
+    """
+    return "warn" if os.getenv(ENV_SECRETS_VAULT, "").strip() else "adopt"
+
+
 def _divergence_mode() -> str:
-    mode = os.getenv(ENV_VAULT_DIVERGENCE, "warn").strip().lower() or "warn"
+    default = _default_divergence_mode()
+    mode = os.getenv(ENV_VAULT_DIVERGENCE, default).strip().lower() or default
     if mode not in _DIVERGENCE_MODES:
-        logger.warning("%s=%r is not one of %s; using 'warn'.",
-                       ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES))
-        mode = "warn"
+        logger.warning("%s=%r is not one of %s; using '%s'.",
+                       ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES), default)
+        mode = default
     return mode
 
 
@@ -467,25 +729,53 @@ def resolve_secrets_store(refresh: bool = False) -> dict:
     return result
 
 
+# Owner-process defaults, kept for importers; every in-module access goes
+# through the resolvers below so a tenant request lands in its own vault.
 VAULT_DIR = resolve_secrets_vault_dir()
 DB_PATH = VAULT_DIR / DB_FILENAME
 CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"
+TENANT_SECRETS_DIRNAME = "secrets"
+
+
+def vault_dir() -> Path:
+    """Secrets vault for the active identity.
+
+    Owner: ``NOUGEN_SECRETS_VAULT`` / ``~/.nougen/secrets`` (module constants).
+    Tenant: ``<tenant_vault>/secrets`` so ``vault_put`` from a tenant session can
+    never read or write the owner's keyring.
+    """
+    from . import core  # no try/except: a failed tenant check must not fall open to the owner keyring
+    if core.is_tenant_context():
+        return Path(core.active_home()) / TENANT_SECRETS_DIRNAME
+    return VAULT_DIR
+
+
+def db_path() -> Path:
+    return vault_dir() / DB_FILENAME
+
+
+def csv_path() -> Path:
+    return vault_dir() / "shards_secrets.csv"
+
+
+def secrets_json_dir() -> Path:
+    return vault_dir() / "service_accounts"
 
 
 def init_vault():
     """Initializes the vault database schema."""
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    SECRETS_JSON_DIR.mkdir(parents=True, exist_ok=True)
+    vault_dir().mkdir(parents=True, exist_ok=True)
+    secrets_json_dir().mkdir(parents=True, exist_ok=True)
     # Restrict the vault to the owner on POSIX (Windows relies on per-file ACLs).
     if os.name != "nt":
-        for d in (VAULT_DIR, SECRETS_JSON_DIR):
+        for d in (vault_dir(), secrets_json_dir()):
             try:
                 os.chmod(d, 0o700)
             except OSError:
                 pass
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS secrets (
@@ -529,19 +819,21 @@ def init_vault():
 
 def _export_to_csv():
     """Exports a metadata-only audit ledger. NEVER writes secret values to disk."""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT id, secret_key, secret_value, last_rotated FROM secrets")
         rows = cursor.fetchall()
-        with open(CSV_PATH, "w", newline="", encoding="utf-8") as f_out:
+        with open(csv_path(), "w", newline="", encoding="utf-8") as f_out:
             writer = csv.writer(f_out)
             writer.writerow(["id", "secret_key", "fingerprint_sha256_12", "encrypted", "last_rotated"])
             for row_id, key, stored, rotated in rows:
                 try:
                     plain = _unprotect(stored)
                     fp = _fingerprint(plain) if plain is not None else "unreadable"
-                except OSError:
+                except Exception:
+                    # Any row this platform can't decrypt (e.g. a Windows DPAPI blob on macOS) is
+                    # listed as unreadable; the audit ledger still gets written.
                     fp = "unreadable"
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
     except sqlite3.Error:
@@ -553,10 +845,16 @@ def _export_to_csv():
 def ingest_secret(key: str, value: str):
     """
     Ingests a secret into the DB, exports to CSV, and redacts output.
+
+    A blank value is refused: storing it would overwrite a good secret with
+    nothing, and every later read would quietly come back empty.
     """
+    if value is None or not str(value).strip():
+        print(f"  [!] Refused: {key} has an empty value; nothing stored")
+        return False
     init_vault()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     try:
         conn.execute("""
             INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)
@@ -564,7 +862,10 @@ def ingest_secret(key: str, value: str):
         """, (key, _protect(value, key), timestamp))
         conn.commit()
         print(f"  [+] Ingested: {key} (Value Redacted)")
-        _export_to_csv()
+        try:
+            _export_to_csv()
+        except Exception as exc:  # the audit ledger is best-effort; the secret is already stored
+            print(f"  [i] Audit ledger not updated on this platform: {type(exc).__name__}")
     except sqlite3.Error as exc:
         print(f"  [!] Error ingesting {key}: {exc}")
     finally:
@@ -631,7 +932,7 @@ def ingest_service_account(json_data: str):
         init_vault()
 
         file_name = f"{project_id}_service_account.json"
-        target_path = SECRETS_JSON_DIR / file_name
+        target_path = secrets_json_dir() / file_name
 
         # This file holds the SA private key. On POSIX create it owner-only from
         # the start (O_CREAT|0o600) so there is no window where it is world/group
@@ -655,10 +956,32 @@ def ingest_service_account(json_data: str):
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
-        print(f"  [+] Service Account for {project_id} stored at {target_path}")
+        # Path deliberately not echoed: the secrets vault location stays out of console logs.
+        print(f"  [+] Service Account for {project_id} stored in the service_accounts vault")
 
     except (json.JSONDecodeError, OSError) as exc:
         print(f"  [!] Error ingesting service account: {exc}")
+
+
+_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _require_identifiers(table_name: str, title_col: str, content_col: str) -> None:
+    """Reject a registration whose names cannot be safely interpolated into SQL.
+
+    The connectors (connectors/local_vault.py, connectors/sql.py) interpolate
+    these names into queries and already skip rows that fail the same whitelist,
+    so a bad row could never reach a query. Checking here as well makes the
+    registration fail loudly instead of storing a row that is silently ignored
+    on every read. fullmatch, not match, for the trailing-newline reason given
+    in connectors/sql.is_valid_identifier.
+    """
+    for label, value in (("table_name", table_name), ("title_col", title_col),
+                         ("content_col", content_col)):
+        if not isinstance(value, str) or not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError(
+                f"{label} must be a plain SQL identifier (letters, digits, "
+                f"underscore; not starting with a digit), got {value!r}")
 
 
 def register_local_vault(path: str, table_name: str, title_col: str, content_col: str):
@@ -676,8 +999,9 @@ def register_local_vault(path: str, table_name: str, title_col: str, content_col
     credentials) but is re-validated at query time, so moving or deleting a vault
     degrades that source instead of breaking federation.
     """
+    _require_identifiers(table_name, title_col, content_col)
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.execute('''
         CREATE TABLE IF NOT EXISTS local_vaults (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -706,9 +1030,9 @@ def register_local_vault(path: str, table_name: str, title_col: str, content_col
 
 def list_local_vaults() -> list:
     """Registered local SQLite vaults. Missing table or DB means none."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM local_vaults").fetchall()]
@@ -720,8 +1044,9 @@ def list_local_vaults() -> list:
 
 def register_external_db(uri: str, table_name: str, title_col: str, content_col: str):
     """Registers a new external database connection."""
+    _require_identifiers(table_name, title_col, content_col)
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # The URI usually embeds DB credentials (user:pass@host) — protect it at
     # rest like any other secret instead of storing the connection string raw.
@@ -735,9 +1060,9 @@ def register_external_db(uri: str, table_name: str, title_col: str, content_col:
 
 def list_external_dbs() -> list:
     """Returns all registered external database configurations."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM external_dbs").fetchall()
@@ -764,7 +1089,7 @@ def list_external_dbs() -> list:
 def register_cloud_node(url: str, name: str):
     """Registers a new remote NouGenShards cloud node."""
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     conn.execute('''
         INSERT OR REPLACE INTO cloud_nodes (url, name, last_connected)
@@ -776,9 +1101,9 @@ def register_cloud_node(url: str, name: str):
 
 def list_cloud_nodes() -> list:
     """Returns all registered cloud node configurations."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM cloud_nodes").fetchall()
@@ -787,6 +1112,42 @@ def list_cloud_nodes() -> list:
         return []
     finally:
         conn.close()
+
+
+CANONICAL_ALIASES = {
+    "EXA_API_KEY": ["EXA_API_KEY_1", "EXA_API_KEY_2", "EXA_API_KEY_3", "EXA_API_KEY_4"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN_WHOENTERTAINS"],
+    "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
+    "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
+    "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
+    "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
+    "OPENROUTER_API_KEY": [
+        "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
+        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
+        "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
+        "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
+        "OPENROUTER_WHOENTERTAINS",
+        "OPENROUTER_DAVEMERALUS",
+        "OPENROUTER_NOUGENAI",
+        "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
+        "OPENROUTER_KEY_UNASSIGNED",
+        "OpenRouter_key_unlabeled",
+        "WhoE_openr_2",
+        "WhoE_openr_3",
+        "WhoE_openr_4"
+    ],
+    "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
+    "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
+    "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
+    "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
+    "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
+    "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
+    "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
+    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api", "HF_TOKEN_NOUGENAI"],
+    "HUGGINGFACE_API_TOKEN": ["HUGGINGFACE_API_KEY", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "HF_TOKEN_NOUGENAI"],
+    "HF_TOKEN": ["HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_API_KEY", "HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY"],
+    "HF_TOKEN_NOUGENAI": ["HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGINGFACE_API_TOKEN"],
+}
 
 
 def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
@@ -801,7 +1162,10 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
                 (key,)).fetchone()
         finally:
             conn.close()
-        return _unprotect(str(row[0])) if row else None
+        # The row's key file lives beside the store it was read from, not
+        # necessarily beside the active vault (an adopted/diverged store) —
+        # decrypt under the source vault's key, never the active one.
+        return _unprotect(str(row[0]), key_dir=db_path.parent) if row else None
     except (sqlite3.Error, OSError, ValueError):
         return None
 
@@ -812,17 +1176,41 @@ def get_secret(key: str) -> Optional[str]:
     Checks environment variables first (Rule 0.0: env -> config -> runtime probe),
     then queries the active secrets vault, alias fallbacks, and live candidate stores.
     """
+    from . import core
+    if core.is_tenant_context():
+        # Tenant reads never consult the node's environment, the owner's
+        # store, legacy candidates or the keyring cache: only the tenant DB.
+        val = _read_secret_row(db_path(), key)
+        if val is not None:
+            return val
+        for alias in CANONICAL_ALIASES.get(key, []):
+            alias_val = _read_secret_row(db_path(), alias)
+            if alias_val is not None:
+                return alias_val
+        return None
     env_val = os.getenv(key) or os.getenv(f"NOUGEN_{key}")
     if env_val:
         return env_val.strip()
-
     if not _probe_enabled():
-        return _read_secret_row(DB_PATH, key)
+        val = _read_secret_row(db_path(), key)
+        if val is not None:
+            return val
+        for alias in CANONICAL_ALIASES.get(key, []):
+            alias_val = _read_secret_row(db_path(), alias)
+            if alias_val is not None:
+                return alias_val
+        return None
 
     resolution = resolve_secrets_store()
-    value = _read_secret_row(resolution["active"], key)
-    if value is not None:
-        return value
+    val = _read_secret_row(resolution["active"], key)
+    if val is not None:
+        return val
+    # The active store's own alias (GEMINI_API_KEY for GOOGLE_API_KEY) beats any other store,
+    # so adopting from elsewhere never replaces a credential the active store already holds.
+    for alias in CANONICAL_ALIASES.get(key, []):
+        alias_val = _read_secret_row(resolution["active"], alias)
+        if alias_val is not None:
+            return alias_val
 
     # Absent from the active store: check the other live candidates before
     # concluding "never ingested" (the moved-vault trap, measured 2026-08-15).
@@ -850,37 +1238,7 @@ def get_secret(key: str) -> Optional[str]:
             return found
         logger.warning(msg)
     # Check canonical fallback aliases for common typo/drift pairs (Defect O11)
-    canonical_aliases = {
-        "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
-        "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
-        "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
-        "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
-        "OPENROUTER_API_KEY": [
-            "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
-            "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
-            "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
-            "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
-            "OPENROUTER_WHOENTERTAINS",
-            "OPENROUTER_DAVEMERALUS",
-            "OPENROUTER_NOUGENAI",
-            "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
-            "OPENROUTER_KEY_UNASSIGNED",
-            "OpenRouter_key_unlabeled",
-            "WhoE_openr_2",
-            "WhoE_openr_3",
-            "WhoE_openr_4"
-        ],
-        "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
-        "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
-        "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
-        "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
-        "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
-        "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api"],
-        "HUGGINGFACE_API_TOKEN": ["HUGGINGFACE_API_KEY", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM"],
-    }
-    for alias in canonical_aliases.get(key, []):
+    for alias in CANONICAL_ALIASES.get(key, []):
         alias_val = _read_secret_row(resolution["active"], alias)
         if alias_val is not None:
             return alias_val
@@ -912,9 +1270,9 @@ def get_secret(key: str) -> Optional[str]:
 
 def list_providers() -> list:
     """Returns a list of keys currently stored in the vault."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT secret_key FROM secrets")
@@ -927,9 +1285,9 @@ def list_providers() -> list:
 
 def migrate_to_encrypted() -> int:
     """Re-encrypts any legacy plaintext rows in place. Returns count migrated."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return 0
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     migrated = 0
     try:
         rows = conn.execute("SELECT secret_key, secret_value FROM secrets").fetchall()
@@ -962,15 +1320,210 @@ def migrate_to_encrypted() -> int:
         conn.commit()
     finally:
         conn.close()
-    if migrated:
-        _export_to_csv()
     return migrated
+
+
+# Canonical environment variable aliases for automatic repo configuration
+ENV_KEY_ALIASES: dict[str, list[str]] = {
+    "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_KEY"],
+    "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_KEY"],
+    "OPENAI_API_KEY": ["OPENAI_API_KEY", "OPENAI_KEY"],
+    "ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "CLAUDE_KEY"],
+    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_KEY", "HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_API_KEY", "HUGGING_FACE_HUB_TOKEN"],
+    "HUGGING_FACE_HUB_TOKEN": ["HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HF_TOKEN": ["HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HF_TOKEN_NOUGENAI": ["HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN", "HUGGINGFACE_API_KEY"],
+    "OPENROUTER_API_KEY": ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
+    "ARLIAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],
+    "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],
+    "GITHUB_TOKEN": ["GITHUB_TOKEN", "GITHUB_PAT", "GH_TOKEN", "GITHUB_PAT_NOUGENAI"],
+    "GH_TOKEN": ["GITHUB_TOKEN", "GITHUB_PAT", "GH_TOKEN"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN"],
+    "FLEET_KEY": ["FLEET_KEY", "FLEET_KEY_OUTPOST"],
+}
+
+DEFAULT_ENV_VARS = [
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "HUGGINGFACE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ARLIAI_API_KEY",
+    "GITHUB_TOKEN",
+    "FLEET_KEY",
+]
+
+
+def resolve_secret_for_var(var_name: str) -> Optional[str]:
+    """Resolves secret value for a requested environment variable using aliases & providers."""
+    # 1. Direct get_secret
+    val = get_secret(var_name)
+    if val:
+        return val
+    # 2. Key aliases
+    for alias in ENV_KEY_ALIASES.get(var_name, []):
+        val = get_secret(alias)
+        if val:
+            return val
+    # 3. Exact case-insensitive match in providers
+    for p in list_providers():
+        if p.upper() == var_name.upper():
+            val = get_secret(p)
+            if val:
+                return val
+    return None
+
+
+def ensure_repo_gitignore(repo_path: Path) -> bool:
+    """Guarantees .env and secrets are safely ignored in repository .gitignore."""
+    gitignore_p = repo_path / ".gitignore"
+    needed_rules = [".env", ".env.*", "!.env.example", "*.local"]
+    
+    if not gitignore_p.exists():
+        content = "\n".join(needed_rules) + "\n"
+        gitignore_p.write_text(content, encoding="utf-8")
+        return True
+        
+    current = gitignore_p.read_text(encoding="utf-8", errors="ignore")
+    lines = [line.strip() for line in current.splitlines()]
+    appended = []
+    
+    if ".env" not in lines and not any(line == ".env" or line == "/.env" for line in lines):
+        appended.append(".env")
+    if ".env.*" not in lines and not any(line.startswith(".env.") for line in lines):
+        appended.append(".env.*")
+    if "!.env.example" not in lines:
+        appended.append("!.env.example")
+        
+    if appended:
+        prefix = "\n" if not current.endswith("\n") else ""
+        gitignore_p.write_text(current + prefix + "\n".join(appended) + "\n", encoding="utf-8")
+        return True
+    return False
+
+
+def auto_env_repo(repo_dir: str | Path, force: bool = False) -> dict[str, Any]:
+    """Automatically populates or updates .env for a repository from Keymaker vault secrets.
+    
+    Discovers required/suggested variables from:
+    1. .env.example / .env.template
+    2. Existing .env keys
+    3. Default fleet intelligence keys (Gemini, OpenRouter, ArliAI, HuggingFace, etc.)
+    
+    Ensures .gitignore protects .env prior to writing.
+    """
+    repo_path = Path(repo_dir).resolve()
+    if not repo_path.is_dir():
+        raise FileNotFoundError(f"Repo directory does not exist: {repo_path}")
+        
+    # Safety guard: ensure .gitignore protects .env
+    gitignore_updated = ensure_repo_gitignore(repo_path)
+    
+    # 1. Detect template variables
+    target_vars: set[str] = set()
+    templates = [".env.example", ".env.template", "env.example", ".env.sample"]
+    found_template = None
+    for tmpl in templates:
+        p = repo_path / tmpl
+        if p.is_file():
+            found_template = tmpl
+            try:
+                for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _ = line.split("=", 1)
+                        clean_k = k.strip()
+                        if clean_k and clean_k.isidentifier():
+                            target_vars.add(clean_k)
+            except Exception:
+                pass
+            break
+            
+    # Always merge standard fleet vars
+    target_vars.update(DEFAULT_ENV_VARS)
+    
+    # Read existing .env if present
+    env_p = repo_path / ".env"
+    existing_pairs: dict[str, str] = {}
+    if env_p.exists():
+        try:
+            for line in env_p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    existing_pairs[k.strip()] = v.strip()
+        except Exception:
+            pass
+            
+    populated: dict[str, str] = {}
+    missing_vault: list[str] = []
+    
+    for var in sorted(target_vars):
+        if not force and var in existing_pairs and existing_pairs[var] and not existing_pairs[var].startswith("your_") and not existing_pairs[var].startswith("sk-..."):
+            continue  # Keep existing valid setting
+        val = resolve_secret_for_var(var)
+        if val:
+            populated[var] = val
+        else:
+            missing_vault.append(var)
+            
+    # Merge existing and newly resolved
+    final_pairs = dict(existing_pairs)
+    final_pairs.update(populated)
+    
+    lines = [
+        "# Auto-generated by NouGen Keymaker",
+        f"# Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "# Protected by .gitignore — NEVER commit secrets to source control",
+        ""
+    ]
+    for k, v in sorted(final_pairs.items()):
+        lines.append(f"{k}={v}")
+    lines.append("")
+    
+    env_p.write_text("\n".join(lines), encoding="utf-8")
+    
+    return {
+        "repo": repo_path.name,
+        "path": str(env_p),
+        "populated_count": len(populated),
+        "populated_keys": list(populated.keys()),
+        "missing_vault": missing_vault,
+        "gitignore_updated": gitignore_updated,
+        "template_detected": found_template
+    }
+
+
+def auto_env_all(outpost_dir: str | Path | None = None, force: bool = False) -> list[dict[str, Any]]:
+    """Sweeps all git repositories under Outpost and auto-envs them safely."""
+    if outpost_dir is None:
+        env_val = os.environ.get("OUTPOST_DIR")
+        target_dir = Path(env_val).resolve() if env_val else (Path.home() / "Outpost")
+    else:
+        target_dir = Path(outpost_dir).resolve()
+    outpost_path = target_dir
+    results = []
+    
+    for item in sorted(outpost_path.iterdir()):
+        if item.is_dir() and not item.name.startswith("."):
+            if (item / ".git").is_dir():
+                try:
+                    res = auto_env_repo(item, force=force)
+                    results.append(res)
+                except Exception as e:
+                    results.append({
+                        "repo": item.name,
+                        "error": str(e)
+                    })
+    return results
+
 
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content> | migrate")
+        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content> | migrate | auto-env [<repo_path> | --all]")
         sys.exit(1)
 
     CMD = sys.argv[1]
@@ -979,10 +1532,20 @@ if __name__ == "__main__":
         print(f"[*] Migrated {COUNT} legacy plaintext secrets to DPAPI encryption.")
     elif CMD == "init":
         init_vault()
-        print(f"[*] Keymaker initialized at {VAULT_DIR.absolute()}")
+        print("[*] Keymaker initialized (run `nougen auth status` for the vault location)")
     elif CMD == "add" and len(sys.argv) == 4:
         ingest_secret(sys.argv[2], sys.argv[3])
     elif CMD == "sa" and len(sys.argv) == 3:
         ingest_service_account(sys.argv[2])
+    elif CMD == "auto-env":
+        target = sys.argv[2] if len(sys.argv) > 2 else "."
+        if target == "--all":
+            results = auto_env_all()
+            print(f"[*] Auto-enved {len(results)} Outpost repositories.")
+            for r in results:
+                print(f"  - {r.get('repo')}: {r.get('populated_count', 0)} keys populated")
+        else:
+            res = auto_env_repo(target)
+            print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")

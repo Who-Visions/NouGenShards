@@ -232,17 +232,10 @@ class ProgressiveSkillManager:
             raise ValueError(f"Skill '{name}' not found")
 
         if not skill.virtual_task_code:
-            # Generate default invariant verification task if not explicitly provided
-            test_script = (
-                "import sys\n"
-                f"NAME = {skill.name!r}\n"
-                f"BODY = {skill.body!r}\n"
-                "assert len(NAME) > 2, 'invalid skill name'\n"
-                "assert len(BODY) > 20, 'skill body is empty or too brief'\n"
-                "print('Virtual Task Passed')\n"
-            )
-        else:
-            test_script = skill.virtual_task_code
+            logger.warning("Candidate %s has no virtual task; not promoting", name)
+            return False
+
+        test_script = skill.virtual_task_code
 
         # Run in trusted execution sandbox
         result = nougen_sandbox.execute_sandboxed(test_script, language="python", trusted=True)

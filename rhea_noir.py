@@ -214,14 +214,35 @@ def _try_kimi_openrouter(messages: list, timeout_s: float = 120.0):
     return None
 
 
+def _free_lane_key() -> str:
+    """OpenRouter key for the $0 lane: env first, then the keymaker.
+
+    A node started by a scheduled task has no OPENROUTER_API_KEY in its
+    environment, so the free walk returned None without trying a single model
+    and every Rhea call (and ask_xoah behind it) died with "no inference lane".
+    The key already sits in the keymaker; read it there instead of requiring
+    every launcher to export it.
+    """
+    env = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if env:
+        return env
+    try:
+        from nougen_shards import keymaker
+        return (keymaker.get_secret("OPENROUTER_API_KEY") or "").strip()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("keymaker lookup for OPENROUTER_API_KEY failed (%s)", type(exc).__name__)
+        return ""
+
+
 def _try_free(messages: list, timeout_s: float = 120.0):
     """Walk the $0 OpenRouter models in order; None if every one is unavailable.
 
     Free models rotate off the free tier without notice and rate-limit hard, so
     this is a list, not a constant -- a 429 on one is not an outage.
     """
-    orkey = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    orkey = _free_lane_key()
     if not orkey:
+        logger.warning("free lane skipped: no OPENROUTER_API_KEY in env or keymaker")
         return None
     raw = os.environ.get("NOUGEN_RHEA_FREE_MODELS", "")
     models = [m.strip() for m in raw.split(",") if m.strip()] or [

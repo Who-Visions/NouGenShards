@@ -87,10 +87,12 @@ def ingest_paper_to_shard(paper: dict[str, Any], vault_dir: Optional[str] = None
     tags = ["arxiv", f"arxiv:{paper['arxiv_id']}", "research", "paper"]
 
     result = shards.capture(
+        event_type="research",
         title=f"arXiv: {paper['title']}",
         content=content,
         tags=tags,
-        vault_dir=vault_dir
+        domain_key="arxiv",
+        source_uri=paper.get("url"),
     )
     # The current core.capture contract returns bool (written vs. deduplicated),
     # while older installations returned a row mapping. Support both shapes.

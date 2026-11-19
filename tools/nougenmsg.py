@@ -70,6 +70,7 @@ Usage:
 
 Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
+  agy msg --capacity                          Inspect lane capacity, usage & status before pushing tasks
   agy msg --inbox [--target <antigravity|codex>] Read recent unread messages in inbox
   agy msg --clear-inbox                       Archive and clear read inbox messages
   agy msg --wake [--timeout <seconds>]        Run autonomous wake sentry (monitors inbox & relay legs)
@@ -433,6 +434,14 @@ def print_inline_banner(title: str, results: Any, message_text: str = "") -> Non
     print(f"{border}\n")
 
 def main():
+    # `--stdin`: read the message body from stdin (multi-line notes survive shells).
+    # Without this the flag itself was sent as the message text.
+    if "--stdin" in sys.argv:
+        body = sys.stdin.read().strip()
+        if not body:
+            print("[ERROR] --stdin given but stdin was empty; nothing sent.", file=sys.stderr)
+            sys.exit(2)
+        sys.argv[sys.argv.index("--stdin")] = body
     if len(sys.argv) < 2 or "--help" in sys.argv or "-h" in sys.argv:
         print_help()
         return
@@ -506,6 +515,41 @@ def main():
         print(f"  • Antigravity Inbox Unread: {peers['antigravity_inbox_unread']} message(s)")
         print(f"  • Codex Inbox Unread:       {peers['codex_inbox_unread']} message(s)")
         print(f"  • Reachable Nodes:          {', '.join(peers['nodes_reachable'])}\n")
+        return
+
+    # Lane Capacity & Usage Status Probe (/status & /usage inspection)
+    if "--capacity" in sys.argv or "--lane-status" in sys.argv or "--lanes" in sys.argv:
+        import glob
+        border = "=" * 76
+        print(f"\n{border}")
+        print("📊  FLEET LANE CAPACITY & TELEMETRY PROBE (Pre-Task Governor)")
+        print(border)
+        
+        # 1. Antigravity (/usage)
+        agy_brains = glob.glob(os.path.expanduser("~/.gemini/antigravity/brain/*"))
+        agy_inbox = glob.glob(os.path.expanduser("~/.nougen/agy_inbox/*.json"))
+        agy_active = len(agy_brains)
+        agy_queue = len(agy_inbox)
+        agy_status = "READY" if agy_queue < 10 else "BUSY"
+        print(f"  • [ANTIGRAVITY]  Telemetry: /usage | Sessions: {agy_active} | Queue: {agy_queue} | Status: {agy_status}")
+        print("    └─ Capacity: High-throughput reasoning & verification engine (Recommended: Architectural/Synthesis tasks)")
+
+        # 2. Claude Code (/usage)
+        claude_projects = os.path.expanduser("~/.claude/projects")
+        claude_projs = len(os.listdir(claude_projects)) if os.path.exists(claude_projects) else 0
+        claude_pipes = peers['claude_active_pipes'] if 'peers' in locals() else NouGenMsgBus.list_peers()['claude_active_pipes']
+        claude_status = "READY" if claude_pipes else "STANDBY"
+        print(f"  • [CLAUDE CODE]  Telemetry: /usage | Active Pipes: {len(claude_pipes)} | Projects: {claude_projs} | Status: {claude_status}")
+        print("    └─ Capacity: High-context strategy & deep refactoring (Recommended: Planning/Review tasks)")
+
+        # 3. OpenAI Codex (/status)
+        codex_inbox = os.path.expanduser("~/.codex/inbox")
+        codex_msgs = glob.glob(os.path.join(codex_inbox, "*.json")) if os.path.exists(codex_inbox) else []
+        codex_status = "READY" if len(codex_msgs) < 20 else "CONGESTED"
+        print(f"  • [CODEX]        Telemetry: /status | Inbound Queue: {len(codex_msgs)} | Status: {codex_status}")
+        print("    └─ Capacity: High-volume deterministic execution (Recommended: Test/Codegen/CI tasks)")
+
+        print(f"{border}\n")
         return
 
     # Inbox reader
@@ -711,12 +755,30 @@ def main():
 
     # Check for @destination token
     raw_text = False
+    multi_target = None  # a lane on several nodes: sent through send_resolved below
     cleaned_args = []
     for a in args:
-        if a.startswith("@") and not node:
-            n, ag = NouGenMsgBus.parse_destination(a)
-            node = n
-            target_agent = ag
+        if a.startswith("@") and not node and not multi_target:
+            from nougen_shards.nougenmsg import target_unknown
+            refusal = target_unknown(a)
+            if refusal:
+                # Resolved from the live table at send time: an unknown name is refused
+                # here, never treated as "everyone on this node".
+                print(f"[!] Not sent: {refusal['error']}")
+                print(f"    Resolvable now: {' '.join(refusal['resolvable'])}")
+                return
+            # The live resolver names the deliveries; the legacy parse read a lane it
+            # did not know as "every agent on this node".
+            from nougen_shards.nougenmsg import resolve_target, _self_node_name
+            resolution = resolve_target(a)
+            if resolution.kind == "group":
+                node, target_agent = "fleet", "all"
+            elif len(resolution.deliveries) == 1:
+                d = resolution.deliveries[0]
+                node = "local" if d.node == _self_node_name() else d.node
+                target_agent = d.lane or d.node
+            else:
+                multi_target = a
         elif a == "--local":
             node = "local"
         elif a == "--raw":
@@ -746,6 +808,10 @@ def main():
     curr = get_current_node()
     if not raw_text:
         text = house_style(text, curr, resolve_agent_label())
+    if multi_target:
+        res = NouGenMsgBus.send_resolved(multi_target, text, origin=origin)
+        print_inline_banner(f"RESOLVED: {curr.upper()} -> {multi_target.upper()}", res, text)
+        return
     if not node or node == "fleet":
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)

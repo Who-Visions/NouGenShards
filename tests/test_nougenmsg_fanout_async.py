@@ -1,3 +1,4 @@
+import pytest
 """emit_fleet(background=True): local delivery now, SSH fan-out in a daemon thread.
 
 Regression for 2026-09-14: the node's nougenmsg tool fanned out to peers one at
@@ -65,5 +66,12 @@ def test_node_tools_request_background_fanout():
     tree = ast.parse(APP.read_text(encoding="utf-8"))
     for name in ("nougenmsg", "fleet_send"):
         fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
-        calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and ast.unparse(c.func).endswith("emit_fleet")]
+        calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and ast.unparse(c.func).endswith(("emit_fleet", "send_resolved"))]
         assert calls and all(any(k.arg == "background" for k in c.keywords) for c in calls), name
+
+
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """These tests assert a three-machine fleet. Declare it here, not in code."""
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "phoebus")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart")

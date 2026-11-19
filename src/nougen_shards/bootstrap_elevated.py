@@ -152,14 +152,40 @@ class ZeroBabysittingBootstrap:
     Orchestrates automated low-friction bootstrap flow for new users and nodes:
     - Environment & space qualification check
     - Auto-provisioning and verifying Ollama
-    - Pulling foundational models: nomic-embed-text (embeddings) & gemma4:e2b (reasoning)
+    - QAT PRIME DIRECTIVE: Pulls Quantization-Aware Trained foundational models:
+      nomic-embed-text (embeddings) & gemma4:e2b-it-qat (reasoning / 4.3GB / 128K context)
     - Safe reversible agent hook installation
     """
 
+    # 🔱 QAT PRIME DIRECTIVE: Prioritize Quantization-Aware Trained (-it-qat) models
+    # over unquantized/FP16 blobs to maximize context (128K), reasoning fidelity, and save VRAM/SSD.
+    QAT_PRIME_DIRECTIVE = {
+        "gemma4:e2b": "gemma4:e2b-it-qat",
+        "gemma4:e4b": "gemma4:e4b-it-qat",
+        "gemma4": "gemma4:e4b-it-qat",
+    }
+
     RECOMMENDED_MODELS = [
         "nomic-embed-text:latest",
-        "gemma4:e2b",
+        "gemma4:e2b-it-qat",
     ]
+
+    @classmethod
+    def resolve_optimal_model_tag(cls, requested_model: str, installed: Optional[List[str]] = None) -> str:
+        """
+        Applies QAT Prime Directive: maps requested model to its optimal QAT variant.
+        If an installed QAT variant is present, return it to prevent duplicate unquantized pulls.
+        """
+        installed = installed or []
+        preferred = cls.QAT_PRIME_DIRECTIVE.get(requested_model, requested_model)
+        if preferred in installed:
+            return preferred
+        # If requested was generic or non-QAT but QAT variant exists locally, use QAT
+        base = requested_model.split(":")[0]
+        for inst in installed:
+            if inst.startswith(base) and "qat" in inst:
+                return inst
+        return preferred
 
     def __init__(
         self,
@@ -274,11 +300,14 @@ class ZeroBabysittingBootstrap:
     def ensure_model_installed(self, model_name: str, timeout_s: float = 300.0) -> Tuple[bool, str]:
         """
         Idempotently pulls the requested model via Ollama HTTP API or CLI if not already present.
+        Enforces QAT Prime Directive by mapping unquantized requests to optimal QAT tags.
         """
         installed = self.list_installed_models()
+        target_model = self.resolve_optimal_model_tag(model_name, installed)
+
         # Check direct or prefix match (e.g., nomic-embed-text matching nomic-embed-text:latest)
-        if self._model_is_installed(model_name, installed):
-            return True, f"Model '{model_name}' is already installed."
+        if self._model_is_installed(target_model, installed):
+            return True, f"Model '{target_model}' is already installed."
 
         parsed_url = urlparse(self.ollama_url)
         hostname = parsed_url.hostname or ""
@@ -287,14 +316,14 @@ class ZeroBabysittingBootstrap:
         except ValueError:
             endpoint_is_loopback = False
         if not endpoint_is_loopback:
-            return False, f"Cannot provision '{model_name}': remote Ollama storage capacity is not measurable here."
+            return False, f"Cannot provision '{target_model}': remote Ollama storage capacity is not measurable here."
 
         if not self.is_ollama_live():
-            return False, f"Cannot pull '{model_name}': Ollama is not running."
+            return False, f"Cannot pull '{target_model}': Ollama is not running."
 
         # Attempt pull via API
         try:
-            payload = json.dumps({"name": model_name, "stream": False}).encode("utf-8")
+            payload = json.dumps({"name": target_model, "stream": False}).encode("utf-8")
             req = urllib.request.Request(
                 f"{self.ollama_url.rstrip('/')}/api/pull",
                 data=payload,
@@ -305,26 +334,26 @@ class ZeroBabysittingBootstrap:
                 if resp.status == 200:
                     payload = json.loads(resp.read().decode("utf-8") or "{}")
                     if payload.get("error"):
-                        return False, f"Ollama pull failed for '{model_name}': {payload['error']}"
-                    if self._model_is_installed(model_name, self.list_installed_models()):
-                        return True, f"Pulled and verified '{model_name}'."
-                    return False, f"Pull returned success but '{model_name}' is absent from Ollama's model list."
+                        return False, f"Ollama pull failed for '{target_model}': {payload['error']}"
+                    if self._model_is_installed(target_model, self.list_installed_models()):
+                        return True, f"Pulled and verified '{target_model}'."
+                    return False, f"Pull returned success but '{target_model}' is absent from Ollama's model list."
         except Exception as e:
             # Fallback to CLI if API stream fails
             ollama_bin = shutil.which("ollama")
             if ollama_bin:
                 try:
-                    res = subprocess.run([ollama_bin, "pull", model_name], capture_output=True, text=True, timeout=timeout_s)
-                    if res.returncode == 0 and self._model_is_installed(model_name, self.list_installed_models()):
-                        return True, f"Pulled and verified '{model_name}' via CLI."
+                    res = subprocess.run([ollama_bin, "pull", target_model], capture_output=True, text=True, timeout=timeout_s)
+                    if res.returncode == 0 and self._model_is_installed(target_model, self.list_installed_models()):
+                        return True, f"Pulled and verified '{target_model}' via CLI."
                     if res.returncode == 0:
-                        return False, f"CLI pull returned success but '{model_name}' is absent from Ollama's model list."
+                        return False, f"CLI pull returned success but '{target_model}' is absent from Ollama's model list."
                     return False, f"CLI pull failed: {res.stderr.strip()}"
                 except Exception as cli_exc:
-                    return False, f"Failed pulling '{model_name}': {cli_exc}"
-            return False, f"Failed pulling '{model_name}' via API: {e}"
+                    return False, f"Failed pulling '{target_model}': {cli_exc}"
+            return False, f"Failed pulling '{target_model}' via API: {e}"
 
-        return False, f"Failed to verify installation of '{model_name}'."
+        return False, f"Failed to verify installation of '{target_model}'."
 
     def autonomous_bootstrap(self, target_workspace: Optional[Path] = None) -> Dict[str, Any]:
         """

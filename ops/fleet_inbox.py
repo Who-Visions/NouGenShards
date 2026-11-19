@@ -73,7 +73,7 @@ def main():
         log(f"!! relay dir not found: {RELAY}")
         return 1
 
-    r = sh("git", "pull", "--ff-only", "--quiet", cwd=RELAY)
+    r = sh("git", "pull", "--ff-only", "--quiet", "origin", "main", cwd=RELAY)
     if r.returncode != 0:
         # A pull failure is worth seeing but is not fatal: local legs still read.
         log(f"!! git pull failed ({r.stderr.strip()[:120]}) — reading local copy")

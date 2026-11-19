@@ -227,3 +227,53 @@ def get_node_centrality(file_hash: str) -> int:
         return 0
     finally:
         conn.close()
+
+
+def shard_bundle(seeds: List[tuple], depth: int = 1, token_budget: int = 4000,
+                 per_node_links: int = 8) -> Dict:
+    """Read-only constellation: seed shards plus their linked neighbourhood, rendered
+    as Markdown under a token budget. Each shard appears once (keyed by file_hash),
+    with provenance (id@db, timestamp, event type) so a caller can cite it.
+
+    seeds: list of (shard_id, db_index). depth: link hops from the seeds (0 = seeds only).
+    The budget is characters/4 (a rough token estimate); nodes past it are listed by
+    id only, so nothing is silently dropped.
+    """
+    seen: Dict[str, Dict] = {}
+    frontier = []
+    for sid, dbi in seeds:
+        sh = core.get_shard_by_id(sid, dbi)
+        if sh is None:
+            continue
+        h = _hash_for(sid, dbi)
+        if h and h not in seen:
+            seen[h] = {**dict(sh), "_db_index": dbi, "_hop": 0}
+            frontier.append((sid, dbi))
+    for hop in range(1, depth + 1):
+        nxt = []
+        for sid, dbi in frontier:
+            for nb in related_shards(sid, dbi, limit=per_node_links):
+                nh = nb.get("file_hash") or _hash_for(nb.get("id"), nb.get("_db_index", dbi))
+                if not nh or nh in seen or isinstance(nb.get("id"), str):
+                    continue
+                seen[nh] = {**nb, "_hop": hop}
+                nxt.append((nb["id"], nb.get("_db_index", dbi)))
+        frontier = nxt
+    ordered = sorted(seen.values(), key=lambda s: (s["_hop"], s.get("timestamp") or ""))
+    lines, spent, omitted = [], 0, []
+    for s in ordered:
+        body = str(s.get("content") or "")
+        head = (f"### {s.get('title') or '(untitled)'}\n"
+                f"- ref: {s.get('id')}@db{s.get('_db_index')} · {s.get('timestamp')} · "
+                f"{s.get('event_type')} · hop {s['_hop']}\n")
+        block = head + body.strip() + chr(10)
+        room = (token_budget - spent) * 4 - len(head) - len(" ...[truncated]") - 2
+        if room <= 0:
+            omitted.append(f"{s.get('id')}@db{s.get('_db_index')}")
+            continue
+        if len(block) // 4 > token_budget - spent:
+            block = head + body.strip()[:room] + chr(32) + "...[truncated]" + chr(10)
+        lines.append(block)
+        spent += len(block) // 4
+    return {"markdown": "\n".join(lines), "included": len(lines),
+            "omitted_refs": omitted, "approx_tokens": spent}

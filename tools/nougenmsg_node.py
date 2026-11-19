@@ -44,12 +44,14 @@ so it needs a supervisor to be a real transport.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
-import uuid
 import os
 import queue
 import socket
+import tempfile
+import threading
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,6 +68,201 @@ DEFAULT_PORT = 8766
 DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
 SENDER_LABEL_CHARS = 64
+# Inbox lanes this receiver accepts with no live session behind them. They are the
+# default for NOUGEN_MSG_LOCAL_LANES (set it to change them); nodes, app lanes and
+# groups are never listed here, they come from the live table at send time.
+_LOCAL_AGENT_TARGETS = frozenset({
+    "antigravity", "agy", "claude", "claude-code", "codex", "codex-cli",
+    "kaedra", "solai", "yukiai", "nobody",
+    "ollama", "openrouter", "agents",
+})
+
+# The bus addresses a model as '<lane>:<model>' ('@ollama:gemma4:e2b-qat'). The part before
+# the colon is a lane on this node, not another node.
+_LOCAL_MODEL_LANES = frozenset({"ollama", "openrouter"})
+
+
+os.environ.setdefault("NOUGEN_MSG_LOCAL_LANES", ",".join(sorted(_LOCAL_AGENT_TARGETS)))
+
+
+def _parse_foreign_target(target: str) -> "tuple[str, str] | None":
+    """Fallback parse for a bare receiver without nougen_shards (see _plan_route).
+
+    Return (dest_node, dest_agent) if target is non-local, or None if local."""
+    raw = str(target or "").strip().lower()
+    if not raw or raw == "all":
+        # Bare "all" is the wire agent target sent by send_direct_http for node-only sends.
+        return None
+    if raw in ("@all", "@fleet", "fleet"):
+        return ("fleet", "all")
+    stripped = raw.lstrip("@")
+    if ":" in stripped:
+        node_part, agent_part = stripped.split(":", 1)
+        node_part = node_part.strip()
+        agent_part = agent_part.strip() or "all"
+        if node_part in _LOCAL_MODEL_LANES:
+            return None
+        if node_part and node_part not in (NODE, "local", "self"):
+            return (node_part, agent_part)
+        return None
+    if stripped in (NODE, "local", "self") or stripped in _LOCAL_AGENT_TARGETS:
+        return None
+    return (stripped, "all")
+
+
+def _plan_route(target: str) -> "tuple[list, bool, dict | None]":
+    """Resolve a target against the live table: (remote routes, deliver here too, refusal).
+
+    A route is (dest_node, dest_agent); the fleet group is the single route
+    ("fleet", "all", [peer, ...]). Every name comes from nougen_shards' resolver, which
+    only picks among registry peers, live lanes and groups; an unknown or unreachable
+    target is a refusal listing what resolves right now, never a broadcast. A bare
+    receiver without the package keeps the old local-only parse.
+    """
+    raw = str(target or "").strip().lower()
+    if not raw or raw == "all":
+        # Bare "all" is the wire agent target send_direct_http uses for node-only sends.
+        return [], True, None
+    try:
+        from nougen_shards import nougenmsg as _bus_mod  # noqa: E402
+        res = _bus_mod.resolve_target(target)
+        here = {NODE, _bus_mod._self_node_name()}
+    except Exception:
+        legacy = _parse_foreign_target(target)
+        return ([legacy] if legacy else []), legacy is None, None
+    if not res.ok:
+        return [], False, {
+            "delivered": False, "routed": False, "status": "not_resolvable",
+            "reason": res.reason, "error": res.error, "node": NODE,
+            "target": str(target)[:80], "resolvable": res.resolvable,
+        }
+    remote = [d for d in res.deliveries if d.node not in here]
+    local = len(remote) < len(res.deliveries)
+    if res.kind == "group" and res.target in ("all", "fleet"):
+        return [("fleet", "all", sorted({d.node for d in remote}))], False, None
+    routes, seen = [], set()
+    for d in remote:
+        route = (d.node, d.lane or "all")
+        if route not in seen:
+            seen.add(route)
+            routes.append(route)
+    return routes, local, None
+
+
+def _note_sender_presence(msg: dict) -> None:
+    """Record which node a sending lane lives on, so '@<lane>' resolves at send time.
+
+    Only for authenticated traffic, only from the envelope's machine and lane (or a
+    'node/lane' sender label), and the store refuses any node outside the registry.
+    """
+    if not AUTH_TOKEN:
+        return
+    try:
+        from nougen_shards.nougenmsg import note_lane_seen  # noqa: E402
+        env = msg.get("origin_envelope") if isinstance(msg.get("origin_envelope"), dict) else {}
+        machine, lane = env.get("machine"), env.get("lane")
+        if not (machine and lane):
+            machine, sep, lane = str(msg.get("sender") or "").partition("/")
+            if not sep:
+                return
+        from nougen_shards.nougenmsg import _registry_node_names  # noqa: E402
+        if str(machine).strip().lower() in _registry_node_names():
+            note_lane_seen(str(lane), str(machine))
+        else:
+            # A connector lane ('chatgpt-app/g-x', 'meta-app') is not a node: it talks to
+            # this node and reads its inbox here, so it is present on THIS node.
+            note_lane_seen(str(machine), NODE)
+    except Exception:
+        pass
+
+
+def _dispatch_routes(msg: dict, routes: list) -> "tuple[int, dict]":
+    """Forward to every resolved route once; one route answers exactly as before."""
+    if len(routes) == 1:
+        return _dispatch_foreign_target(msg, routes[0])
+    results, failed, payload = {}, [], {}
+    for route in routes:
+        status, payload = _dispatch_foreign_target(msg, route)
+        results[route[0]] = payload.get("results", payload.get("error"))
+        if status >= 400:
+            failed.append({"node": route[0], "status": status, "error": payload.get("error")})
+    if len(failed) == len(routes):
+        return 502, {"delivered": False, "routed": False, "status": "route_failed",
+                     "error": "no resolved node accepted the message", "node": NODE,
+                     "target": msg["target"], "message_id": msg["message_id"],
+                     "results": results, "failed": failed}
+    return 200, {"delivered": True, "routed": True, "duplicate": False, "method": "fleet_bus",
+                 "node": NODE, "target": msg["target"], "message_id": msg["message_id"],
+                 "build": build_id(), "results": results, "failed": failed}
+
+
+def _get_fleet_bus():
+    """Return NouGenMsgBus when nougen_shards is importable, else None."""
+    try:
+        from nougen_shards.nougenmsg import NouGenMsgBus  # noqa: E402
+        return NouGenMsgBus
+    except Exception:
+        return None
+
+
+def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
+    """Forward a non-local target via NouGenMsgBus, or refuse with 422 if unavailable."""
+    dest_node, dest_agent = dest[0], dest[1]
+    bus = None if dest_agent.split(":", 1)[0].strip() in _LOCAL_MODEL_LANES else _get_fleet_bus()
+    if bus is None:
+        return 422, {
+            "delivered": False,
+            "routed": False,
+            "status": "not_routed",
+            "error": (
+                "local-only receiver on node '{}' cannot route target '{}' "
+                "(NouGenMsgBus unavailable); use nougenmsg_send"
+            ).format(NODE, msg["target"]),
+            "node": NODE,
+            "target": msg["target"],
+        }
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
+    if dest_node == "fleet":
+        # The peers come from the live table when the resolver supplied them.
+        peers = {"nodes": list(dest[2])} if len(dest) > 2 else {}
+        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True, **peers)
+        return 200, {
+            "delivered": True,
+            "routed": True,
+            "duplicate": False,
+            "method": "fleet_bus",
+            "node": NODE,
+            "target": msg["target"],
+            "message_id": msg["message_id"],
+            "build": build_id(),
+            "results": res,
+        }
+    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin)
+    node_res = res.get(dest_node) if isinstance(res, dict) else res
+    if not res or (isinstance(node_res, str) and node_res.startswith("Error")):
+        return 502, {
+            "delivered": False,
+            "routed": False,
+            "status": "route_failed",
+            "error": node_res or "empty dispatch result",
+            "node": NODE,
+            "target": msg["target"],
+            "message_id": msg["message_id"],
+            "results": res,
+        }
+    return 200, {
+        "delivered": True,
+        "routed": True,
+        "duplicate": False,
+        "method": "fleet_bus",
+        "node": NODE,
+        "target": msg["target"],
+        "message_id": msg["message_id"],
+        "build": build_id(),
+        "results": res,
+    }
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -233,17 +430,165 @@ def _maybe_wake(msg: dict, verdict: dict) -> dict:
 MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
 
+DEDUP_TTL_S = float(os.environ.get("NOUGEN_AGY_MSG_DEDUP_TTL_S", "21600") or 21600)
+SEEN_DIRNAME = ".seen"
+INFLIGHT_GRACE_S = float(os.environ.get("NOUGEN_AGY_MSG_INFLIGHT_GRACE_S", "5") or 5)
+
+
+def derive_message_key(msg: dict) -> str:
+    """A key taken from the event itself, so a retry of the same event has the same key.
+
+    Sender, target, thread and text identify the event. A fresh random key per
+    attempt is what lets a retry look like a new message, so none is generated.
+    The hex digest satisfies MESSAGE_ID_RE, so it is also the message id.
+    """
+    basis = json.dumps([str(msg.get("sender") or ""), str(msg.get("target") or ""),
+                        str(msg.get("in_reply_to") or ""), str(msg.get("type") or ""),
+                        str(msg.get("text") or "")],
+                       ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
+
 def assign_message_id(msg: dict) -> str:
     """Give every message the id cc-msg senders already get back.
 
     A sender-supplied id is kept when it is filename-safe (it rides in the
-    inbox file name); anything else is replaced, never trusted into a path.
+    inbox file name). Otherwise the id is derived from the event, never random
+    and never trusted into a path.
     """
     mid = str(msg.get("message_id") or "")
     if not MESSAGE_ID_RE.match(mid):
-        mid = uuid.uuid4().hex
+        mid = derive_message_key(msg)
     msg["message_id"] = mid
     return mid
+
+
+def seen_marker(key: str) -> Path:
+    """Resolve the dedupe marker for ``key`` inside the seen dir, refusing any escape.
+
+    Same barrier as ``inbox_path``: the name is reduced to its last component,
+    resolved against the seen root, and refused unless it lands under that root.
+    """
+    root = os.path.realpath(os.path.join(str(INBOX), SEEN_DIRNAME))
+    candidate = os.path.realpath(os.path.join(root, os.path.basename("{}.json".format(key))))
+    if not candidate.startswith(root + os.sep):
+        raise ValueError("refusing a dedupe marker outside the seen dir: {!r}".format(key))
+    return Path(candidate)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write to a unique temp file beside the target, then rename over it.
+
+    The temp name is unique per call (two handlers writing the shared STATE file
+    must not share one), and a crash leaves no partial target. On Windows a
+    rename onto a file another handler is replacing can briefly fail, so it is
+    retried a few times.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def claim_message(msg: dict) -> "tuple[bool, dict]":
+    """Set-if-absent on the message key: (True, {}) for the first copy, (False, seen) for a repeat.
+
+    The marker is created with O_EXCL, so two concurrent copies cannot both win.
+    A marker only counts as a completed delivery once it names the inbox file
+    (``note_delivery``). A marker still without a file is an unfinished claim:
+    a copy that finds one waits up to INFLIGHT_GRACE_S for the claimant to
+    finish, and if it never does the claim is taken over and the message is
+    delivered, so a crash between claim and write cannot swallow a retry.
+    A marker older than DEDUP_TTL_S is replaced, so an identical message sent
+    much later is delivered again. A sender who really wants a repeat sets
+    ``allow_duplicate``. If the claim cannot be settled after a few rounds the
+    message is delivered: losing a message is worse than a duplicate.
+    """
+    if msg.get("allow_duplicate") is True:
+        return True, {}
+    (INBOX / SEEN_DIRNAME).mkdir(parents=True, exist_ok=True)
+    marker = seen_marker(msg["message_id"])
+    for _ in range(4):
+        try:
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - marker.stat().st_mtime >= DEDUP_TTL_S:
+                    marker.unlink()
+                    continue
+                seen = _read_marker(marker)
+                deadline = time.time() + INFLIGHT_GRACE_S
+                while seen is not None and not _is_completed_marker(seen) and time.time() < deadline:
+                    time.sleep(0.05)
+                    seen = _read_marker(marker)
+                if seen is not None and _is_completed_marker(seen):
+                    return False, seen  # a completed delivery
+                if seen is not None:
+                    marker.unlink()  # unfinished past the grace: take the claim over
+            except FileNotFoundError:
+                pass  # released or taken over under us: claim again
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"message_id": msg["message_id"], "file": None}))
+        return True, {}
+    return True, {}
+
+
+def _read_marker(marker: Path) -> "dict | None":
+    """The marker's content, {} while it is still empty, None once it is gone."""
+    try:
+        return json.loads(marker.read_text(encoding="utf-8") or "{}")
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return {}
+
+
+def _is_completed_marker(seen: dict) -> bool:
+    """Return True when a dedup marker represents a finished local or routed delivery."""
+    return bool(seen.get("file") or seen.get("routed"))
+
+
+def release_claim(msg: dict) -> None:
+    """Drop an unfinished claim after a failed delivery so the sender's retry is delivered."""
+    marker = seen_marker(msg["message_id"])
+    seen = _read_marker(marker)
+    if seen is not None and not _is_completed_marker(seen):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def note_delivery(msg: dict, path: Path) -> None:
+    """Record which inbox file carries this key, so a repeat can point at it."""
+    marker = seen_marker(msg["message_id"])
+    if marker.exists():
+        _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": path.name,
+                                          "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
+
+
+def note_routed_delivery(msg: dict, target: str) -> None:
+    """Record a completed cross-node/fleet forward so retries do not re-forward."""
+    marker = seen_marker(msg["message_id"])
+    if marker.exists():
+        _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": None,
+                                          "routed": True, "target": target,
+                                          "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
 
 
 def receipt_state(message_id: str) -> dict:
@@ -275,13 +620,232 @@ def record(msg: dict) -> Path:
     filename = "msg_{}_{}_{}.json".format(int(time.time() * 1000), msg["message_id"],
                                           safe_sender(msg.get("sender")))
     path = inbox_path(filename)
-    path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
-    STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
+    _atomic_write(path, json.dumps(msg, indent=2))
+    _atomic_write(STATE, json.dumps(msg, indent=2))
     PENDING.put(msg)
     stamp = format_log_time(time.time())
     print("\n[LIVE INCOMING MSG] ({}) from [{}]:\n   {}\n".format(
         stamp, msg.get("sender"), str(msg.get("text", ""))[:PREVIEW_CHARS]), flush=True)
     return path
+
+
+MAX_INFLIGHT = int(os.environ.get("NOUGEN_AGY_MSG_MAX_INFLIGHT", "16") or 16)
+
+
+# Elevated delivery runs after the reply, on one worker thread. Its Kaedra gate is a
+# local model call, and on a CPU-only node (phoebus: kaedracode:e2b at ~8 tok/s) one
+# verdict outlasts a sender's 10 s peer timeout. Waiting for it before answering made
+# every authenticated send look failed although the inbox file was already written.
+# The outcome is kept for the authenticated receipt (GET /msg/<id>) instead.
+ELEVATED_QUEUE_MAX = int(os.environ.get("NOUGEN_AGY_MSG_ELEVATED_QUEUE", "64") or 64)
+ELEVATED_KEEP = 256  # outcomes remembered for receipts, oldest dropped first
+_ELEVATED: "queue.Queue" = queue.Queue(maxsize=max(1, ELEVATED_QUEUE_MAX))
+_ELEVATED_RESULTS: "dict" = {}
+_ELEVATED_LOCK = threading.Lock()
+_elevated_worker_started = False
+
+
+def _note_elevated(message_id: str, outcome: dict) -> None:
+    with _ELEVATED_LOCK:
+        _ELEVATED_RESULTS.pop(message_id, None)
+        _ELEVATED_RESULTS[message_id] = outcome
+        while len(_ELEVATED_RESULTS) > ELEVATED_KEEP:
+            _ELEVATED_RESULTS.pop(next(iter(_ELEVATED_RESULTS)))
+
+
+def elevated_state(message_id: str) -> "dict | None":
+    with _ELEVATED_LOCK:
+        outcome = _ELEVATED_RESULTS.get(message_id)
+        return dict(outcome) if outcome is not None else None
+
+
+def _run_elevated(msg: dict) -> None:
+    try:
+        verdict = gate_and_deliver(
+            str(msg.get("text", "")), str(msg.get("sender", "unknown")),
+            message_id=msg.get("message_id"),  # honored if the sender provides one
+            origin=str(msg.get("origin", "peer")),
+            origin_proof=msg.get("origin_proof"))
+        # Waking STARTS an agent where delivery only reaches one that is
+        # already live, so it runs strictly after the same gates and only
+        # on their approval. Never reachable for an unapproved message,
+        # and never switched on by anything in the message itself: see
+        # tools/wake for why availability is discovered, not configured.
+        verdict["wake"] = _maybe_wake(msg, verdict)
+        outcome = {"state": "done", **verdict}
+    except Exception as exc:  # a failed gate must not kill the worker
+        outcome = {"state": "error", "attempted": True, "error": "{}: {}".format(type(exc).__name__, exc)}
+    _note_elevated(msg["message_id"], outcome)
+
+
+def _elevated_worker() -> None:
+    while True:
+        msg = _ELEVATED.get()
+        try:
+            _run_elevated(msg)
+        finally:
+            _ELEVATED.task_done()
+
+
+def queue_elevated(msg: dict) -> dict:
+    """Hand a recorded message to the elevated worker; returns what the sender is told."""
+    global _elevated_worker_started
+    with _ELEVATED_LOCK:
+        if not _elevated_worker_started:
+            threading.Thread(target=_elevated_worker, name="elevated-delivery", daemon=True).start()
+            _elevated_worker_started = True
+    outcome = {"state": "pending", "attempted": True}
+    _note_elevated(msg["message_id"], outcome)
+    try:
+        _ELEVATED.put_nowait(dict(msg))
+    except queue.Full:
+        outcome = {"state": "skipped", "attempted": False,
+                   "reason": "elevated queue full; the inbox file was written"}
+        _note_elevated(msg["message_id"], outcome)
+        return outcome
+    return outcome
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent handlers.
+
+    A burst of POST /msg used to spawn one thread per connection without limit,
+    which can pin the node. Past the cap the server answers 503 at once and
+    closes the socket, so the sender retries instead of queuing forever.
+    """
+    daemon_threads = True
+
+    def __init__(self, *args, max_inflight: int = MAX_INFLIGHT, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(max(1, int(max_inflight)))
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            # Reject off the accept loop: a silent client must not stall it.
+            threading.Thread(target=self._reject_overload, args=(request,), daemon=True).start()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def _reject_overload(self, request):
+        try:
+            # Drain the request first: closing with unread bytes resets the
+            # socket before the client can read the 503.
+            request.settimeout(1)
+            request.recv(65536)
+            request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                            b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+# A person or agent who opens the node's address in a browser gets usage, not a JSON
+# blob or a 404. No secrets and no traffic data: only how to send and where the token lives.
+def wants_html(accept):
+    """True when the Accept header prefers HTML over JSON for the help page.
+
+    Media types are case-insensitive and a q=0 range is an explicit refusal, so this
+    parses the ranges instead of looking for a substring. text/html (or text/*) must
+    carry a weight above zero and at least that of application/json; */* alone or
+    a missing header keeps the JSON status that probes and scripts expect.
+    """
+    if not isinstance(accept, str):
+        return False
+    weights = {}
+    for part in accept.split(","):
+        bits = [b.strip() for b in part.split(";")]
+        media = bits[0].lower()
+        if not media:
+            continue
+        q = 1.0
+        for b in bits[1:]:
+            k, _, v = b.partition("=")
+            if k.strip().lower() == "q":
+                try:
+                    q = max(0.0, min(1.0, float(v)))
+                except ValueError:
+                    q = 0.0
+        weights[media] = max(q, weights.get(media, 0.0))
+    html_q = weights.get("text/html", weights.get("text/*", 0.0))
+    json_q = weights.get("application/json", weights.get("application/*", 0.0))
+    return html_q > 0 and html_q >= json_q
+
+
+# The page's curl examples carry $NOUGEN_AGY_MSG_TOKEN, so the origin they point at must
+# be one we serve: never echo a visitor-supplied Host such as localhost.attacker.example.
+_HELP_PUBLIC_HOSTS = frozenset({"msgs.nougenai.com", "phoebus.nougenai.com"})
+_HELP_LOOPBACK = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?$")
+
+
+def _help_origin(host):
+    """(scheme, host) for the page's examples: a known public host over https, an exact
+    loopback address over http, otherwise the canonical front door."""
+    if isinstance(host, str):
+        h = host.strip().lower()
+        if h in _HELP_PUBLIC_HOSTS:
+            return "https", h
+        if _HELP_LOOPBACK.match(h):
+            return "http", h
+    return "https", "msgs.nougenai.com"
+
+
+def help_page(host, pending):
+    """The usage page, written for the address the visitor actually opened, when that
+    address is one of ours; anything else gets the canonical front door."""
+    scheme, host = _help_origin(host)
+    base = "{}://{}".format(scheme, host)
+    page = _help_template() or HELP_PAGE.replace("https://msgs.nougenai.com", "{{BASE}}")
+    return (page.replace("{{BASE}}", base)
+            .replace("{{NODE}}", html.escape(str(NODE)))
+            .replace("{{PENDING}}", str(int(pending))))
+
+
+# The designed page (NouGenDesign nougen-core, Stitch reference, built by Antigravity) lives
+# next to this file. Read per request so a design change needs no restart; the inline page
+# below is the fallback when the file is missing or unreadable.
+_HELP_FILE = Path(__file__).with_name("nougenmsg_help.html")
+
+
+def _help_template():
+    try:
+        return _HELP_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+HELP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>NouGenMsg</title>
+<style>body{background:#0d1117;color:#e6edf3;font:16px/1.55 system-ui,sans-serif;margin:0;
+display:flex;justify-content:center}main{max-width:40rem;padding:2rem 1rem}
+code,pre{background:#161b22;border:1px solid #30363d;border-radius:6px}
+code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</style></head>
+<body><main><h1>NouGenMsg</h1>
+<p>The NouGen message bus on node {{NODE}}. Send a message to its sessions, then read the delivery receipt.</p>
+<p><span style="color:#3fb950">&#9679;</span> Online: node <code>{{NODE}}</code>, {{PENDING}} message(s) waiting for pickup.</p>
+<h2>Send</h2>
+<pre>curl -X POST https://msgs.nougenai.com/msg \\
+  -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \\
+  -H "content-type: application/json" \\
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"{{NODE}}"}'</pre>
+<p>The reply carries a <code>message_id</code>.</p>
+<h2>Receipt</h2>
+<pre>curl https://msgs.nougenai.com/msg/&lt;message_id&gt; -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN"</pre>
+<h2>Notes</h2><ul>
+<li>The token is the Keymaker key <code>NOUGEN_AGY_MSG_TOKEN</code>. Never paste it into a chat, a leg or a shard.</li>
+<li>This address delivers on node <code>{{NODE}}</code> only. For another node or <code>@all</code>, use the NouGen connector&#39;s <code>nougenmsg_send</code> tool.</li>
+<li>Inside a Claude app, the NouGen connector's <code>nougenmsg_send</code> tool does the same without a token.</li>
+<li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -294,6 +858,15 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, page: str, code: int = 200) -> None:
+        body = page.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -345,14 +918,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self._route()
-        if route in ("/status", "/health", "/"):
+        if route == "/" and wants_html(self.headers.get("Accept")):
+            self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
+        elif route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
         elif route.startswith("/msg/"):
             if self._reject_unauthorized():   # receipts reveal traffic: same gate as /pop
                 return
-            self._send(receipt_state(route[len("/msg/"):]))
+            message_id = route[len("/msg/"):]
+            state = receipt_state(message_id)
+            elevated = elevated_state(message_id)
+            if elevated is not None:
+                state["elevated"] = elevated
+            self._send(state)
         elif route == "/pop":
             if self._reject_unauthorized():   # /pop MUTATES: read-and-destroy
                 return
@@ -385,29 +965,69 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
+        routes, deliver_here, refusal = _plan_route(str(msg["target"]))
+        if refusal is not None:
+            # Unknown or unreachable: say so and list what resolves now. Nothing is
+            # claimed, recorded or broadcast for a target nobody would receive.
+            self._send(refusal, 422)
+            return
+        _note_sender_presence(msg)
         assign_message_id(msg)
-        path = record(msg)  # inbox write always happens — covers a session that's asleep
+        first, seen = claim_message(msg)
+        if not first:
+            # Same event again (a retry, or a sender that re-sends): acknowledge with
+            # the original delivery and do nothing else, so a retry is always safe.
+            dup = {"delivered": True, "duplicate": True,
+                   "method": "fleet_bus" if seen.get("routed") else "http",
+                   "node": NODE, "file": seen.get("file"), "message_id": msg["message_id"],
+                   "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}}
+            if seen.get("routed"):
+                dup["routed"] = True
+            else:
+                dup["receipt"] = "/msg/{}".format(msg["message_id"])
+            self._send(dup)
+            return
+        if routes and not deliver_here:
+            try:
+                status, payload = _dispatch_routes(msg, routes)
+            except Exception:
+                release_claim(msg)
+                raise
+            if status >= 400:
+                release_claim(msg)
+            else:
+                note_routed_delivery(msg, str(msg["target"]))
+            self._send(payload, status)
+            return
+        try:
+            path = record(msg)  # inbox write always happens — covers a session that's asleep
+        except Exception:
+            release_claim(msg)  # nothing was delivered, so the retry must not look like a repeat
+            raise
+        note_delivery(msg, path)
 
         elevated = {"attempted": False}
         if AUTH_TOKEN:  # opting into auth is opting into the elevated pathway
-            elevated = gate_and_deliver(
-                str(msg.get("text", "")), str(msg.get("sender", "unknown")),
-                message_id=msg.get("message_id"),  # honored if the sender provides one
-                origin=str(msg.get("origin", "peer")),
-                origin_proof=msg.get("origin_proof"))
-            # Waking STARTS an agent where delivery only reaches one that is
-            # already live, so it runs strictly after the same gates and only
-            # on their approval. Never reachable for an unapproved message,
-            # and never switched on by anything in the message itself: see
-            # tools/wake for why availability is discovered, not configured.
-            elevated["wake"] = _maybe_wake(msg, elevated)
+            elevated = queue_elevated(msg)  # gated and delivered after this reply
 
         # build id rides the AUTHENTICATED response only. /status is open for
         # liveness, and telling an anonymous LAN caller exactly which build a
         # node runs is a rung toward choosing an exploit against a node it can
         # already reach — not a secret, but not free either. A checker holding
         # the token gets it cheaply; a scanner does not.
-        self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
+        also = {}
+        if routes:
+            # A lane hosted here and on other nodes: delivered here above, and once to
+            # each other node. A peer that refuses is reported, not hidden.
+            try:
+                status, routed = _dispatch_routes(msg, routes)
+            except Exception as exc:
+                status, routed = 502, {"error": str(exc)}
+            also = {"routed": status < 400, "routes": routed.get("results"),
+                    "failed": routed.get("failed") or ([routed.get("error")] if status >= 400 else [])}
+
+        self._send({"delivered": True, "duplicate": False, "method": "http", "node": NODE, **also,
+                    "file": path.name,
                     "message_id": msg["message_id"], "in_reply_to": msg.get("in_reply_to"),
                     "receipt": "/msg/{}".format(msg["message_id"]),
                     "build": build_id(),
@@ -439,8 +1059,7 @@ def main() -> int:
         flush=True)
     ok, detail = registry_parity_ok()
     print("[nougenmsg_node] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
-    server = ThreadingHTTPServer((bind, port), Handler)
-    server.daemon_threads = True
+    server = BoundedThreadingHTTPServer((bind, port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

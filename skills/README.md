@@ -48,6 +48,7 @@ one costs a moment's reading.
 ## Installed
 
 - **`nougen-loop/`** - run one deterministic finish-a-change loop (recall, test, secret scan, commit named paths, PR, shard, dream, evolve ledger, handoff). Dry run by default. Tool: `tools/nougen_loop.py`.
+- **`nougen-iterate/`** - discipline for repeated "make it better" loops: GM vision + rubric, research each round, regression gate, null/subtractive rounds allowed, plateau stop, cheap rung iterates / expensive rung judges. Go checker: `skills/nougen-iterate/check`.
 - **`design/`** — author, audit and emit design systems as portable `DESIGN.md` packages.
   Includes a validator with quality gates and three reference brand packages. Start from
   `design/brands/_template/`, not from one of the branded packages.
@@ -58,6 +59,8 @@ one costs a moment's reading.
 - **`nougen-ctx/`** — enforce NouGen Rule 0.0 & Context Mode. Use context-mode tools
   (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, `ctx_search`, `ctx_index`)
   instead of raw terminal output to save 98% context window.
+- **`ghidra/`** — use NSA Ghidra directly or through REA when the target and provider
+  support it; check the provider contract and preserve evidence coordinates.
 
 ## Writing one
 

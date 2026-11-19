@@ -23,6 +23,27 @@ class DesignTests(unittest.TestCase):
         self.spec['themes']['light']['--text'] = '#f5f1e8'
         self.assertFalse(design.lint(self.spec)['passed'])
 
+    def test_named_colorway_themes(self):
+        self.spec['themes']['arcade'] = {'--bg': '#17102a'}
+        self.assertEqual(design.validate(self.spec), [])
+        self.spec['themes']['Bad Name'] = {}
+        self.assertTrue(any('invalid theme' in error for error in design.validate(self.spec)))
+
+    def test_default_theme_name_reserved_and_cannot_mask_base_contrast(self):
+        self.spec['tokens']['--text'] = self.spec['tokens']['--bg']
+        self.spec['themes'] = {'default': {'--text': '#f2eee6'}}
+        self.assertTrue(any('invalid theme: default' in error for error in design.validate(self.spec)))
+        result = design.lint(self.spec)
+        self.assertFalse(result['passed'])
+        self.assertTrue(any(error.startswith('default: --text/--bg') for error in result['errors']))
+
+    def test_mono_violet_colorways_pass_contrast_and_match_outputs(self):
+        spec = json.loads((ROOT / 'designs/mono-violet/design.json').read_text())
+        self.assertEqual(sorted(spec['themes']), ['arcade', 'dark', 'hardcade', 'light'])
+        self.assertTrue(design.lint(spec)['passed'])
+        for name, body in design.render(spec).items():
+            self.assertEqual(body, (ROOT / 'designs/mono-violet' / name).read_text())
+
     def test_missing_section_and_css_injection(self):
         del self.spec['density']
         self.spec['tokens']['--bg'] = '#fff; } body { display:none'
@@ -45,6 +66,14 @@ class DesignTests(unittest.TestCase):
 
     def test_real_ui_passes_measured_gate(self):
         self.assertTrue(design.lint(self.spec, (ROOT / 'ui/src/styles.css').read_text())['passed'])
+
+    def test_join_worker_styles_pass_gate_and_match_generated_design(self):
+        join_css = (ROOT / 'workers/join/styles.css').read_text(encoding='utf-8')
+        compiled = design.compile_inline_css(self.spec, join_css)
+        report = design.lint(self.spec, compiled)
+        self.assertTrue(report['passed'], report['errors'])
+        worker_text = (ROOT / 'workers/join/worker.js').read_text(encoding='utf-8')
+        self.assertEqual(worker_text, design.sync_join_worker(self.spec, join_css, worker_text))
 
     def test_analysis_draft_is_deterministic_and_reports_measured_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,6 +109,37 @@ a:focus-visible { outline: 2px solid orange; }
             self.assertIn('Keep the interface calm', files['DESIGN.md'])
             self.assertIn('gradient', files['mutations.json'])
             self.assertIn('linear-gradient', css.read_text())
+    def test_check_reads_artifacts_as_utf8_regardless_of_platform_encoding(self):
+        """sakura-bloom (non-ASCII prose) reported manifest.json stale on Windows
+        right after a fresh compile: artifacts are written as UTF-8 but were read
+        back with the platform default (cp1252), so the comparison never matched."""
+        import contextlib
+        import io
+        import locale
+        import sys
+        from unittest import mock
+        spec = dict(self.spec)
+        spec['description'] = 'Sakura Shōten — café surfaces'
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'pkg'
+            out.mkdir()
+            spec_path = Path(directory) / 'design.json'
+            spec_path.write_text(json.dumps(spec), encoding='utf-8')
+            for name, body in design.render(spec).items():
+                (out / name).write_text(body, encoding='utf-8', newline='\n')
+            printed = io.StringIO()
+            patches = [mock.patch.object(sys, 'argv', ['nougendesigns.py', 'check', str(spec_path), str(out)]),
+                       mock.patch.object(locale, 'getpreferredencoding', lambda do_setlocale=True: 'cp1252')]
+            if hasattr(locale, 'getencoding'):
+                patches.append(mock.patch.object(locale, 'getencoding', lambda: 'cp1252'))
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                with contextlib.redirect_stdout(printed):
+                    code = design.main()
+            self.assertEqual(code, 0, printed.getvalue())
+            self.assertIn('"passed": true', printed.getvalue().replace('"passed":true', '"passed": true'))
+
 
 if __name__ == '__main__':
     unittest.main()

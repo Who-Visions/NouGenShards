@@ -139,3 +139,41 @@ def test_vault_connection_honors_delete_journal_mode(vault, monkeypatch):
         assert str(row[0]).upper() == "DELETE"
     finally:
         conn.close()
+
+
+def test_clean_check_is_remembered_and_skipped_inside_window(vault, monkeypatch):
+    """quick_check is O(file size): a node restarting several times an hour must not
+    re-read the whole grid every boot (741s over 12 GB on 2026-11-12)."""
+    _make_healthy(1)
+    calls = []
+    real_connect = core.sqlite3.connect
+
+    def counting_connect(*a, **kw):
+        calls.append(a[0] if a else kw.get("database"))
+        return real_connect(*a, **kw)
+
+    assert core.quarantine_malformed_dbs() == []
+    monkeypatch.setattr(core.sqlite3, "connect", counting_connect)
+    assert core.quarantine_malformed_dbs() == []
+    assert not [c for c in calls if str(c) == str(core.get_db_path(1))], "re-checked a fresh clean DB"
+
+
+def test_recheck_window_zero_checks_every_boot(vault, monkeypatch):
+    _make_healthy(1)
+    assert core.quarantine_malformed_dbs() == []
+    monkeypatch.setenv("NOUGEN_QUARANTINE_RECHECK_HOURS", "0")
+    bad = core.get_db_path(1)
+    core._INITIALIZED_DBS.clear()
+    bad.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+    moved = core.quarantine_malformed_dbs()
+    assert [q["index"] for q in moved] == [1]
+
+
+def test_expired_clean_check_is_rechecked(vault, monkeypatch):
+    import json
+    _make_healthy(1)
+    path = core.get_db_path(1)
+    core._quarantine_state_path().write_text(json.dumps({str(path): 0}), encoding="utf-8")
+    core._INITIALIZED_DBS.clear()
+    path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+    assert [q["index"] for q in core.quarantine_malformed_dbs()] == [1]

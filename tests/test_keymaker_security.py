@@ -13,8 +13,10 @@ import pytest
 
 
 @pytest.fixture
-def km(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
+def km(tmp_path, monkeypatch, dpapi_stand_in):
+    vault_dir = tmp_path / "vault"
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(vault_dir))
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_dir))
     monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
     # The escape hatch only applies when `import keyring` fails. CI has no
     # keyring, but a macOS dev box does, so `_protect` wrote these fixtures
@@ -23,6 +25,8 @@ def km(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", None)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
+    dpapi_stand_in(keymaker)
+    keymaker._PROBE_CACHE.clear()
     yield keymaker
 
 
@@ -110,7 +114,7 @@ class _FakeKeyring:
 
 
 @pytest.fixture
-def km_keyring(tmp_path, monkeypatch):
+def km_keyring(tmp_path, monkeypatch, dpapi_stand_in):
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.delenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", raising=False)
     monkeypatch.setenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1")  # headless: reads use the cache only
@@ -118,6 +122,7 @@ def km_keyring(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", fake)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
+    dpapi_stand_in(keymaker)
     monkeypatch.setattr(keymaker, "_KEYRING_CACHE_FILE", tmp_path / "keyring_cache.json")
     yield keymaker, fake
 
@@ -141,3 +146,90 @@ def test_csv_export_survives_an_unreadable_row(km_keyring):
     conn.commit(); conn.close()
     km.ingest_secret("ANOTHER_KEY", "also-fine")  # used to raise AttributeError in _export_to_csv
     assert km.get_secret("ANOTHER_KEY") == "also-fine"
+
+
+def test_hf_token_nougenai_alias_resolution(km):
+    km.init_vault()
+    # Ingest under canonical full key name
+    km.ingest_secret("HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "hf_test_token_secret_123")
+    
+    # Must resolve via HF_TOKEN, HF_TOKEN_NOUGENAI, HUGGINGFACE_API_KEY, and HUGGINGFACE_API_TOKEN
+    assert km.get_secret("HF_TOKEN_NOUGENAI") == "hf_test_token_secret_123"
+    assert km.get_secret("HF_TOKEN") == "hf_test_token_secret_123"
+    assert km.get_secret("HUGGINGFACE_API_KEY") == "hf_test_token_secret_123"
+    assert km.get_secret("HUGGINGFACE_API_TOKEN") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HF_TOKEN_NOUGENAI") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HF_TOKEN") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HUGGINGFACE_API_KEY") == "hf_test_token_secret_123"
+
+
+# Names the connectors interpolate into SQL. Each must be refused at
+# registration, not stored and then silently skipped on every read.
+_BAD_IDENTIFIERS = ['a"b', 'x; DROP TABLE secrets', 'ok\n', '1abc', 'a b', '', None]
+
+
+@pytest.mark.parametrize("bad", _BAD_IDENTIFIERS)
+@pytest.mark.parametrize("field", ["table_name", "title_col", "content_col"])
+def test_register_external_db_rejects_unsafe_identifier(km, field, bad):
+    names = {"table_name": "tbl", "title_col": "t", "content_col": "c", field: bad}
+    with pytest.raises(ValueError, match=field):
+        km.register_external_db("postgres://u:pass@host:5432/db", **names)
+    assert km.list_external_dbs() == []
+
+
+@pytest.mark.parametrize("bad", _BAD_IDENTIFIERS)
+@pytest.mark.parametrize("field", ["table_name", "title_col", "content_col"])
+def test_register_local_vault_rejects_unsafe_identifier(km, tmp_path, field, bad):
+    names = {"table_name": "shards", "title_col": "title", "content_col": "content", field: bad}
+    with pytest.raises(ValueError, match=field):
+        km.register_local_vault(str(tmp_path / "v.db"), **names)
+    assert km.list_local_vaults() == []
+
+
+@pytest.mark.xfail(strict=True, raises=sqlite3.OperationalError, reason=(
+    "pre-existing: init_vault() creates local_vaults with last_connected and no "
+    "UNIQUE(path)/registered_at, so register_local_vault's CREATE IF NOT EXISTS is "
+    "a no-op and its INSERT ... registered_at ... ON CONFLICT(path) fails. Needs a "
+    "schema migration; remove this marker when that lands."))
+def test_register_local_vault_accepts_plain_identifiers(km, tmp_path):
+    km.register_local_vault(str(tmp_path / "v.db"), "shards", "title", "_content2")
+    rows = km.list_local_vaults()
+    assert [(r["table_name"], r["title_col"], r["content_col"]) for r in rows] == [
+        ("shards", "title", "_content2")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="DPAPI is available on Windows")
+def test_dpapi_row_off_windows_does_not_break_ingest(km):
+    # A Windows-synced DPAPI row in a POSIX vault must read as unreadable in the
+    # audit ledger, not crash ingest_secret after the new row was committed.
+    import base64
+    km.init_vault()
+    blob = km._DPAPI_PREFIX + base64.b64encode(km._DPAPI_MAGIC + b"\x00" * 24).decode()
+    conn = sqlite3.connect(str(km.DB_PATH))
+    conn.execute("INSERT INTO secrets (secret_key, secret_value, last_rotated) VALUES (?, ?, ?)",
+                 ("WINDOWS_ROW", blob, "2026-01-01 00:00:00"))
+    conn.commit()
+    conn.close()
+    km.ingest_secret("NEW_KEY", "new-value")
+    assert km.get_secret("NEW_KEY") == "new-value"
+    with pytest.raises(OSError):
+        km._unprotect(blob)
+    ledger = open(km.CSV_PATH, encoding="utf-8").read()
+    assert "WINDOWS_ROW" in ledger and "unreadable" in ledger
+
+
+def test_blank_ingest_is_refused_and_keeps_the_good_value(km):
+    km.ingest_secret("NGS_TEST_TOKEN", "good-value-123")
+    assert km.ingest_secret("NGS_TEST_TOKEN", "   ") is False
+    assert km.ingest_secret("NGS_TEST_TOKEN", "") is False
+    assert km._read_secret_row(km.db_path(), "NGS_TEST_TOKEN") == "good-value-123"
+
+
+def test_blank_keyring_cache_entry_is_a_miss(km, monkeypatch):
+    monkeypatch.setenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1")
+    km._KEYRING_CACHE.clear()
+    km._KEYRING_CACHE["SOME_REF"] = ""
+    km._KEYRING_CACHE["OTHER_REF"] = "cached"
+    assert km._keyring_get("SOME_REF") is None
+    assert km._keyring_get("OTHER_REF") == "cached"
+    km._KEYRING_CACHE.clear()

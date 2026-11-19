@@ -202,12 +202,14 @@ def recall_shards(query: str, limit: int = 5) -> list:
             # Try FTS5 first if available
             fts_matched = False
             try:
+                escaped_query = query.replace('"', '""')
+                fts_expr = " OR ".join(f'"{t}"' for t in terms) if terms else f'"{escaped_query}"'
                 cur.execute("""
                     SELECT s.id, s.title, s.domain_key, s.tags, s.content
                     FROM shards_fts f JOIN shards s ON s.id = f.rowid
                     WHERE shards_fts MATCH ?
                     LIMIT ?
-                """, (query, limit))
+                """, (fts_expr, limit))
                 rows = cur.fetchall()
                 if rows:
                     fts_matched = True

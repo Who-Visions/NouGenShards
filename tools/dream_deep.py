@@ -28,6 +28,9 @@ os.environ.setdefault(
 import nougen_shards.core as core
 import nougen_shards.dream as dream_mod
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model_route  # noqa: E402
+
 OLLAMA_URL = os.environ.get("NOUGEN_OLLAMA_URL", "http://127.0.0.1:11434")
 SFT_TOP = int(os.environ.get("NOUGEN_DEEP_SFT_TOP", "200"))
 INV_TOP = int(os.environ.get("NOUGEN_DEEP_INV_TOP", "60"))
@@ -48,28 +51,21 @@ def _resolve_volume_model():
     try:
         models = _models()
         prefs = tuple(m.strip() for m in os.environ.get(
-            "NOUGEN_DREAM_LOCAL_PREFS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b").split(",") if m.strip())
+            "NOUGEN_DREAM_LOCAL_PREFS", "gemma4:e2b-it-qat,gemma4:e4b-it-qat").split(",") if m.strip())
         for pref in prefs:
             if pref in models:
                 return pref
+        # Ollama cloud models are paid since 2026-11-18: never auto-selected.
         gemma = sorted(m for m in models if "gemma" in m.lower() and "cloud" not in m.lower())
         if gemma:
             return gemma[0]
-        gemma_any = sorted(m for m in models if "gemma" in m.lower())
-        if gemma_any:
-            return gemma_any[-1]
     except Exception as e:
         print(f"volume-model probe failed: {e}", file=sys.stderr)
-    return os.environ.get("NOUGEN_FALLBACK_MODEL", "gemma4:31b-cloud")
+    return os.environ.get("NOUGEN_FALLBACK_MODEL", model_route.NVIDIA_DEFAULT)
 
 
 def chat(model, prompt):
-    payload = json.dumps({"model": model, "stream": False,
-                          "messages": [{"role": "user", "content": prompt}]}).encode()
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=payload, method="POST",
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=CALL_TIMEOUT) as r:
-        return json.loads(r.read())["message"]["content"]
+    return model_route.chat(model, prompt, OLLAMA_URL, timeout=CALL_TIMEOUT)
 
 
 def parse_json_array(text):
@@ -135,13 +131,7 @@ def upsert_invariants(invs, domain_key, db_index=1):
     n = 0
     try:
         for inv in invs:
-            conn.execute("""
-                INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(subject, predicate) DO UPDATE SET
-                    confidence_score = confidence_score + 0.1,
-                    updated_at = excluded.updated_at
-            """, (inv["subject"].strip(), inv["predicate"].strip(), domain_key, ts))
+            dream_mod.upsert_semantic_rule(conn, inv["subject"].strip(), inv["predicate"].strip(), domain_key, ts)
             n += 1
         conn.commit()
     finally:
@@ -163,7 +153,8 @@ def main():
 
     picks = [] if args.skip_picks else load_digest_picks(vault)
     top_shards = [
-        {"title": s["title"], "content": (s["content"] or "")[:CONTENT_CAP], "source": f"db:{s['id']}"}
+        {"title": s["title"], "content": (s["content"] or "")[:CONTENT_CAP], "source": f"db:{s['id']}",
+         "db_index": s.get("_db_index"), "shard_key": f"db{s.get('_db_index')}:{s['id']}"}
         for s in dream_mod.fetch_high_utility_shards(limit=args.sft_top)
         if s.get("content")
     ]

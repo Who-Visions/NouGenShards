@@ -46,18 +46,66 @@ MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
 TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))
 
 
+def resolve_agent(explicit: Optional[str] = None) -> str:
+    """Dynamically resolve active agent identity from argument, override, or environment."""
+    if explicit:
+        return explicit
+    val = globals().get("AGENT")
+    if val and val != "antigravity":
+        return val
+    return os.environ.get("NOUGEN_AGENT") or os.environ.get("AGENT") or val or "antigravity"
+
+
+def resolve_machine(explicit: Optional[str] = None) -> str:
+    """Dynamically resolve active node machine name from argument, environment, or system."""
+    if explicit:
+        return explicit.lower()
+    env_node = os.environ.get("NOUGEN_NODE") or os.environ.get("NOUGEN_MACHINE")
+    if env_node:
+        return env_node.lower()
+    val = globals().get("MACHINE")
+    if val:
+        return str(val).lower()
+    return (os.environ.get("COMPUTERNAME") or socket.gethostname()).lower()
+
+
+def resolve_ttl_hours(explicit: Optional[float] = None) -> float:
+    """Dynamically resolve claim TTL hours from argument, environment, or default."""
+    if explicit is not None:
+        return float(explicit)
+    env_ttl = os.environ.get("NOUGEN_CLAIM_TTL_HOURS")
+    if env_ttl:
+        try:
+            return float(env_ttl)
+        except ValueError:
+            pass
+    val = globals().get("TTL_HOURS")
+    return float(val) if val is not None else 8.0
+
+
+def current_claims_dir(explicit: Optional[Path] = None) -> Path:
+    """Dynamically resolve claims directory taking into account runtime env or test overrides."""
+    if explicit:
+        return explicit
+    val = globals().get("CLAIMS_DIR")
+    if val is not None and str(val) != str(Path.home() / ".nougen" / "claims"):
+        return val
+    return resolve_claims_dir()
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def my_claim_path(agent: Optional[str] = None, machine: Optional[str] = None) -> Path:
-    a = agent or AGENT
-    m = (machine or MACHINE).lower()
-    return CLAIMS_DIR / f"{m}__{a}.json"
+def my_claim_path(agent: Optional[str] = None, machine: Optional[str] = None, claims_dir: Optional[Path] = None) -> Path:
+    a = resolve_agent(agent)
+    m = resolve_machine(machine)
+    cdir = current_claims_dir(claims_dir)
+    return cdir / f"{m}__{a}.json"
 
 
 def active_claims(claims_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
-    cdir = claims_dir or CLAIMS_DIR
+    cdir = current_claims_dir(claims_dir)
     out = []
     if not cdir.is_dir():
         return out
@@ -198,11 +246,11 @@ def claim_lane(
     notify: bool = True,
 ) -> Dict[str, Any]:
     """Declare an active lane claim, replicate natively, and enforce execution."""
-    cdir = claims_dir or CLAIMS_DIR
+    cdir = current_claims_dir(claims_dir)
     cdir.mkdir(parents=True, exist_ok=True)
-    a = agent or AGENT
-    m = (machine or MACHINE).lower()
-    ttl = ttl_hours if ttl_hours is not None else TTL_HOURS
+    a = resolve_agent(agent)
+    m = resolve_machine(machine)
+    ttl = resolve_ttl_hours(ttl_hours)
 
     claim = {
         "machine": m,
@@ -248,9 +296,9 @@ def claim_lane(
 def release_lane(agent: Optional[str] = None, machine: Optional[str] = None,
                  claims_dir: Optional[Path] = None) -> bool:
     """Release active claim on file."""
-    cdir = claims_dir or CLAIMS_DIR
-    a = agent or AGENT
-    m = (machine or MACHINE).lower()
+    cdir = current_claims_dir(claims_dir)
+    a = resolve_agent(agent)
+    m = resolve_machine(machine)
     p = cdir / f"{m}__{a}.json"
     if not p.exists():
         return False

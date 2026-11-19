@@ -11,7 +11,7 @@ on 2026-09-21 three lanes each morphed `tYugqJ9YytQ` within 20 minutes because n
 ## 1. Recall before anything
 
 ```
-shards_search("tube:<id>")            # nougentube's verbatim capture, era-stamped
+shards_search("tube:<id>")            # final (or only) part of the capture; earlier parts carry tube-part:<id>:<i>/<n>
 shards_search("<title words> morph")  # earlier morphs / distillations by any lane
 ```
 If a verbatim shard exists, do not re-ingest. If a morph exists, build on it (cite its id); do not
@@ -25,7 +25,7 @@ cd %USERPROFILE%\Outpost\NouGen
 set NOUGEN_VAULT_DIR=%USERPROFILE%\.nougen\shards     # never rely on cwd resolution
 python tools\nougentube.py <url-or-playlist> [--dry-run] [--limit N]
 ```
-- Captures at the video's TRUE publish date (`original_timestamp`), tagged `tube:<id>`, split at
+- Captures at the video's TRUE publish date (`original_timestamp`), tagged `tube-part:<id>:<i>/<n>` with `tube:<id>` on the last part as the completion marker, split at
   ~30k chars with overlap; playlists expand; a failed transcript yields a `no-transcript` stub, an
   unknown date is tagged `era-unknown`. `--dry-run` writes nothing.
 - The title in the log is the truth about which video the id points to. If it does not match the

@@ -1,6 +1,7 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import json
 import os
+from pathlib import Path
 import sqlite3
 from nougen_shards import agents
 from typing import Optional, List
@@ -29,12 +30,41 @@ except ImportError:
 # Backwards-compatible alias for any caller still importing the old name.
 FastMCP = MCPServer
 
+def _file_root_gate(path: str) -> Optional[str]:
+    """Confine analyze_file_sandboxed reads to one root (WG-1175, Codex P1).
+
+    NOUGEN_FILE_TOOLS_ROOT wins; otherwise the repository root. A path that
+    resolves outside it (including via symlinks or '..') is refused.
+    """
+    from pathlib import Path
+    root = Path(os.environ.get("NOUGEN_FILE_TOOLS_ROOT", "")
+                or Path(__file__).resolve().parents[2]).resolve()
+    target = Path(path).expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return f"Error: path is outside the allowed root {root} (set NOUGEN_FILE_TOOLS_ROOT to widen)."
+    return None
+
+
+def _tool_gate(env_var: str, tool: str) -> Optional[str]:
+    """Opt-in gate for MCP tools that read files, fetch URLs, or deploy workers.
+
+    A prompt-injected client must not get these by default (WG-1175/WG-1777).
+    Returns an error string when the gate is closed, else None.
+    """
+    if os.environ.get(env_var, "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    return f"Error: {tool} is disabled by default. Set {env_var}=1 to enable it."
+
+
 from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
+from . import hardcade_sfx
 from . import skills as skill_registry
-from .brain_scan import scan_environment, run_import
+from . import skill_playbook
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
@@ -75,6 +105,9 @@ except TypeError:
     # Older builds predate the instructions kwarg; the apply_skills tool
     # still enforces skills, the roster just does not ride the handshake.
     mcp = MCPServer("NouGenShards", dependencies=["mcp"])
+
+# Hardcade SFX: every tool registered below plays its move when it lands.
+hardcade_sfx.install_on(mcp)
 
 # --- Memory Core (Shards) ---
 
@@ -124,19 +157,40 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
     # which is where those filters live.
     sweep_report: dict = {}
     scope = {k: v for k, v in {"agent": agent, "user": user, "machine": machine, "project": project}.items() if v}
+    # Time-shaped recall is native: "march", "last week", "yesterday 7pm",
+    # "gemini upgrade in march" read as a window (plus optional text inside
+    # it), not as a keyword search for the word "march". Scoped/as-of calls
+    # keep their own path.
+    if not (scope or as_of):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest,
+                                          limit=max(limit, 8))
+            res["window"] = win.as_dict()
+            return _window.format_packet(res)
     if scope or as_of:
         from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
         shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
     else:
         shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
     dropped = sweep_report.get("lanes_timed_out") or []
+    # A lane that ERRORED (vault offline, gateway 530) is as much a hole as one
+    # that timed out; reporting only timeouts let an offline vault read as
+    # "nothing there".
+    errored = [str(e.get("store", "?")) + ": " + str(e.get("error", ""))[:120]
+               for e in sweep_report.get("errored") or [] if isinstance(e, dict)]
+    holes = ""
+    if dropped:
+        holes += (f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s recall deadline. ")
+    if errored:
+        holes += f"{len(errored)} lane(s) failed: {'; '.join(errored)}. "
     if not shards_list:
-        if dropped:
+        if holes:
             return ("Recall INCOMPLETE — no answer, not an empty substrate: "
-                    f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                    f"{sweep_report.get('deadline_s')}s recall deadline. "
-                    "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
-                    "the substrate holds nothing on this query.")
+                    + holes + "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT "
+                    "conclude the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
     # Unbounded used to be the default; one 994k-char screenplay shard then
@@ -154,12 +208,59 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         _distill.mark_sent(session_id, sent)
     else:
         packet = compile_recall_packet(shards_list, token_budget=token_budget)
-    if dropped:
-        packet += ("\n\n[COVERAGE WARNING] Partial result: "
-                   f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                   f"{sweep_report.get('deadline_s')}s recall deadline. "
-                   "Shards below are real; absence below proves nothing.")
+    if holes:
+        packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
+                   + "Shards below are real; absence below proves nothing.")
     return packet
+
+@mcp.tool()
+def recall_window(when: str = "", query: str = "", limit: int = 20, tz: str = "",
+                  since: str = "", until: str = "", start: str = "", end: str = "") -> str:
+    """
+    Browse the memory substrate BY TIME: everything recorded in a period, with
+    per-day and per-type counts and the most useful records (locators included).
+
+    Args:
+        when: Plain time phrase - 'march', 'march 2026', '2026-03-19', '2026-03-19 14:05',
+            'q1 2026', 'yesterday', 'last week', 'last 30 minutes', 'between 7pm and 8pm
+            yesterday', 'march..may 2026'. A bare month is the most recent one that has started.
+        query: Optional text to narrow to shards in that window mentioning it.
+        limit: Max records to list (server ceiling applies).
+        tz: IANA zone for day boundaries (e.g. America/New_York); default NOUGEN_TZ or UTC.
+        since: Alternative to `when`: start of the era ('2026-03', '2026-03-01', 'march') -
+            inclusive. The fleet connector's era browser sends since/until.
+        until: End of the era, inclusive of the period named ('2026-03' = through March 31).
+        start: Alias of since. end: alias of until.
+    """
+    from nougen_shards import timewindow as _tw, window as _window  # pylint: disable=import-outside-toplevel
+    zone = tz or None
+    since, until = since or start, until or end
+    if not when and (since or until):
+        s_win = _tw.parse_window(since, tz=zone) if since else None
+        u_win = _tw.parse_window(until, tz=zone) if until else None
+        if since and s_win is None:
+            return f"Window recall: could not read since={since!r} as a time."
+        if until and u_win is None:
+            return f"Window recall: could not read until={until!r} as a time."
+        from datetime import datetime, timezone as _utc  # pylint: disable=import-outside-toplevel
+        start_utc = s_win.start_utc if s_win else "0001-01-01T00:00:00Z"
+        end_utc = u_win.end_utc if u_win else datetime.now(_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        res = _window.retrieve_window(start_utc=start_utc, end_utc=end_utc, query=query, limit=limit, tz=zone)
+        if not res.get("error"):
+            res["window"]["label"] = f"{s_win.label if s_win else 'beginning'} .. {u_win.label if u_win else 'now'}"
+            res["window"]["interpreted_as"] = "era bounds since/until, inclusive"
+        return _window.format_packet(res)
+    if not when:
+        # Nothing time-shaped given: the connector's old fallback sent only
+        # {query, limit}. Try to read the query itself as a period.
+        win, rest = _window.split_temporal(query, tz=zone)
+        if win is None:
+            return "Window recall: give `when` (e.g. 'march', 'last week') or since/until."
+        res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest, limit=limit, tz=zone)
+        res["window"] = win.as_dict()
+        return _window.format_packet(res)
+    return _window.format_packet(_window.retrieve_window(when, query=query, limit=limit, tz=zone))
+
 
 @mcp.tool()
 def recall_layered(query: str, token_budget: int = 1200) -> str:
@@ -318,6 +419,8 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
     )
     if success:
         return f"Context event #{event['id']} successfully promoted to durable memory."
+    if isinstance(success, dict) and success.get("reason") not in (None, "duplicate"):
+        return f"Not promoted: {success.get('error') or success.get('reason')}"
     return "Shard already exists in memory."
 
 # --- Execution Layer (Sandbox) ---
@@ -343,6 +446,9 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
         url: The web URL to fetch.
         label: Optional descriptive label for indexing.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "fetch_web_sandboxed")
+    if gated:
+        return gated
     res = nougen_context.fetch_and_index_web(url, label=label)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -366,6 +472,12 @@ def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
         file_path: Absolute or relative path to file on disk.
         query: Optional string/keyword to filter matching lines.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "analyze_file_sandboxed")
+    if gated:
+        return gated
+    outside = _file_root_gate(file_path)
+    if outside:
+        return outside
     res = nougen_context.analyze_file(file_path, query=query)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -479,6 +591,7 @@ def run_brain_scan(project_path: Optional[str] = None, include_unknown: bool = F
         project_path: Optional path to a specific project directory to scan.
         include_unknown: If True, scans for unknown dotfolders as well.
     """
+    from .brain_scan import scan_environment
     candidates = scan_environment(project_path=project_path, include_unknown=include_unknown)
     
     high = [c for c in candidates if c.score_tier == "high"]
@@ -512,6 +625,7 @@ def run_brain_import(project_path: Optional[str] = None, source_filter: Optional
         source_filter: Filter by specific tool (e.g., 'claude', 'gemini').
         dry_run: If True, only estimates the import size without writing to the database. Set to False to actually ingest shards.
     """
+    from .brain_scan import run_import
     result = run_import(
         project_path=project_path,
         include_unknown=False,
@@ -592,14 +706,91 @@ def apply_skills(task: str) -> str:
             f"Installed skills:\n{installed}"
         )
 
-    parts = [
-        f"✅ {len(matched)} skill(s) govern this task. Follow them; they "
-        f"supersede your defaults.\n"
-    ]
+    # Cap the total body size returned. A single call once returned 92,416 chars and
+    # overflowed the caller's tool-result limit, which spilled the whole payload to a
+    # file and defeated the point. Bodies are inlined in match order while they fit;
+    # the rest are named with their size and a load_skill() handle so nothing is lost
+    # and nothing is silently truncated mid-text.
+    try:
+        max_chars = int(os.environ.get("NOUGEN_APPLY_SKILLS_MAX_CHARS", "20000"))
+    except ValueError:
+        max_chars = 20000
+
+    inlined = []
+    deferred = []
+    used = 0
+    # Field notes are part of what is returned, so they count against the same cap.
+    notes_by_skill: dict[str, str] = {}
     for skill in matched:
+        try:
+            notes_by_skill[skill.name] = skill_playbook.format_field_notes(skill.name)
+        except Exception:
+            notes_by_skill[skill.name] = ""
+    for skill in matched:
+        notes_len = len(notes_by_skill[skill.name])
+        block_len = (len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+                     + (notes_len + 130 if notes_len else 0))
+        # Always inline the first match, even if it alone exceeds the cap, so a lone
+        # large skill is never silently withheld; later bodies defer once the cap is hit.
+        if not inlined or used + block_len <= max_chars:
+            inlined.append(skill)
+            used += block_len
+        else:
+            deferred.append(skill)
+
+    header = (
+        f"✅ {len(matched)} skill(s) govern this task. Follow them; they supersede "
+        f"your defaults. Inlined {len(inlined)}, deferred {len(deferred)} "
+        f"(cap {max_chars} chars).\n"
+    )
+    parts = [header]
+    for skill in inlined:
         parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
         parts.append(skill.body.strip())
+        notes = notes_by_skill.get(skill.name, "")
+        if notes:
+            parts.append(
+                "\nFIELD NOTES (reported by earlier runs of this skill; unverified, the skill "
+                "text above wins on any conflict):\n" + notes)
+    parts.append(
+        f"\n{'=' * 70}\nWhen the work is done, report how each skill did: "
+        'mark_skill("<name>", worked=True|False, note="<one-line lesson, optional>").')
+    if deferred:
+        parts.append(f"\n{'=' * 70}\nNot inlined (over {max_chars}-char budget) — load on demand:")
+        for skill in deferred:
+            parts.append(f'- {skill.name} ({len(skill.body.strip())} chars): load_skill("{skill.name}")')
     return "\n".join(parts)
+
+
+@mcp.tool()
+def mark_skill(name: str, worked: bool, note: str = "", note_ids: Optional[List[str]] = None) -> str:
+    """
+    Report how a skill did after using it. This is what lets the registry learn.
+
+    Args:
+        name: The skill's name, as apply_skills printed it.
+        worked: True if following the skill produced the right result, False if it
+            misled you or was wrong for the task.
+        note: Optional one-line lesson for the next reader (what to do differently,
+            a trap, a missing step). Stored as a field note under the skill; the
+            skill file itself is not edited.
+        note_ids: Optional ids of field notes shown with the skill (e.g. "sk-00012")
+            that this outcome confirms (worked=True) or contradicts (worked=False).
+    """
+    skill = skill_registry.get(name)
+    if skill is None:
+        return f"❌ No installed skill named {name!r}. Nothing recorded."
+    try:
+        result = skill_playbook.mark(skill.name, bool(worked), note or None, note_ids)
+    except Exception as exc:
+        return f"❌ Could not record the outcome for {skill.name!r}: {exc}"
+    line = (f"Recorded {'helpful' if worked else 'harmful'} for {skill.name!r}: "
+            f"helpful={result['helpful']} harmful={result['harmful']}.")
+    if result["note_added"]:
+        line += f" Field note {result['note_added']} added."
+    if result["notes_bumped"]:
+        line += f" Updated notes: {', '.join(result['notes_bumped'])}."
+    return line
 
 
 @mcp.tool()
@@ -645,6 +836,7 @@ def evolve_skill(instruction: str) -> str:
     """
     result = evolution.run_autonomous_evolution(instruction)
     if result.get("verified"):
+        skill_registry.invalidate_cache()
         return (
             f"✅ Skill '{instruction}' evolved and verified.\n"
             f"Skill ID: {result['skill_id']}\n"
@@ -798,6 +990,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     Args:
         directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_deploy_worker")
+    if gated:
+        return gated
     import json
     from pathlib import Path
     from . import cloudflare
@@ -812,7 +1007,7 @@ def cf_deploy_worker(directory_path: str = "") -> str:
             "worker_name": res.get("worker_name"),
             "entry_point": res.get("entry_point"),
             "etag": res.get("result", {}).get("etag", "live"),
-            "live_url": f"https://{res.get('worker_name')}.whoentertains.workers.dev"
+            "live_url": __import__("nougen_shards.endpoints", fromlist=["worker_live_url"]).worker_live_url(res.get("worker_name"))
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
@@ -827,6 +1022,9 @@ def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str
         prompt: User instruction or query for the edge model.
         model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_run_ai")
+    if gated:
+        return gated
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
@@ -912,27 +1110,25 @@ def create_destiny(title: str, goal: str, branch: Optional[str] = None,
 # --- NouGenMsg Fleet Bus Tools ---
 
 @mcp.tool()
-def nougenmsg_search(query: str, target: str = "all", limit: int = 20) -> str:
+def nougenmsg_search(query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0) -> str:
     """
     Search across active and archived NouGenMsg inbox notifications across agents.
+    Fulfills the Hurricane Kick 2/3 Search Contract:
+    {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
 
     Args:
         query: Search term or keyword.
         target: Inbox scope ('antigravity', 'codex', or 'all').
         limit: Max results to return (default 20).
+        timeout_s: Maximum execution duration before returning partial coverage (default 3.0).
     """
     import json
     from .nougenmsg import NouGenMsgBus
     try:
-        results = NouGenMsgBus.search_messages(query=query, target=target, limit=limit)
-        return json.dumps({
-            "query": query,
-            "count": len(results),
-            "messages": results
-        }, indent=2)
+        res = NouGenMsgBus.search_messages(query=query, target=target, limit=limit, timeout_s=timeout_s, as_contract=True)
+        return json.dumps(res, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
-
+        return json.dumps({"error": str(e), "complete": False, "results": []})
 
 @mcp.tool()
 def nougenmsg_inbox(target: str = "antigravity", limit: int = 10) -> str:
@@ -966,11 +1162,14 @@ def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = Non
             message '<node>-<lane>'; defaults to NOUGEN_LANE / NOUGEN_AGENT.
     """
     import json
-    from .nougenmsg import NouGenMsgBus
+    from .nougenmsg import NouGenMsgBus, target_unknown
     try:
+        refusal = target_unknown(target)
+        if refusal:
+            return json.dumps(refusal, indent=2)
         origin = {"lane": lane} if lane else None
-        res = NouGenMsgBus.emit_fleet(text=text, target=target, origin=origin,
-                                      audience=audience, background=True)
+        res = NouGenMsgBus.send_resolved(target, text, origin=origin,
+                                         audience=audience, background=True)
         return json.dumps(res, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1092,6 +1291,9 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
         if context_budget < 0 or limit < 1 or limit > 100:
             raise ValueError("context_budget must be nonnegative and limit must be 1..100")
         results = federated_retrieve(query, limit=limit * 4 if context_budget else limit)
+        # Read coverage before any slicing: a slice drops FederatedResult's flags.
+        coverage = {"complete": getattr(results, "complete", True),
+                    "lane_failures": list(getattr(results, "lane_failures", []))}
         if context_budget:
             from .context_packet import graph_context_packet
             from . import core
@@ -1124,8 +1326,11 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
             packet = graph_context_packet(query, results[:limit], results[limit:],
                                           token_budget=context_budget, max_results=limit,
                                           load_dependency=load_dependency)
+            if isinstance(packet, dict):
+                packet.setdefault("coverage", coverage)
             return json.dumps(packet, default=str, indent=2)
-        return json.dumps({"query": query, "count": len(results), "shards": results}, default=str, indent=2)
+        return json.dumps({"query": query, "count": len(results), "coverage": coverage,
+                           "shards": results}, default=str, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1150,7 +1355,11 @@ def add_shard(content: str, title: Optional[str] = None, tags: Optional[List[str
             content=content,
             tags=tags or ["mcp", "voice"],
         )
-        return json.dumps({"status": "ok" if ok else "failed", "title": t_val, "tags": tags}, indent=2)
+        if isinstance(ok, dict):
+            is_success = ok.get("status") in ("ok", "success", "captured", "durable") or ok.get("success") is True or (bool(ok.get("shard_id")) and "error" not in ok)
+        else:
+            is_success = bool(ok)
+        return json.dumps({"status": "ok" if is_success else "failed", "title": t_val, "tags": tags}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1251,6 +1460,20 @@ def morph_gate(ref: str, claims: List[str]) -> str:
 
 
 @mcp.tool()
+def morph_atom_catalog(query: str = "", limit: int = 20) -> str:
+    """
+    Catalog already morph_gate-verified (source, claim) pairs into named structural atoms.
+
+    Args:
+        query: optional substring filter over claim/title text.
+        limit: max atoms to return (default 20).
+    """
+    from .nougen_morph_atoms import run_morph_atom_catalog
+    res = run_morph_atom_catalog(query=query, limit=limit)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
 def formal_verify_lean(code: str, allow_sorry: bool = False, timeout_seconds: float = 30.0) -> str:
     """
     Verify a Lean 4 formal mathematical proof against the Lean kernel. Enforces strict zero-placeholder ('no-sorry') standard by default.
@@ -1274,14 +1497,62 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
 
     Args:
         declarations: List of [var_name, var_type] pairs, e.g. [['x', 'Int'], ['y', 'Int']]. Supported: Int, Real, Bool, BitVec.
-        assertions: List of Python/Z3-syntax formulas defining axioms or problem constraints.
-        query: Optional target theorem formula. If supplied, checks if the query holds under axioms by checking UNSAT of its negation.
+    assertions: List of bounded expressions using declared names, numeric/bool literals,
+        arithmetic, comparisons, and boolean operators. Python calls and Z3 attributes are rejected.
+    query: Optional target theorem in the same expression subset. If supplied, checks if
+        the query holds under axioms by checking UNSAT of its negation.
         timeout_ms: Solver timeout in milliseconds.
     """
     from .formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return json.dumps({"status": "error", "error": "Each declaration must be a [name, type] pair."})
+    typed_decls = [(d[0], d[1]) for d in declarations]
     res = engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
     return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def formal_verification_suite() -> str:
+    """Run bounded information-dynamics SMT models; this does not prove implementation refinement."""
+    from .formal_verification import run_full_formal_verification_suite
+    return json.dumps(run_full_formal_verification_suite(), default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_context_select(query: str, budget_tokens: int = 500,
+                                 nodes_json: Optional[str] = None) -> str:
+    """Select a bounded graph-aware projection from caller-supplied shard candidates."""
+    from .control_plane_api import context_select
+    try:
+        result = context_select(query, budget_tokens, nodes_json if nodes_json is not None else "[]")
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_pareto_route(routes_json: str,
+                               policy_weights_json: str) -> str:
+    """Choose from a Pareto front using explicit objective weights and provenance."""
+    from .control_plane_api import pareto_route
+    try:
+        result = pareto_route(routes_json, policy_weights_json)
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_adherence_evaluate(declared_edges_json: str,
+                                     observed_events_json: str,
+                                     threshold: float = 0.8) -> str:
+    """Compare declared workflow edges with observed [source, target] event edges."""
+    from .control_plane_api import adherence_evaluate
+    try:
+        result = adherence_evaluate(declared_edges_json, observed_events_json, threshold)
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
 
 
 
@@ -1290,6 +1561,259 @@ def main():
     """Main entry point for the MCP server."""
     # Start the FastMCP server with stdio transport
     mcp.run()
+
+
+@mcp.tool()
+def semantic_context_assemble(query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Assemble bounded identity/global/recall/active state. Corrections must be caller-authorized.
+
+    state_json contains identity, global_state, recall arrays; compact active state;
+    optional corrections with qualified previous/current handles and provenance.
+    ready=False means required context is missing. Metadata is outside the payload budget.
+    """
+    from .context_policy import context_from_json
+    try:
+        return json.dumps(context_from_json(query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+
+@mcp.tool()
+def context_task_checkpoint(session_id: str, state_json: str, provenance: str) -> str:
+    """Append verified compact task state for one session; never pass credentials."""
+    from .nougen_context import append_task_state
+    try:
+        if len(state_json) > 16000:
+            raise ValueError("state_json exceeds 16000 characters")
+        return json.dumps(append_task_state(session_id, json.loads(state_json), provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_task_current(session_id: str) -> str:
+    """Read current task checkpoint for the exact session, without transcript replay."""
+    from .nougen_context import current_task_state
+    return json.dumps(current_task_state(session_id), ensure_ascii=False)
+
+
+@mcp.tool()
+def context_feedback(packet_json: str, feedback_json: str) -> str:
+    """Measure omissions and receiver-reported context use; no inferred cognition score."""
+    from .context_policy import evaluate_context
+    try:
+        if max(len(packet_json), len(feedback_json)) > 1000000:
+            raise ValueError("feedback inputs exceed 1000000 characters")
+        return json.dumps(evaluate_context(json.loads(packet_json), **json.loads(feedback_json)))
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_correct(session_id: str, previous: str, current: str, provenance: str) -> str:
+    """Append a source-owner-authorized correction. Never persist a model proposal as authority."""
+    from .nougen_context import append_context_correction
+    try:
+        return json.dumps(append_context_correction(session_id, previous, current, provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_session_assemble(session_id: str, query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Compile federated recall with this session's durable task/correction state.
+
+    Omit recall from state_json for bounded live federation; supply recall for replay.
+    """
+    from .nougen_context import assemble_session_context
+    try:
+        return json.dumps(assemble_session_context(session_id, query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def nougen_web_fetch(url: str, max_chars: int = 16000) -> str:
+    """Fetch one public web page into a bounded, provenance-rich untrusted-source envelope.
+
+    Only public HTTP(S) targets are allowed. robots.txt is honored; login cookies,
+    JavaScript execution, and bot-control evasion are not used.
+    """
+    from dataclasses import asdict
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        record = asdict(WebResearchClient().fetch(url))
+        record["text"] = record["text"][:max(0, min(int(max_chars), 30000))]
+        return json.dumps(record, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+@mcp.tool()
+def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
+                     max_chars_per_page: int = 4000) -> str:
+    """BFS-crawl a small same-origin public site, with per-page provenance and error records."""
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        result = WebResearchClient().crawl(
+            url,
+            max_pages=max(1, min(int(max_pages), 25)),
+            max_depth=max(0, min(int(max_depth), 4)),
+            max_chars_per_page=max(0, min(int(max_chars_per_page), 12000)),
+        )
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+
+_PR_REVIEW_LEDGER = Path.home() / ".nougen" / "research" / "reviews" / "aiwithdav3" / "ledger.jsonl"
+
+
+def _pr_review_script() -> Path:
+    """review.ts installed by tools/pr_reviewer/install.ps1 (~/.nougen/bin), else the repo copy."""
+    installed = Path.home() / ".nougen" / "bin" / "pr_reviewer" / "review.ts"
+    if installed.exists():
+        return installed
+    return Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / "review.ts"
+
+
+@mcp.tool()
+def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
+    """Review a GitHub PR as aiwithdav3 (free lanes -> local e2b -> agy, second-lane supervisor).
+
+    dry_run=True (default) reviews without posting. dry_run=False posts one GitHub review per head SHA.
+    Never merges. Gated: set NOUGEN_ENABLE_PR_REVIEW=1 on the server to enable.
+    """
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "review_pr")
+    if gate:
+        return gate
+    import re as _re
+    import shutil
+    import subprocess
+    # GitHub owner/name; "." and ".." segments are refused so /repos/<repo> cannot traverse
+    if (not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "")
+            or any(part in (".", "..") for part in repo.split("/")) or int(pr) <= 0):
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    cmd = [bun, str(_pr_review_script()), "review", repo, str(int(pr))] + (["--dry-run"] if dry_run else [])
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=3000, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    tail = "\n".join((r.stdout or "").strip().splitlines()[-15:])
+    err = "\n".join((r.stderr or "").strip().splitlines()[-10:])
+    return json.dumps({"repo": repo, "pr": int(pr), "dry_run": dry_run, "exit": r.returncode, "log": tail, "stderr": err})
+
+
+def _run_review_ts(args: List[str], timeout: int = 900) -> dict:
+    import shutil
+    import subprocess
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    try:
+        r = subprocess.run([bun, str(_pr_review_script()), *args], stdin=subprocess.DEVNULL, capture_output=True,
+                           encoding="utf-8", errors="replace", timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": str(exc)}
+    return {"exit": r.returncode, "stdout": (r.stdout or "").strip()[-6000:],
+            "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])}
+
+
+@mcp.tool()
+def rsi_status() -> str:
+    """aiwithdav3 reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only."""
+    out = _run_review_ts(["rsi", "status"], timeout=120)
+    try:
+        return json.dumps(json.loads(out.get("stdout") or ""), ensure_ascii=False)
+    except ValueError:
+        return json.dumps(out)
+
+
+@mcp.tool()
+def rsi_evolve() -> str:
+    """Run one RSI scoring pass (judge findings vs later pushes, propose a checklist, holdout gate). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_evolve")
+    if gate:
+        return gate
+    return json.dumps(_run_review_ts(["rsi", "evolve"]))
+
+
+@mcp.tool()
+def rsi_rollback(version: int) -> str:
+    """Re-issue checklist v<version> as the newest version (append-only; history is kept). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_rollback")
+    if gate:
+        return gate
+    if int(version) <= 0:
+        return json.dumps({"error": "version must be a positive number"})
+    return json.dumps(_run_review_ts(["rsi", "rollback", str(int(version))], timeout=120))
+
+
+def _pr_tool(name: str):
+    """Import a tools/pr_reviewer module (verdicts, reverse) from the repo checkout."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"pr_reviewer_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@mcp.tool()
+def pr_review_verdicts(repo: str, pr: int) -> str:
+    """Review-loop state for a PR from prreview logs: every round's verdict, FIXED/NOT FIXED, open P1/P2/P3,
+    whether the loop is done, and the exact next command. Read-only."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "") or any(p in (".", "..") for p in repo.split("/")) \
+            or int(pr) <= 0:
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    return json.dumps(_pr_tool("verdicts").loop_state(repo, int(pr)), ensure_ascii=False)
+
+
+@mcp.tool()
+def rsi_reverse(targets: List[str], lanes: int = 2) -> str:
+    """Fleet reads donor repos' source (owner/repo[:pat1,pat2]) in 7k chunks and extracts RSI mechanisms to
+    ~/.nougen/research/reverse/fleet_raw.json. Free lanes only. Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_reverse")
+    if gate:
+        return gate
+    import subprocess
+    import sys as _sys
+    try:
+        rev = _pr_tool("reverse")
+        clean = [t for t in (targets or [])[:8] if rev.parse_target(t)]
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not clean:
+        return json.dumps({"error": "give at least one owner/repo target"})
+    try:
+        r = subprocess.run([_sys.executable, rev.__file__, *clean, "--lanes", str(max(1, min(int(lanes), 3)))],
+                           stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=1800, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"exit": r.returncode, "stdout": (r.stdout or "").strip()[-2000:],
+                       "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])})
+
+
+@mcp.tool()
+def pr_review_status(repo: str = "", pr: int = 0, limit: int = 10) -> str:
+    """Latest aiwithdav3 review verdicts from the local ledger, newest first. Read-only."""
+    rows = []
+    if _PR_REVIEW_LEDGER.exists():
+        for line in _PR_REVIEW_LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and (not repo or e.get("repo") == repo) and (not pr or e.get("pr") == int(pr)):
+                rows.append(e)
+    return json.dumps({"ledger": str(_PR_REVIEW_LEDGER), "reviews": rows[::-1][:max(1, min(int(limit), 50))]},
+                      ensure_ascii=False, default=str)
+
 
 if __name__ == "__main__":
     main()

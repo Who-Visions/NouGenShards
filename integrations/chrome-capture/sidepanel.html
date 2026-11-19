@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NouGen Side Panel</title>
+<link rel="stylesheet" href="nougen-tokens.css">
+<link rel="stylesheet" href="sidepanel.css">
+<main>
+  <header>
+    <h1>NouGen Intelligence</h1>
+    <div id="node-status" class="status-badge" role="status">
+      <span class="dot"></span>
+      <span id="node-name">Checking...</span>
+    </div>
+  </header>
+
+  <section class="search-section">
+    <label for="search-input">Search Shards</label>
+    <div class="search-row">
+      <input id="search-input" placeholder="Query shard memory..." autocomplete="off">
+      <button id="search-btn">Find</button>
+    </div>
+    <div id="search-results" class="results-list"></div>
+  </section>
+
+  <section class="quick-capture">
+    <h2>Current Tab</h2>
+    <div id="tab-card" class="tab-card">
+      <div id="tab-title" class="tab-title">Loading active tab...</div>
+      <div id="tab-url" class="tab-url meta"></div>
+    </div>
+    <label for="side-tags">Extra Tags (comma separated)</label>
+    <input id="side-tags" placeholder="research, ai, observation" autocomplete="off">
+    <div class="btn-group">
+      <button id="side-capture">Capture</button>
+      <button id="side-morph">Morph</button>
+      <button id="side-tube">Tube</button>
+    </div>
+
+    <div id="side-progress-card" class="progress-card" style="display: none;">
+      <div class="progress-bar-wrap">
+        <div id="side-progress-fill" class="progress-bar-fill"></div>
+      </div>
+      <div class="progress-status-row">
+        <span class="spinner"></span>
+        <span id="side-progress-text" class="progress-status-text">Processing...</span>
+      </div>
+    </div>
+
+    <p id="side-msg" class="meta" role="status"></p>
+  </section>
+</main>
+<script type="module" src="sidepanel.js"></script>
+</html>

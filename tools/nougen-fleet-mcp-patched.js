@@ -1,3 +1,102 @@
+// HF hallway capture (owner-approved routing) with Adaptive Hallway Circuit Breaker.
+// Guarantees sub-second failover when HF Space is PAUSED (206/503) or unreachable.
+const HALLWAY_CIRCUIT_TTL_MS = 60_000;
+const HALLWAY_DEADLINE_MS = 3_500;
+const hallwayCircuitState = new Map(); // routeKey -> { status: 'CLOSED'|'OPEN'|'HALF_OPEN', openedAt: number, reason: string }
+
+function isHallwayRouteHealthy(routeKey) {
+  const entry = hallwayCircuitState.get(routeKey);
+  if (!entry) return true;
+  if (entry.status === "OPEN" && Date.now() - entry.openedAt > HALLWAY_CIRCUIT_TTL_MS) {
+    hallwayCircuitState.set(routeKey, { status: "HALF_OPEN", openedAt: entry.openedAt, reason: entry.reason });
+    return true;
+  }
+  return entry.status !== "OPEN";
+}
+
+function recordHallwayRouteOutcome(routeKey, ok, reason = "") {
+  if (ok) {
+    hallwayCircuitState.delete(routeKey);
+  } else {
+    hallwayCircuitState.set(routeKey, {
+      status: "OPEN",
+      openedAt: Date.now(),
+      reason: reason || "upstream_fault",
+    });
+  }
+}
+
+async function computeHallwayIdempotencyHash(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf))
+    .slice(0, 12)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function hallwayCapture(env, payload, args) {
+  const url = env.HALLWAY_CAPTURE_URL || (env.SHARD_GATEWAY_URL ? `${env.SHARD_GATEWAY_URL.replace(/\/+$/, "")}/v1/shards/capture` : null);
+  const token = env.HALLWAY_BEARER_TOKEN;
+  if (!url || !token) return null;
+  if (!isHallwayRouteHealthy("hf_hallway")) return null;
+
+  const body = {
+    title: payload.title,
+    content: payload.content,
+    event_type: payload.event_type,
+    tags: payload.tags,
+    event_time: args.event_time || null,
+    via: env.CONNECTOR_LANE || "fleet-mcp",
+  };
+  const bodyStr = JSON.stringify(body);
+  const idempotencyKey = await computeHallwayIdempotencyHash(bodyStr);
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+        "X-NouGen-Idempotency": idempotencyKey,
+      },
+      body: bodyStr,
+      signal: AbortSignal.timeout(Number(env.HALLWAY_TIMEOUT_MS) || HALLWAY_DEADLINE_MS),
+    });
+
+    // HF Space returns 206 when paused/building or 503 when container fails to wake
+    if (resp.status !== 200 && resp.status !== 201) {
+      recordHallwayRouteOutcome("hf_hallway", false, `http_${resp.status}_space_paused_or_unavailable`);
+      return null;
+    }
+
+    const j = await resp.json();
+    if (j && j.stored === true) {
+      recordHallwayRouteOutcome("hf_hallway", true);
+      const resultMeta = {
+        captured: true,
+        via: j.via || "hf-cloud-buffer",
+        content_sha256: j.content_sha256 || null,
+        duplicate: Boolean(j.duplicate),
+        idempotencyKey,
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `captured successfully via hallway (${resultMeta.via}) [sha256: ${resultMeta.content_sha256 || "n/a"}, duplicate: ${resultMeta.duplicate}]`,
+          },
+        ],
+        structuredContent: resultMeta,
+      };
+    }
+    recordHallwayRouteOutcome("hf_hallway", false, "hallway_stored_false");
+    return null;
+  } catch (err) {
+    recordHallwayRouteOutcome("hf_hallway", false, String(err));
+    return null;
+  }
+}
+
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -109,6 +208,14 @@ function toolIsWrite(name) {
   return Boolean(t && t.annotations && t.annotations.readOnlyHint === false);
 }
 __name(toolIsWrite, "toolIsWrite");
+function tenantAllowedTools(env, auth) {
+  // If tenant has specific allowed tools configured in TENANTS KV or env, enforce them
+  if (auth && auth.allowedTools && Array.isArray(auth.allowedTools)) {
+    return new Set(auth.allowedTools);
+  }
+  return null;
+}
+__name(tenantAllowedTools, "tenantAllowedTools");
 function googleAllowed(env) {
   return new Set((env.GOOGLE_ALLOWED_EMAILS || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
 }
@@ -146,9 +253,17 @@ async function issueTokens(env, keyId, email, lane) {
   };
 }
 __name(issueTokens, "issueTokens");
-function identityStillEnrolled(env, payload) {
+async function identityStillEnrolled(env, payload) {
   if ((payload.key || "").startsWith("g-")) {
-    return googleAllowed(env).has((payload.eml || "").toLowerCase());
+    const eml = (payload.eml || "").toLowerCase();
+    if (googleAllowed(env).has(eml)) return true;
+    if (env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const allowed = await env.TENANTS.get(`allow:${eml}`);
+        if (allowed === "1" || allowed === "true") return true;
+      } catch (_) {}
+    }
+    return false;
   }
   return fleetKeys(env).has(payload.key);
 }
@@ -159,8 +274,30 @@ async function authenticate(request, env) {
   const presented = m[1].trim();
   const payload = await verifyBlob(env, presented);
   if (payload && payload.typ === "access") {
-    if (!identityStillEnrolled(env, payload)) return null;
-    return { key: payload.key, lane: payload.ln || null, static: false };
+    if (!await identityStillEnrolled(env, payload)) return null;
+    let allowedTools = null;
+    let tenantNodeUrl = null;
+    let tenantNodeToken = null;
+    if (payload.eml && env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const tRaw = await env.TENANTS.get(`tenant:${payload.eml.toLowerCase()}`);
+        if (tRaw) {
+          const tData = JSON.parse(tRaw);
+          if (tData.node_url) tenantNodeUrl = tData.node_url;
+          if (typeof tData.token === "string" && tData.token) tenantNodeToken = tData.token;
+          if (tData.tools && Array.isArray(tData.tools)) allowedTools = tData.tools;
+        }
+      } catch (_) {}
+    }
+    return {
+      key: payload.key,
+      lane: payload.ln || null,
+      static: false,
+      email: payload.eml || null,
+      nodeUrl: tenantNodeUrl,
+      nodeToken: tenantNodeToken,
+      allowedTools: allowedTools
+    };
   }
   // Static fleet key as the bearer: the path for server-side MCP clients that
   // cannot run the OAuth code flow. Identity and lane are the key's name; a
@@ -402,7 +539,7 @@ async function handleToken(request, env) {
   if (grant === "refresh_token") {
     const payload = await verifyBlob(env, form.get("refresh_token") || "");
     if (!payload || payload.typ !== "refresh") return json({ error: "invalid_grant" }, 400);
-    if (!identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
+    if (!await identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
     return json(await issueTokens(env, payload.key, payload.eml, payload.ln));
   }
   return json({ error: "unsupported_grant_type" }, 400);
@@ -464,7 +601,14 @@ async function handleGoogleCallback(request, env, url) {
   if (!vr.ok) return json({ error: "google_token_invalid" }, 401);
   const info = await vr.json();
   const email = (info.email || "").toLowerCase();
-  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !googleAllowed(env).has(email)) {
+  let emailAllowed = googleAllowed(env).has(email);
+  if (!emailAllowed && env.TENANTS && typeof env.TENANTS.get === "function") {
+    try {
+      const allowed = await env.TENANTS.get(`allow:${email}`);
+      if (allowed === "1" || allowed === "true") emailAllowed = true;
+    } catch (_) {}
+  }
+  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !emailAllowed) {
     return json({
       error: "forbidden",
       error_description: `${email || "that account"} is not on the fleet allowlist`
@@ -603,6 +747,49 @@ async function latestFreshness(env, headSha, latestId) {
   }
 }
 __name(latestFreshness, "latestFreshness");
+// ---- NouGenMsg cursor pagination ------------------------------------------
+// nougenmsg_latest used to slice the newest 25 legs with no cursor, so no caller
+// could read message 26+ (2026-10-04 RELAY DOWN brief). Pages are pinned to the
+// registry commit of the first page and resume after the last id returned, so
+// appends during paging never shift, skip or duplicate entries. Order is
+// orderLegIds: UTC stamp desc, ties broken by id desc (deterministic).
+var MSG_PAGE_MAX = 100;
+function encodeMsgCursor(head, lastId) {
+  return "m1:" + head + ":" + btoa(unescape(encodeURIComponent(lastId))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(encodeMsgCursor, "encodeMsgCursor");
+function decodeMsgCursor(cursor) {
+  const m = typeof cursor === "string" ? /^m1:([a-f0-9]{40,64}):([A-Za-z0-9_-]+)$/i.exec(cursor) : null;
+  if (!m) return null;
+  try {
+    const b64 = m[2].replace(/-/g, "+").replace(/_/g, "/");
+    const lastId = decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4))));
+    return lastId ? { head: m[1], lastId } : null;
+  } catch (_) {
+    return null;
+  }
+}
+__name(decodeMsgCursor, "decodeMsgCursor");
+// ids: full snapshot listing, newest first. Returns {pageIds, nextCursor, complete} or {error}.
+function paginateLegIds(ids, head, cursor, limit) {
+  const size = Math.min(Math.max(Number.isInteger(limit) ? limit : 25, 1), MSG_PAGE_MAX);
+  let start = 0;
+  if (cursor !== void 0 && cursor !== null) {
+    const c = decodeMsgCursor(cursor);
+    if (!c) return { error: "invalid nougenmsg cursor; restart without cursor" };
+    if (!head || c.head.toLowerCase() !== String(head).toLowerCase()) {
+      return { error: "nougenmsg cursor snapshot does not match this registry listing; restart without cursor" };
+    }
+    const at = ids.indexOf(c.lastId);
+    if (at < 0) return { error: "nougenmsg cursor points at an id not in its snapshot; restart without cursor" };
+    start = at + 1;
+  }
+  const pageIds = ids.slice(start, start + size);
+  const more = start + pageIds.length < ids.length;
+  if (more && !head) return { pageIds, nextCursor: null, complete: false, reason: "no registry head sha; safe pagination unavailable" };
+  return { pageIds, nextCursor: more ? encodeMsgCursor(head, pageIds[pageIds.length - 1]) : null, complete: !more };
+}
+__name(paginateLegIds, "paginateLegIds");
 async function listLegs(env, revision = env.RELAY_BRANCH) {
   // The contents API caps a directory listing at 1000 entries and returns them
   // ALPHABETICALLY. Leg files are timestamp-named, so once the registry passes
@@ -810,6 +997,124 @@ function totalActivity(t) {
   return (t.input_tokens || 0) + (t.output_tokens || 0) + (t.cache_read || 0) + (t.cache_creation || 0);
 }
 __name(totalActivity, "totalActivity");
+
+// Cost rate table (USD per 1M tokens: input, output, cache_read, cache_creation, confidence).
+// "confirmed" = pulled from the provider's own current rate card. "guess" = no
+// published rate found for this exact model/field; a reasonable stand-in is used
+// so nothing silently drops out of a cost total, but it must never be presented
+// as exact. Matched by substring against the lowercased model name, first match
+// wins, most-specific patterns first -- mirrors the manual audit done 2026-11-06.
+var RATE_TABLE_VERSION = "tracker_rates/v1 (2026-11-06)";
+var RATE_TABLE = [
+  ["fable-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable-5", 10.00, 50.00, 0.25, 12.50, "confirmed (prior-gen, same tier price)"],
+  ["mythos-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["mythos 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["opus-5-5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus 5.5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus-5", 5.00, 25.00, 0.50, 6.25, "confirmed (prior-gen table rate)"],
+  ["opus-4-8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus 4.8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus-4-6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["opus 4.6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["sonnet-5-5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet 5.5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet-5", 2.00, 10.00, 0.20, 2.50, "confirmed (prior-gen, same price as 5.5)"],
+  ["sonnet-4-6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["sonnet 4.6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["haiku-5-5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku 5.5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku-4-5", 1.00, 5.00, 0.10, 1.25, "confirmed i/o (table, 200K ctx); guess cache=1/10 input"],
+  ["gemini-4-argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini 4 argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini-3.1-pro", 2.00, 12.00, 0.20, 0, "confirmed (<=200K tier, search-verified)"],
+  ["gemini-3-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-3.5-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-2.5-flash", 0.50, 3.00, 0.05, 0.50, "guess: unverified this session, assumed gemini-3-flash tier"],
+  ["gemini-2.5-pro", 1.25, 10.00, 0.31, 1.25, "guess: legacy public rate, unverified this session"],
+  ["gpt-6-astra", 10.00, 50.00, 1.00, 10.00, "confirmed (OpenAI help page, search-verified)"],
+  ["gpt-6.1-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier (6.1 unconfirmed)"],
+  ["gpt-6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-5.6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-6-luna", 0.10, 0.50, 0.01, 0.10, "guess: aggregator-only, no official source"],
+  ["gpt-5.6-luna", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.5", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.4-mini", 0.15, 0.60, 0.015, 0.15, "guess: mini tier, no official source"],
+  ["gpt-5-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-max", 5.00, 20.00, 0.50, 5.00, "guess: codex-max/premium tier, no official source"],
+  ["gpt-5.2-codex", 1.00, 5.00, 0.10, 1.00, "guess: codex-standard tier, no official source"],
+  ["gpt-5.6-terra", 1.00, 5.00, 0.10, 1.00, "guess: assumed mid-tier (terra)"],
+  ["gpt-5.4", 2.00, 10.00, 0.20, 2.00, "guess: assumed standard GPT tier"],
+  ["gpt-reserve", 0.50, 2.50, 0.05, 0.50, "guess: internal reserve/fallback lane, no published rate"],
+  ["codex-auto-review", 0.10, 0.50, 0.01, 0.10, "guess: no official rate, assumed cheapest/luna tier"],
+  ["gpt-oss-120b", 0, 0, 0, 0, "guess: open-weight model, assumed $0 (self-hosted/free lane)"],
+  ["gemma4", 0, 0, 0, 0, "confirmed: NouGen free local/cloud ollama lane, $0 by policy"],
+  ["gemini-m", 0.50, 3.00, 0.05, 0.50, "guess: unrecognized internal codename, assumed gemini-3-flash tier"],
+  ["auto-gemini-3", 0.50, 3.00, 0.05, 0.50, "guess: assumed gemini-3-flash tier (auto-router alias)"]
+];
+// Free-lane classification runs BEFORE the substring table and the paid
+// fallback (Codex P2 on #971): local ollama tags, custom fleet models,
+// OpenRouter ":free" routes and HF spaces are $0 by policy
+// (AGENTS.md free-lane mandate, tools/token_tracker.py::price_for). Without
+// this, `local/sol-ai:e4b` or `llama-3.3-70b-instruct:free` priced at the
+// generic mid-tier and tracker_daily invented spend for the free workload.
+const FREE_LANE_MARKERS = [
+  ":free", "local/", "ollama", "gemma", "sol-ai", "solai", "dav1d", "kaedra", "iris-ai",
+  "rhea-noir", "griot", "davos", "mrs-b", "yukiai", ":e2b", ":e4b", "-cloud", "gpt-oss",
+  "hf/", "huggingface", "qwen3-coder-next", "deepseek-v4", "glm-5.1",
+];
+function isFreeLane(m) {
+  return FREE_LANE_MARKERS.some((k) => m.includes(k));
+}
+__name(isFreeLane, "isFreeLane");
+function rateFor(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("synthetic") || m === "(unknown)" || m === "unknown" || !m) return null;
+  if (isFreeLane(m)) return { input: 0, output: 0, cache_read: 0, cache_creation: 0, confidence: "confirmed: free lane (local/ollama-cloud/openrouter :free/hf), $0 by policy" };
+  for (const [pat, inp, out, cread, ccreate, confidence] of RATE_TABLE) {
+    if (m.includes(pat)) return { input: inp, output: out, cache_read: cread, cache_creation: ccreate, confidence };
+  }
+  return { input: 1.00, output: 5.00, cache_read: 0.10, cache_creation: 1.00, confidence: "guess: fully unrecognized model, assumed generic mid-tier -- check RATE_TABLE" };
+}
+__name(rateFor, "rateFor");
+// cold = price every token (incl. cache_read/cache_creation) at the full input
+// rate, as if no caching existed. cached = what was actually billed.
+function priceModel(model, t) {
+  const r = rateFor(model);
+  if (!r) return null;
+  const inp = t.input_tokens || 0, out = t.output_tokens || 0, cread = t.cache_read || 0, ccreate = t.cache_creation || 0;
+  const cold = (inp + cread + ccreate) * r.input / 1e6 + out * r.output / 1e6;
+  const cached = inp * r.input / 1e6 + cread * r.cache_read / 1e6 + ccreate * r.cache_creation / 1e6 + out * r.output / 1e6;
+  // Unrounded: callers aggregate these (priceModelsMap, continuation windows).
+  // Rounding here zeroed sub-cent buckets before they were summed (Codex P2).
+  return { cold, cached, confidence: r.confidence };
+}
+__name(priceModel, "priceModel");
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+__name(round2, "round2");
+// Display rounding keeps 4 decimals so a $0.004 bucket survives being summed
+// across 100 daily responses instead of reading as $0 in each.
+function round4(n) {
+  return Math.round(n * 1e4) / 1e4;
+}
+__name(round4, "round4");
+function priceModelsMap(models) {
+  const out = {};
+  let cold = 0, cached = 0, unpriced = [];
+  for (const [model, t] of Object.entries(models || {})) {
+    const p = priceModel(model, t);
+    if (!p) { unpriced.push(model); continue; }
+    cold += p.cold;
+    cached += p.cached;
+    out[model] = { cold: round4(p.cold), cached: round4(p.cached), confidence: p.confidence };
+  }
+  return { by_model: out, cold: round4(cold), cached: round4(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
+}
+__name(priceModelsMap, "priceModelsMap");
 async function shardHeaders(env) {
   return {
     // blade's _TokenGatedMCP reads x-ngs-token (or ?token=) only — it never
@@ -1067,8 +1372,8 @@ function peerConfig(env, name) {
   const legacy = upper === "PHOEBUS";
   const origin = env[upper + "_ORIGIN"] || (legacy ? env.PHOEBUS_ORIGIN || "https://phoebus.nougenai.com" : "");
   const token = env[upper + "_TOKEN"] || (legacy ? env.PHOEBUS_TOKEN : void 0);
-  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 45000;
-  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 25000;
+  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 6500;
+  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 6500;
   return { name, origin, token, budget, grace };
 }
 __name(peerConfig, "peerConfig");
@@ -1095,6 +1400,9 @@ async function shardCallFanout(env, toolName, args) {
   // double the wait on the half that is already slower, and the retry path
   // exists for transient blade faults, not for a best-effort extra origin.
   const peerPromises = configured.map((p) => {
+    if (!isHallwayRouteHealthy(`recall_${p.name}`)) {
+      return Promise.resolve({ ok: false, e: { message: "circuit_open" } });
+    }
     const peerEnv = { ...env, SHARD_GATEWAY_URL: p.origin, SHARD_HTTP_TIMEOUT_MS: p.budget, SHARD_SSE_TIMEOUT_MS: p.budget, SHARD_CALL_MAX_ATTEMPTS: 1 };
     if (p.token) peerEnv.SHARD_GATEWAY_TOKEN = p.token;
     return fanoutSettle(shardCallDirect(peerEnv, toolName, args));
@@ -1114,12 +1422,16 @@ async function shardCallFanout(env, toolName, args) {
   const arms = [{ name: "blade", res: primary }, ...configured.map((p, i) => ({ name: p.name, res: peerResults[i] }))];
   for (const arm of arms) {
     if (arm.res.ok && !arm.res.v?.isError) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, true);
       ok.push({ name: arm.name, result: arm.res.v });
       status[arm.name] = "ok";
     } else if (arm.res.ok) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, false, "gateway_isError");
       status[arm.name] = "gateway returned isError";
     } else {
-      status[arm.name] = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      const msg = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      if (arm.name !== "blade" && msg !== "circuit_open") recordHallwayRouteOutcome(`recall_${arm.name}`, false, msg);
+      status[arm.name] = msg;
     }
   }
   // A peer with no origin was never dialed -- that is a config gap, not a
@@ -1254,6 +1566,21 @@ function httpFailureReason(status, raw) {
   return null;
 }
 __name(httpFailureReason, "httpFailureReason");
+// A live NouGen node answers /health with its own JSON -- app.py returns
+// {"status": "ignited", "node": <origin>, ...}. A 2xx alone proves nothing:
+// a paused Hugging Face Space answered every path with HTTP 206 and the
+// same generic HF HTML shell, and a status-code-only check read that as
+// "health ok" for nine days (2026-10-14 to 2026-10-23) while the Space sat
+// paused by the platform. The body is the verdict, not the code.
+function healthBodyProvesNode(raw) {
+  try {
+    const body = JSON.parse(String(raw || ""));
+    if (!body || typeof body !== "object") return false;
+    if (typeof body.node !== "string" || !body.node) return false;
+    return ["ignited", "ok", "healthy", "up", "green"].includes(body.status);
+  } catch { return false; }
+}
+__name(healthBodyProvesNode, "healthBodyProvesNode");
 function routeFailureReason(err) {
   const name = err?.name || "";
   const msg = String(err?.message || err || "");
@@ -1510,6 +1837,55 @@ function toolError(message) {
   return { content: [{ type: "text", text: "Error: " + message }], isError: true };
 }
 __name(toolError, "toolError");
+// Engine attestation (2026-11-06): blade's Dav1d routes return JSON naming the
+// engine that actually ran ("agy-cli" or "ollama" + model). Passed through raw,
+// a caller read a dav1d:e2b persona answer as an AGY CLI analysis of a video.
+// Every Dav1d result now leads with the engine, and says plainly when it was a
+// model answer with no tools rather than a CLI run.
+function attestEngine(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) {}
+  const engine = p && typeof p.engine === "string" ? p.engine : null;
+  const model = p && typeof p.model === "string" ? p.model : null;
+  let header;
+  if (engine === "agy-cli") {
+    header = `[engine: agy-cli (real CLI run), exit ${p.exit_code ?? "?"}, host ${p.host ?? "?"}]`;
+  } else if (engine === "ollama") {
+    header = `[engine: ollama/${model ?? "?"}: a local model answer, NOT an AGY CLI run; it had no tools, no web and no video access, so treat any claims about external content as unverified]`;
+  } else {
+    header = "[engine: unattested: the node did not say what ran; treat this as unverified]";
+  }
+  return { header, engine, model, attested: engine !== null, parsed: p };
+}
+__name(attestEngine, "attestEngine");
+// Source verification for media routes: a transcript counts as retrieved only
+// when it carries real timestamped segments, and an ingest only when the node
+// reports captured shards. Anything else is not evidence of retrieval.
+function transcriptEvidence(body, structured) {
+  let s = structured && typeof structured === "object" ? structured : null;
+  if (!s) { try { const p = JSON.parse(body); if (p && typeof p === "object") s = p; } catch (e) {} }
+  const stamps = /* @__PURE__ */ __name((t) => (String(t || "").match(/\[?\b\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/g) || []).length, "stamps");
+  let segments = (String(body || "").match(/^\s*\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/gm) || []).length;
+  let captured = 0;
+  if (s) {
+    // nougentube_transcript: {transcript_available, transcript}
+    // Every media route returns a decoded `transcript` (subtitles or Whisper);
+    // a non-empty one is retrieval unless the node says transcript_available: false.
+    const hasTranscript = typeof s.transcript === "string" && s.transcript.trim() !== "" && s.transcript_available !== false;
+    if (hasTranscript) segments = Math.max(segments, stamps(s.transcript) || 1);
+    // `sharded` is also true for a captured-stub, so it counts only with a transcript.
+    if (hasTranscript && s.sharded === true) captured = Math.max(captured, 1);
+    // nougentube_ingest: {counts: {captured: N}}. "captured-stub" (no transcript)
+    // and "skipped-duplicate" are deliberately not evidence.
+    if (Number.isFinite(s.captured)) captured = Math.max(captured, s.captured);
+    else if (s.counts && Number.isFinite(s.counts.captured)) captured = Math.max(captured, s.counts.captured);
+  } else {
+    const m = String(body || "").match(/"captured"\s*:\s*(\d+)/);
+    if (m) captured = Number(m[1]);
+  }
+  return { segments, captured, verified: segments > 0 || captured > 0 };
+}
+__name(transcriptEvidence, "transcriptEvidence");
 // Freshness signal for shard reads (relay leg 20260831T235317Z, item 4): the
 // blade/Space split-brain history means "which node answered" matters as
 // much as "when" - a recall that quietly hit a lagging replica should be
@@ -1692,11 +2068,12 @@ var TOOLS = [
   {
     name: "nougenmsg_latest",
     title: "Latest NouGen Messages",
-    description: "Read the newest inter-agent and fleet messages from the NouGenMsg bus (relay legs), newest first.",
+    description: "Read NouGenMsg bus messages (relay legs), newest first, with snapshot-pinned cursor pagination. Returns complete, next_cursor, snapshot_head_sha, ordering_basis, checked_utc.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "integer", default: 10, description: "Maximum messages to return (max 25)." }
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 10, description: "Page size (1-100)." },
+        cursor: { type: "string", description: "next_cursor from the previous page. Pages are pinned to the first page's registry snapshot; keep paging until complete is true. Absence is unproven until complete is true." }
       },
       additionalProperties: false
     },
@@ -1827,7 +2204,7 @@ var TOOLS = [
   {
     name: "tracker_daily",
     title: "Tracker Daily",
-    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
+    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown, and a priced `cost` field (cold = uncached-equivalent, cached = actual, per-model + total, each tagged confirmed/guess). The raw `sketch` debug array is stripped -- it carried no usage signal and was the single largest cause of context blowups on multi-day sweeps.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1842,7 +2219,7 @@ var TOOLS = [
   {
     name: "tracker_spend",
     title: "Tracker Spend Summary",
-    description: "Aggregate usage across dailies: invocations, exact token counts and total_activity, per lane. Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total. A total is only complete when complete:true. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
+    description: "Aggregate usage across dailies: invocations, exact token counts, total_activity, and a per-model token breakdown, per lane -- plus a priced `cost` field (cold = uncached-equivalent, cached = actual; per-model and grand total; each model tagged confirmed/guess, never silently dropped). Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total (including per-model). A total is only complete when complete:true -- cost on a partial result will undercount. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
     inputSchema: {
       type: "object",
       properties: {
@@ -3616,6 +3993,65 @@ var TOOLS = [
   }
 ,
   {
+    "name": "control_plane_context_select",
+    "description": "Select a bounded graph-aware projection from caller-supplied shard candidates; returns provenance, sufficiency coverage, and replay hash.",
+    "inputSchema": {
+      "properties": {
+        "query": {"title": "Query", "type": "string"},
+        "budget_tokens": {"default": 500, "minimum": 0, "maximum": 1000000, "title": "Budget Tokens", "type": "integer"},
+        "nodes_json": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Nodes Json"}
+      },
+      "required": ["query"],
+      "title": "control_plane_context_selectArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "control_plane_pareto_route",
+    "description": "Evaluate caller-supplied route candidates over the explicit Pareto objectives; requires task-specific weights and does not dispatch a provider call.",
+    "inputSchema": {
+      "properties": {
+        "routes_json": {"title": "Routes Json", "type": "string"},
+        "policy_weights_json": {"title": "Policy Weights Json", "type": "string"}
+      },
+      "required": ["routes_json", "policy_weights_json"],
+      "title": "control_plane_pareto_routeArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "control_plane_adherence_evaluate",
+    "description": "Compare declared workflow edges to observed [source, target] edges. Coverage and undeclared behavior are reported separately; empty coverage is unmeasured.",
+    "inputSchema": {
+      "properties": {
+        "declared_edges_json": {"title": "Declared Edges Json", "type": "string"},
+        "observed_events_json": {"title": "Observed Events Json", "type": "string"},
+        "threshold": {"default": 0.8, "minimum": 0, "maximum": 1, "title": "Threshold", "type": "number"}
+      },
+      "required": ["declared_edges_json", "observed_events_json"],
+      "title": "control_plane_adherence_evaluateArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "formal_verification_suite",
+    "description": "Run fixed bounded information-dynamics SMT models. Reports provider invariants as empirical and does not claim implementation refinement.",
+    "inputSchema": {
+      "properties": {},
+      "title": "formal_verification_suiteArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "arxiv_capabilities",
     "description": "Return the arXiv MCP handlers actually available in this process.",
     "inputSchema": {
@@ -3784,9 +4220,20 @@ var HANDLERS = {
   // implementation existed only in worker.live.js, while wrangler deploys
   // worker.js, so clients received "unknown tool" for both readers.
   async nougenmsg_latest(args, env) {
-    const limit = Math.min(Math.max(args.limit ?? 10, 1), 25);
-    const { ids } = await listLegs(env);
-    const settled = await mapPooled(ids.slice(0, limit), 8, (id) => readLeg(env, id).then(({ rec }) => rec));
+    const limit = Number.isInteger(args.limit) ? args.limit : 10;
+    const decoded = args.cursor !== void 0 ? decodeMsgCursor(args.cursor) : null;
+    if (args.cursor !== void 0 && !decoded) return toolError("invalid nougenmsg cursor; restart without cursor");
+    let listing;
+    try {
+      listing = await listLegs(env, decoded ? decoded.head : env.RELAY_BRANCH);
+    } catch (err) {
+      if (decoded) return toolError(`could not resume nougenmsg snapshot ${decoded.head}: ${err.message || err}`);
+      throw err;
+    }
+    const { ids, headSha, checkedUtc, listingComplete = true } = listing;
+    const pg = paginateLegIds(ids, headSha, args.cursor, limit);
+    if (pg.error) return toolError(pg.error);
+    const settled = await mapPooled(pg.pageIds, 8, (id) => readLeg(env, id, headSha || env.RELAY_BRANCH).then(({ rec }) => rec));
     const messages = [];
     for (const r of settled) {
       if (!r.ok) continue;
@@ -3799,7 +4246,18 @@ var HANDLERS = {
     for (const m of messages) {
       lines.push("  * [" + (m.created_utc || "").slice(0, 19) + "] [" + m.origin_machine + "/" + m.origin_agent + "] -> [" + m.destination + "]: " + String(m.body).replace(/\n/g, " ").slice(0, 100));
     }
-    return text(lines.join("\n"), { complete: settled.every((r) => r.ok), total_messages: messages.length, messages, ...orderingMeta(ids[0], messages[0]?.created_utc) });
+    const unreadable = settled.filter((r) => !r.ok).map((r) => ({ id: r.item, error: r.error }));
+    if (pg.nextCursor) lines.push("", "Continue with cursor `" + pg.nextCursor + "` until complete is true.");
+    return text(lines.join("\n"), {
+      messages, returned: messages.length, total_records: ids.length,
+      complete: pg.complete && listingComplete && unreadable.length === 0,
+      next_cursor: pg.nextCursor, unreadable,
+      snapshot_head_sha: headSha, checked_utc: checkedUtc,
+      ...(pg.reason ? { incomplete_reason: pg.reason } : {}),
+      ...(!listingComplete ? { listing_warning: "GitHub did not provide a complete .handoffs listing" } : {}),
+      ...orderingMeta(pg.pageIds[0], messages[0]?.created_utc),
+      ordering_basis: "leg_id_utc_stamp_desc_then_id_desc",
+    });
   },
   async nougenmsg_inbox(args, env) {
     const limit = Math.min(Math.max(args.limit ?? 10, 1), 25);
@@ -4239,9 +4697,10 @@ Other lanes see it on their next relay check.`,
     // call the answer complete when a source could not be read.
     const ttlDefaultH = Number(env.CLAIM_TTL_HOURS || 8);
     const now = Date.now();
-    let claimFiles = [], claimFilesTotal = 0, claimSourceOk = true, claimSourceError = null;
+    let claimFiles = [], claimFilesTotal = 0, claimListingEntries = 0, claimSourceOk = true, claimSourceError = null;
     try {
       const entries = await gh(env, `/contents/.handoffs/claims?ref=${env.RELAY_BRANCH}`);
+      claimListingEntries = entries.length;
       claimFilesTotal = entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).length;
       // Subrequest budget: newest files only (stamp-first names order by time).
       claimFiles = orderLegIds(entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).map((e) => e.name.replace(/\.json$/, "")))
@@ -4260,7 +4719,8 @@ Other lanes see it on their next relay check.`,
     // Each leg read is a GitHub subrequest; the Workers per-invocation cap
     // (50 on this plan) was blown at 60 legs + listing (live, 2026-09-24).
     const scanN = Math.min(Number(env.CLAIM_LEG_SCAN || 20), 25);
-    const { ids } = await listLegs(env);
+    const legListing = await listLegs(env);
+    const { ids } = legListing;
     const legRead = await mapPooled(ids.slice(0, scanN), 8, (id) => readLeg(env, id).then(({ rec }) => rec));
     const legUnreadable = legRead.filter((r) => !r.ok).length;
     const legOwners = [];
@@ -4275,9 +4735,13 @@ Other lanes see it on their next relay check.`,
     }
     // The contents API returns at most 1000 entries, alphabetically: at the
     // cap, the newest claim files may be exactly the ones missing.
-    const claimListingCapped = claimFilesTotal >= 1000;
-    const complete = claimSourceOk && !claimListingCapped && unreadable.length === 0 && legUnreadable === 0;
-    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_listing_capped: claimListingCapped, legs_scanned: legRead.length, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
+    const claimListingCapped = claimListingEntries >= 1000;
+    const claimFilesUnscanned = Math.max(0, claimFilesTotal - claimFiles.length);
+    const legsUnscanned = Math.max(0, ids.length - legRead.length);
+    const legListingComplete = legListing.listingComplete === true;
+    const complete = claimSourceOk && !claimListingCapped && claimFilesUnscanned === 0
+      && legListingComplete && legsUnscanned === 0 && unreadable.length === 0 && legUnreadable === 0;
+    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_files_unscanned: claimFilesUnscanned, claim_listing_capped: claimListingCapped, legs_total: ids.length, legs_scanned: legRead.length, legs_unscanned: legsUnscanned, leg_listing_complete: legListingComplete, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
     const lines = [];
     if (!active.length && !legOwners.length) lines.push("no active ownership found in either source" + (complete ? "" : " -- NOT complete, see sources"));
     if (active.length) {
@@ -4290,6 +4754,8 @@ Other lanes see it on their next relay check.`,
     }
     lines.push("", `_sources: ${sources.claim_files} claim file(s), newest ${sources.legs_scanned} legs scanned; complete=${complete}_`);
     if (claimListingCapped) lines.push("\u26A0\uFE0F claims directory listing hit the 1000-entry API cap; newest claim files may be missing (prune or archive .handoffs/claims/)");
+    if (claimFilesUnscanned || legsUnscanned) lines.push(`\u26A0\uFE0F bounded ownership sample: ${claimFilesUnscanned} claim file(s) and ${legsUnscanned} leg(s) unexamined; absence of ownership is not established`);
+    if (!legListingComplete) lines.push("\u26A0\uFE0F leg directory listing is incomplete");
     if (claimSourceError) lines.push(`\u26A0\uFE0F claim directory unreadable: ${claimSourceError}`);
     if (unreadable.length) lines.push(`\u26A0\uFE0F ${unreadable.length} claim file(s) unreadable: ` + unreadable.map((u) => u.file).join(", "));
     if (legUnreadable) lines.push(`\u26A0\uFE0F ${legUnreadable} leg(s) unreadable in the scan window`);
@@ -4312,14 +4778,23 @@ Other lanes see it on their next relay check.`,
     return text(lines.join("\n"), { lanes, unreadable, complete: unreadable.length === 0 });
   },
   async tracker_daily(args, env) {
-    const daily = await trackerDaily(env, args.lane, args.date);
+    const raw = await trackerDaily(env, args.lane, args.date);
+    // `sketch` is an internal dedup/debug array (dozens of hashes) with no
+    // value to a caller and no bearing on token totals -- it was the single
+    // biggest cause of context blowups when sweeping many days (2026-11-06
+    // incident: a 10-day pull exhausted a subagent's budget on this field
+    // alone). Dropped here, not upstream, so the raw store stays untouched.
+    const { sketch, ...daily } = raw;
     const e = daily.exact || {};
+    const cost = priceModelsMap(daily.models);
+    daily.cost = cost;
     const md = [
       `**${args.lane} \u2014 ${args.date}**`,
       "",
       `invocations: ${daily.invocations ?? "?"}`,
       `exact tokens: in ${e.input_tokens ?? 0} / out ${e.output_tokens ?? 0} / cache-read ${e.cache_read ?? 0} / cache-create ${e.cache_creation ?? 0}`,
-      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`
+      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`,
+      `cost (USD, ${RATE_TABLE_VERSION}): cold $${cost.cold.toFixed(2)} / cached $${cost.cached.toFixed(2)}` + (cost.unpriced.length ? ` -- unpriced: ${cost.unpriced.join(", ")}` : "")
     ].join("\n");
     return text(md, daily);
   },
@@ -4344,7 +4819,8 @@ Other lanes see it on their next relay check.`,
         input_tokens: 0,
         output_tokens: 0,
         cache_read: 0,
-        cache_creation: 0
+        cache_creation: 0,
+        models: {}
       };
       // Oldest-first so next_since walks forward deterministically and a
       // caller summing consecutive windows reproduces the full total exactly.
@@ -4367,17 +4843,34 @@ Other lanes see it on their next relay check.`,
         totals.output_tokens += e.output_tokens || 0;
         totals.cache_read += e.cache_read || 0;
         totals.cache_creation += e.cache_creation || 0;
+        for (const [model, mt] of Object.entries(daily.models || {})) {
+          const acc = totals.models[model] || (totals.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+          acc.input_tokens += mt.input_tokens || 0;
+          acc.output_tokens += mt.output_tokens || 0;
+          acc.cache_read += mt.cache_read || 0;
+          acc.cache_creation += mt.cache_creation || 0;
+        }
       }
       totals.total_activity = totalActivity(totals);
+      totals.cost = priceModelsMap(totals.models);
       perLane.push(totals);
     }
     const grand = perLane.reduce((acc, t) => {
       for (const k of ["days", "requested_days", "missing_days", "invocations", "input_tokens", "output_tokens", "cache_read", "cache_creation"]) {
         acc[k] = (acc[k] || 0) + t[k];
       }
+      acc.models = acc.models || {};
+      for (const [model, mt] of Object.entries(t.models)) {
+        const a = acc.models[model] || (acc.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+        a.input_tokens += mt.input_tokens;
+        a.output_tokens += mt.output_tokens;
+        a.cache_read += mt.cache_read;
+        a.cache_creation += mt.cache_creation;
+      }
       return acc;
     }, {});
     grand.total_activity = totalActivity(grand);
+    grand.cost = priceModelsMap(grand.models);
     const nextSince = deferred.length ? deferred.map((d) => d.date).sort()[0] : null;
     const partial = failures.length > 0 || deferred.length > 0;
     const span = args.since || args.until ? ` (${args.since || "\u2026"} \u2192 ${args.until || "\u2026"})` : " (all time scanned)";
@@ -4392,6 +4885,7 @@ Other lanes see it on their next relay check.`,
       lines.push(`- **${t.lane}**: ${t.days}/${t.requested_days} days aggregated, ${t.invocations} invocations, in ${t.input_tokens.toLocaleString()} / out ${t.output_tokens.toLocaleString()}, activity ${t.total_activity.toLocaleString()}`);
     }
     lines.push("", `**Total**: ${grand.invocations || 0} invocations, in ${(grand.input_tokens || 0).toLocaleString()} / out ${(grand.output_tokens || 0).toLocaleString()}, activity ${grand.total_activity.toLocaleString()} (${TOTAL_ACTIVITY_VERSION} = ${TOTAL_ACTIVITY_DEF})`);
+    lines.push(`**Cost** (USD, ${RATE_TABLE_VERSION}${partial ? " -- PARTIAL, will undercount" : ""}): cold $${grand.cost.cold.toFixed(2)} / cached $${grand.cost.cached.toFixed(2)}` + (grand.cost.unpriced.length ? ` -- unpriced: ${grand.cost.unpriced.join(", ")}` : "") + " -- entries marked guess in by_model are not official rates.");
     if (partial) {
       lines.push(
         "",
@@ -4450,7 +4944,18 @@ Other lanes see it on their next relay check.`,
       const p = { route: r.name, host, primary: Boolean(r.primary), circuit: circuitState(env, r), checked_utc: (/* @__PURE__ */ new Date()).toISOString() };
       try {
         const res = await fetch(r.origin.replace(/\/$/, "") + "/health", { headers: await shardHeaders(renv), signal: AbortSignal.timeout(probeMs) });
-        p.health = res.ok ? "ok" : httpFailureReason(res.status, await res.text().catch(() => "")) || "http_" + res.status;
+        const rawHealth = await res.text().catch(() => "");
+        if (!res.ok) {
+          p.health = httpFailureReason(res.status, rawHealth) || "http_" + res.status;
+        } else if (healthBodyProvesNode(rawHealth)) {
+          p.health = "ok";
+        } else {
+          // 2xx but not the node's own health JSON: a platform shell, proxy
+          // placeholder, or paused host answering in the node's place.
+          // Never "ok" -- see healthBodyProvesNode.
+          p.health = "invalid_health_body";
+          p.health_detail = String(rawHealth || "").replace(/\s+/g, " ").slice(0, 120);
+        }
       } catch (err) { p.health = routeFailureReason(err); }
       // /health can be answered while the /mcp/ serve path is dead (split-brain
       // of 2026-08-25), so the serve path is what decides "usable".
@@ -4746,6 +5251,11 @@ Other lanes see it on their next relay check.`,
     if (typeof args.event_time === "string" && args.event_time.trim()) {
       payload.event_time_original = args.event_time.trim();
     }
+    // Hallway first (owner architecture: front door -> HF hallway -> node room).
+    // Active only when HALLWAY_CAPTURE_URL is configured; any failure falls back
+    // to the direct node call below, so a down hallway never loses a write.
+    const hallway = await hallwayCapture(env, payload, args);
+    if (hallway) return hallway;
     const result = await shardCall(env, env.SHARD_TOOL_CAPTURE || "capture_experience", payload);
 
     // Deciding whether the write landed used to be `captured === false`, which
@@ -4945,7 +5455,14 @@ ${body}`,
       });
       const raw = await res.text();
       if (!res.ok) return toolError("dav1d /dav1d/exec " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      const structured = { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" };
+      // This tool promises an AGY CLI execution; anything else answering is a
+      // failure to deliver that, not a success with a different engine.
+      if (att.engine !== "agy-cli") {
+        return { content: [{ type: "text", text: "Error: dav1d_exec did not run the AGY CLI. " + att.header + "\n" + raw }], structuredContent: structured, isError: true };
+      }
+      return { content: [{ type: "text", text: att.header + "\n" + raw }], structuredContent: structured };
     } catch (err) {
       if (err.name === "AbortError") {
         return toolError(`dav1d_exec timed out waiting on blade (client bound ${innerTimeoutS}s + ${bufferMs}ms buffer) — Dav1d's own ${innerTimeoutS}s bound should have answered first; check blade's node directly if this recurs`);
@@ -4988,7 +5505,11 @@ ${body}`,
         return out;
       }
       if (!res.ok) return toolError("ask_dav1d /dav1d/ask " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      return {
+        content: [{ type: "text", text: att.header + "\n" + raw }],
+        structuredContent: { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" }
+      };
     } catch (err) {
       if (err.name === "AbortError") return toolError(`ask_dav1d timed out after ${timeoutS}s waiting on blade's ollama lane (cold load can take 5-30s; raise timeout or check ollama on blade)`);
       return toolError("ask_dav1d unreachable: " + (err.message || String(err)));
@@ -5252,55 +5773,46 @@ ${body}`,
     if (unset) return toolError(unset);
     const url = args.url || args.source;
     if (!url) return toolError("url is required for nougentube");
-    
-    // FastMCP Tool Transformation:
-    // 1. Native nougentube across fleet (Phoebus / Blade)
-    try {
-      const res = await shardCall(env, "nougentube", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 2. Subtitle extraction (nougentube_transcript on Phoebus / Blade / Space)
-    try {
-      const res = await shardCall(env, "nougentube_transcript", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 3. Media transcribe fallback
-    try {
-      const res = await shardCall(env, "transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 4. Whisper transcription fallback
-    try {
-      const res = await shardCall(env, "nougen_media_transcribe", {
-        url,
-        language: args.language || null,
-        whisper_model: args.whisper_model || "tiny",
-        auto_shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 5. Grid YouTube ingest fallback
-    try {
-      const res = await shardCall(env, "youtube_ingest", {
-        url,
-        extract_chars: 2000,
-        shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-      if (body) return toolError(body);
-    } catch (e) {
-      return toolError(`nougentube ingest failed: ${e.message || String(e)}`);
+    const shard = args.auto_shard !== false;
+    // Each route must PROVE retrieval: timestamped transcript segments, or a node
+    // report of captured shards. A route that answers without that evidence (or
+    // a gateway 524) is recorded as failed and the next independent route runs;
+    // nothing is ever returned as retrieved without evidence.
+    const routes = [
+      ["nougentube", { url }],
+      ["nougentube_transcript", { url }],
+      ["transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model }],
+      ["nougen_media_transcribe", { url, language: args.language || null, whisper_model: args.whisper_model || "tiny", auto_shard: shard }],
+      ["youtube_ingest", { url, extract_chars: 2000, shard }]
+    ];
+    const failures = [];
+    for (const [tool, payload] of routes) {
+      try {
+        const res = await shardCall(env, tool, payload);
+        const body = (res.content || []).map((c) => c.text || "").join("\n");
+        if (res.isError || !body || body.includes("unknown tool")) {
+          failures.push(`${tool}: ${res.isError ? body.slice(0, 160) || "error" : body ? "unknown tool on node" : "empty reply"}`);
+          continue;
+        }
+        const ev = transcriptEvidence(body, res.structuredContent);
+        if (!ev.verified) {
+          failures.push(`${tool}: answered without transcript segments or captured shards (not evidence of retrieval)`);
+          continue;
+        }
+        const header = ev.segments > 0
+          ? `[transcript verified: ${ev.segments} timestamped segment(s) via ${tool}]`
+          : `[ingest verified: ${ev.captured} shard(s) captured on the node via ${tool}]`;
+        const structured = { ...(res.structuredContent || {}), retrieved: true, route: tool, segments: ev.segments, captured: ev.captured, failed_routes: failures };
+        return text(header + "\n" + body, structured);
+      } catch (e) {
+        failures.push(`${tool}: ${(e && e.message) || String(e)}`.slice(0, 200));
+      }
     }
-    return toolError("nougentube: all media and transcript routes failed");
+    return {
+      content: [{ type: "text", text: "Error: nougentube retrieved nothing; no route returned a transcript or captured shards. Nothing about this video is verified.\n" + failures.map((f) => "- " + f).join("\n") }],
+      structuredContent: { retrieved: false, failed_routes: failures },
+      isError: true
+    };
   },
   async transcribe_media(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5393,16 +5905,9 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    try {
-      const res = await shardCall(env, "dav1d_exec", {
-        command: "python",
-        subcommand: "-c",
-        prompt: args.code
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-    return toolError("execute_sandboxed_code: execution unavailable");
+    // No model fallback: a language model asked to "run" code returns plausible text, not execution
+    // (2026-10-04 audit: a fabricated SHA-256 came back as a receipt). Real execution or an error.
+    return toolError("execute_sandboxed_code: real execution unavailable (node sandbox unreachable); nothing was run");
   },
   async analyze_file_sandboxed(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5417,7 +5922,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text(`File analysis completed for: ${args.file_path || "file"}`);
+    return toolError(`analyze_file_sandboxed: no analysis performed for ${args.file_path || "file"} (node sandbox and repo read unavailable)`);
   },
   async apply_skills(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5435,7 +5940,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text("✅ No specialized skill override needed. Proceed with architecture defaults.");
+    return toolError("apply_skills: skill lookup unavailable; no skills were checked");
   },
   async ask_agent(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5476,7 +5981,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body) return text(body, res.structuredContent);
     } catch (e) {}
-    return text("Ollama local GPU inference simulated response.");
+    return toolError("ask_ollama_sandboxed: no model lane answered; no inference was performed");
   },
   async batch_execute_sandboxed(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5486,13 +5991,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    try {
-      const cmds = (args.commands || []).map((c) => c.code || c.command || "").join("\n");
-      const res = await shardCall(env, "dav1d_exec", { command: "python", subcommand: "-c", prompt: cmds });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-    return text("Batch sandboxed commands processed.");
+    return toolError("batch_execute_sandboxed: real execution unavailable (node sandbox unreachable); no command was run");
   },
   async capture_experience(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5503,22 +6002,16 @@ ${body}`,
     return text(body || "(no output)", result.structuredContent);
   },
   async cf_deploy_worker(args, env) {
-    return text(JSON.stringify({
-      status: "deployed",
-      worker: "nougen-fleet-mcp",
-      routes: [
-        "https://shards.nougenai.com/mcp",
-        "https://mcp.nougenai.com/mcp",
-        "https://ngs.nougenai.com/mcp"
-      ],
-      tools_active: TOOLS.length,
-      note: "Continuous deployment active via tools/deploy_fleet_mcp.py."
-    }, null, 2));
+    // Previously returned a hardcoded deployed status without deploying anything.
+    return toolError("cf_deploy_worker: this worker cannot deploy itself; run tools/deploy_fleet_mcp.py on an operator host and verify the live tools/list");
   },
   async cf_list_workers(args, env) {
     return text(JSON.stringify({
+      source: "static_config_not_live",
+      note: "Hardcoded list, not queried from Cloudflare; tools_active below is this build's count.",
+      tools_active_this_build: TOOLS.length,
       workers: [
-        { name: "nougen-fleet-mcp", role: "Fleet MCP Gateway (75 tools)", url: "https://shards.nougenai.com/mcp" },
+        { name: "nougen-fleet-mcp", role: "Fleet MCP Gateway", url: "https://shards.nougenai.com/mcp" },
         { name: "whoart-vault", role: "WhoArt Tactical Vault", url: "https://whoart-vault.nougenai.com" },
         { name: "ngs-node", role: "Hugging Face Space Node Replica", space: "nougenai/NouGenTracker-node" }
       ]
@@ -5538,7 +6031,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text(`[Cloudflare Edge AI]: ${args.prompt}`);
+    return toolError("cf_run_ai: no AI binding or fallback lane answered; no inference was performed");
   },
   async cf_status(args, env) {
     return text(JSON.stringify({
@@ -5735,13 +6228,11 @@ ${body}`,
     return text(body || "(no output)", result.structuredContent);
   },
   async nougenmsg_peers(args, env) {
-    return text(JSON.stringify({
-      peers: [
-        { name: "blade", host: "192.168.1.16", stadium: "Razer Blade 2020", role: "Heavy Inference", status: "online" },
-        { name: "phoebus", host: "192.168.1.78", stadium: "Mac Mini", role: "Backbone", status: "online" },
-        { name: "whoart", host: "192.168.1.187", stadium: "ProArt PX13", role: "Tactical/Edge (Hyperion)", status: "online" }
-      ]
-    }, null, 2));
+    // Peers come from Worker config (NOUGEN_PEERS_JSON), never from source.
+    let peers = [];
+    try { peers = JSON.parse((env && env.NOUGEN_PEERS_JSON) || "[]"); } catch { peers = []; }
+    if (!Array.isArray(peers)) peers = [];
+    return text(JSON.stringify({ peers, source: peers.length ? "NOUGEN_PEERS_JSON" : "unset" }, null, 2));
   },
   async promote_context_to_shard(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5901,6 +6392,38 @@ ${body}`,
     if (result.isError) return toolError(body || "arxiv_capabilities failed");
     return text(body || "(no output)", result.structuredContent);
   },
+  async formal_verification_suite(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "formal_verification_suite", {});
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "formal_verification_suite failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_context_select(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_context_select", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_context_select failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_pareto_route(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_pareto_route", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_pareto_route failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_adherence_evaluate(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_adherence_evaluate", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_adherence_evaluate failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
   async arxiv_radar(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return toolError(unset);
@@ -5948,8 +6471,16 @@ async function handleRpc(msg, env, keyId, auth = null) {
     });
   }
   if (method === "ping") return reply({});
-  if (method === "tools/list") return reply({ tools: TOOLS });
+  if (method === "tools/list") {
+    const allowed = tenantAllowedTools(env, auth);
+    const visible = allowed ? TOOLS.filter((t) => allowed.has(t.name)) : TOOLS;
+    return reply({ tools: visible });
+  }
   if (method === "tools/call") {
+    const allowed = tenantAllowedTools(env, auth);
+    if (allowed && !allowed.has(params?.name)) {
+      return fail(-32603, `tenant ${auth.email || auth.key} is not authorized for tool: ${params?.name}`);
+    }
     const handler = HANDLERS[params?.name];
     if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
     if (laneIsReadOnly(env, auth) && toolIsWrite(params?.name)) {
@@ -5977,6 +6508,16 @@ async function handleMcp(request, env, origin) {
   }
   const keyId = auth.key;
   env = laneEnv(env, auth.lane);
+  if (auth.nodeUrl) {
+    env = Object.assign(Object.create(env), {
+      SHARD_GATEWAY_URL: auth.nodeUrl,
+      // The tenant's node authenticates with the tenant's own token. Never fall back to the
+      // worker-global SHARD_GATEWAY_TOKEN here: that is the owner's credential, and this
+      // URL is a tenant-controlled host.
+      SHARD_GATEWAY_TOKEN: auth.nodeToken || "",
+      HALLWAY_CAPTURE_URL: `${auth.nodeUrl.replace(/\/+$/, "")}/v1/shards/capture`
+    });
+  }
   let body;
   try {
     body = await request.json();
@@ -5989,7 +6530,7 @@ async function handleMcp(request, env, origin) {
   return json(Array.isArray(body) ? replies : replies[0]);
 }
 __name(handleMcp, "handleMcp");
-var __test__ = { summarizeHit,  summaryOn,  summaryReply,  clientFromUserAgent,  toolIsWrite,  laneIsReadOnly,  fleetKeys,  authenticate,  laneForRedirect,  HANDLERS, TOOLS, orderLegIds, griotRows, griotEra, griotInEra, griotFlags, griotKey, shardCall, FEDERATION_CIRCUIT };
+var __test__ = { summarizeHit,  summaryOn,  summaryReply,  clientFromUserAgent,  toolIsWrite,  laneIsReadOnly,  fleetKeys,  authenticate,  laneForRedirect,  HANDLERS, TOOLS, orderLegIds, paginateLegIds, encodeMsgCursor, decodeMsgCursor, griotRows, griotEra, griotInEra, griotFlags, griotKey, shardCall, FEDERATION_CIRCUIT };
 // ---- /openapi.json -------------------------------------------------------
 // The Cloudflare routes for /openapi.json and /openapi* have pointed at this
 // worker since before 2026-09-01, but the switch below had no case for them,
@@ -6083,11 +6624,415 @@ function openapiDocument(origin) {
   };
 }
 __name(openapiDocument, "openapiDocument");
+
+// ---------------------------------------------------------------------------
+// Tenant onboarding: redeem a one-time invite and provision the tenant's tunnel,
+// DNS record and worker routing. The Cloudflare token lives only in the Worker's
+// secret store, so the person onboarding needs no token on their own machine.
+// Port of src/nougen_shards/tenant_onboard.py (the local node registry step stays
+// on the owner's node; see the digest key written below).
+// Bindings: TENANTS (KV), CLOUDFLARE_API_TOKEN_NOUGEN_FULL (secret),
+// CLOUDFLARE_ACCOUNT_ID (var or secret), optional NOUGEN_TENANT_DOMAIN, CLOUDFLARE_API_BASE.
+// ---------------------------------------------------------------------------
+const ONBOARD_TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const ONBOARD_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const ONBOARD_FALLBACK_DOMAIN = "nougenai.com";
+
+class OnboardError extends Error {}
+
+function onboardSlug(text, limit = 24) {
+  const s = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (s.slice(0, limit).replace(/-+$/, "")) || "tenant";
+}
+
+function onboardRandomBytes(n) {
+  const out = new Uint8Array(n);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+function onboardB64(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function onboardB64Url(bytes) {
+  return onboardB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function onboardSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function onboardCfClient(env) {
+  const token = env.CLOUDFLARE_API_TOKEN_NOUGEN_FULL;
+  const account = env.CLOUDFLARE_ACCOUNT_ID;
+  if (!token || !account) {
+    throw new OnboardError("Worker secrets CLOUDFLARE_API_TOKEN_NOUGEN_FULL and CLOUDFLARE_ACCOUNT_ID must be set");
+  }
+  const base = env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4";
+  return {
+    account,
+    async call(method, path, body, query) {
+      let url = base + path;
+      if (query) url += "?" + new URLSearchParams(query).toString();
+      const headers = { Authorization: `Bearer ${token}` };
+      const init = { method, headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const resp = await fetch(url, init);
+      const text = await resp.text();
+      if (resp.status === 404 && method === "GET") return null;
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      if (!resp.ok || (parsed && typeof parsed === "object" && parsed.success === false)) {
+        // Status and path only: the response body can echo sensitive input.
+        throw new OnboardError(`Cloudflare ${method} ${path} failed with HTTP ${resp.status}`);
+      }
+      if (parsed && typeof parsed === "object" && "success" in parsed) return parsed.result;
+      return parsed;
+    },
+  };
+}
+
+async function onboardZoneFor(cf, hostname) {
+  const parts = hostname.split(".");
+  for (let i = 0; i < parts.length - 1; i++) {
+    const zones = (await cf.call("GET", "/zones", undefined, { name: parts.slice(i).join(".") })) || [];
+    if (zones.length) return zones[0].id;
+  }
+  throw new OnboardError(`no Cloudflare zone on this account covers ${hostname}`);
+}
+
+function onboardTunnelIdFromToken(tunnelToken) {
+  if (!tunnelToken) return null;
+  try {
+    const padded = tunnelToken + "=".repeat((4 - (tunnelToken.length % 4)) % 4);
+    return JSON.parse(atob(padded)).t || null;
+  } catch {
+    return null;
+  }
+}
+
+async function onboardEnsureTunnel(cf, name, hostname, port, knownId) {
+  let found = [];
+  if (knownId) {
+    const got = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${knownId}`);
+    if (got && !got.deleted_at) found = [got];
+  }
+  if (!found.length) {
+    found = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel`, undefined,
+      { name, is_deleted: "false" })) || [];
+  }
+  const created = !found.length;
+  let tunnelId;
+  if (created) {
+    const made = await cf.call("POST", `/accounts/${cf.account}/cfd_tunnel`, {
+      name, config_src: "cloudflare", tunnel_secret: onboardB64(onboardRandomBytes(32)),
+    });
+    tunnelId = made.id;
+  } else {
+    tunnelId = found[0].id;
+  }
+  // A live tunnel already names the tenant's real port; never overwrite it.
+  const current = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`)) || {};
+  const rules = (current.config && current.config.ingress) || [];
+  const existingRule = rules.find((r) => r.hostname === hostname && String(r.service || "").startsWith("http://"));
+  if (existingRule) {
+    port = Number(existingRule.service.split(":").pop());
+  } else {
+    await cf.call("PUT", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`, {
+      config: { ingress: [
+        { hostname, service: `http://127.0.0.1:${port}` },
+        { service: "http_status:404" },
+      ] },
+    });
+  }
+  const token = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/token`);
+  if (typeof token !== "string" || !token) throw new OnboardError("Cloudflare returned no tunnel token");
+  return { tunnelId, tunnelToken: token.trim().replace(/^"|"$/g, ""), created, port };
+}
+
+async function onboardEnsureDns(cf, zone, hostname, tunnelId) {
+  const target = `${tunnelId}.cfargotunnel.com`;
+  const body = { type: "CNAME", name: hostname, content: target, proxied: true };
+  const existing = (await cf.call("GET", `/zones/${zone}/dns_records`, undefined, { name: hostname })) || [];
+  if (existing.length) {
+    if (existing[0].content !== target) {
+      await cf.call("PUT", `/zones/${zone}/dns_records/${existing[0].id}`, body);
+    }
+  } else {
+    await cf.call("POST", `/zones/${zone}/dns_records`, body);
+  }
+}
+
+async function onboardReadJson(kv, key) {
+  const raw = await kv.get(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Redeem a single-use invite and provision everything for that tenant.
+// Returns the values the tenant's own machine needs. The invite is consumed only
+// after every Cloudflare and KV step succeeds, so a failed run can be retried.
+async function provisionTenant(env, input) {
+  const code = String((input && input.code) || "").trim();
+  if (!code) throw new OnboardError("an invite code is required");
+  const kv = env.TENANTS;
+  if (!kv) throw new OnboardError("TENANTS KV binding is missing");
+
+  const invite = await onboardReadJson(kv, "invite:" + code);
+  if (!invite.eml) throw new OnboardError("invite code is not valid or was already used");
+  if (!(Number(invite.exp) > Date.now() / 1000)) throw new OnboardError("invite code has expired");
+  const email = String(invite.eml).trim().toLowerCase();
+  if (!ONBOARD_EMAIL_RE.test(email)) throw new OnboardError("invite is not tied to a valid email");
+
+  const existing = await onboardReadJson(kv, "tenant:" + email);
+  // The tenant id is never taken from the caller: a public redeemer could otherwise
+  // name another tenant's id and reuse its tunnel and gateway mapping.
+  const who = input.name || email.split("@")[0].split("+")[0];
+  const tid = existing.tenant_id || `${onboardSlug(who)}-shards`;
+  if (!ONBOARD_TENANT_ID_RE.test(tid)) throw new OnboardError(`tenant id '${tid}' must be lowercase letters, digits, - or _ (max 32)`);
+  // Each tenant id belongs to the email that first claimed it. Refuse before any
+  // Cloudflare or KV write if a different email already owns it.
+  const owner = await kv.get("tenant-owner:" + tid);
+  if (owner && owner !== email) throw new OnboardError("that tenant name is already in use; ask the operator for a new invite");
+
+  const domain = input.domain || env.NOUGEN_TENANT_DOMAIN || ONBOARD_FALLBACK_DOMAIN;
+  const hostFromRecord = existing.node_url ? new URL(existing.node_url).hostname : null;
+  const suffix = [...onboardRandomBytes(2)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const host = hostFromRecord || `${onboardSlug(tid, 20)}-${suffix}.${domain}`;
+  const nodeUrl = `https://${host}`;
+  const port = Number(input.port || env.NGS_PORT || 4444);
+
+  const cf = onboardCfClient(env);
+
+  // One Durable Object per invite code serializes redemptions, so two requests
+  // cannot both pass the check (KV reads alone can be stale for up to 60s).
+  await inviteCall(env, code, "claim", { eml: email });
+  try {
+    const result = await onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv);
+    await inviteCall(env, code, "consume");
+    await kv.delete("invite:" + code);
+    return result;
+  } catch (err) {
+    // Release the claim so the same invite can be retried after a failure.
+    await inviteCall(env, code, "release").catch(() => {});
+    throw err;
+  }
+}
+
+async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
+  const steps = [];
+
+  // 1. credential: keep the one the tenant already has, otherwise mint a new one.
+  const token = typeof existing.token === "string" && existing.token
+    ? existing.token
+    : onboardB64Url(onboardRandomBytes(32));
+  steps.push(existing.token ? "credential: already consistent" : "credential: minted");
+
+  // 2. tunnel + DNS
+  const zone = await onboardZoneFor(cf, host);
+  const prior = await onboardReadJson(kv, "tunnel:" + email);
+  const tunnel = await onboardEnsureTunnel(cf, `tenant-${tid}`, host, port,
+    onboardTunnelIdFromToken(prior.tunnel_token));
+  await onboardEnsureDns(cf, zone, host, tunnel.tunnelId);
+  steps.push(`tunnel: ${tunnel.created ? "created" : "reused"} tenant-${tid}; DNS ${host} points at it`);
+
+  // 3. worker routing (KV keyed by email). The digest lets the owner's node verify the token.
+  await kv.put("allow:" + email, "1");
+  await kv.put("tenant:" + email, JSON.stringify({ ...existing, token, node_url: nodeUrl, tenant_id: tid }));
+  await kv.put("tunnel:" + email, JSON.stringify({ tunnel_token: tunnel.tunnelToken, hostname: host }));
+  await kv.put("tenant-owner:" + tid, email);
+  await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
+  steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
+
+  return {
+    tenant_id: tid,
+    email,
+    node_url: nodeUrl,
+    port: tunnel.port,
+    token,
+    tunnel_token: tunnel.tunnelToken,
+    steps,
+  };
+}
+
+// Serializes redemptions of one invite. A Durable Object handles one request at a
+// time, so the check-and-set in "claim" cannot interleave. States:
+//   open -> claimed (lease) -> consumed (permanent); a failed run releases back to open.
+const INVITE_LEASE_MS = 600_000; // 10 min: longer than any provisioning run, short enough to recover a crash
+
+export class InviteClaim {
+  constructor(state) {
+    this.state = state;
+    // Load once; afterwards check-and-set runs on memory with no await in between,
+    // so concurrent requests cannot interleave inside the check.
+    this.ready = (async () => {
+      this.rec = (await state.storage.get("claim")) || { status: "open" };
+    })();
+  }
+
+  async fetch(request) {
+    await this.ready;
+    const action = new URL(request.url).pathname.replace(/^\//, "");
+    const rec = this.rec;
+    const now = Date.now();
+    const save = async (next) => {
+      this.rec = next;
+      await this.state.storage.put("claim", next);
+    };
+    const reply = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+    if (action === "claim") {
+      if (rec.status === "consumed") return reply({ error: "invite code is not valid or was already used" }, 409);
+      if (rec.status === "claimed" && rec.leaseUntil > now) {
+        return reply({ error: "this invite is being redeemed; try again in a minute" }, 409);
+      }
+      await save({ status: "claimed", leaseUntil: now + INVITE_LEASE_MS });
+      return reply({ ok: true });
+    }
+    if (action === "release") {
+      if (rec.status === "claimed") await save({ status: "open" });
+      return reply({ ok: true });
+    }
+    if (action === "consume") {
+      await save({ status: "consumed" });
+      return reply({ ok: true });
+    }
+    return reply({ error: "unknown action" }, 404);
+  }
+}
+
+async function inviteCall(env, code, action, body) {
+  if (!env.INVITE_CLAIMS) throw new OnboardError("INVITE_CLAIMS Durable Object binding is missing");
+  const stub = env.INVITE_CLAIMS.get(env.INVITE_CLAIMS.idFromName(code));
+  const resp = await stub.fetch("https://invite.internal/" + action, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}));
+    throw new OnboardError(detail.error || `invite ${action} failed`);
+  }
+  return resp.json().catch(() => ({}));
+}
+
+async function handleOnboard(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
+  try {
+    return json(await provisionTenant(env, body || {}));
+  } catch (err) {
+    if (err instanceof OnboardError) return json({ error: err.message }, 400);
+    return json({ error: "onboarding failed; try again or ask the operator" }, 500);
+  }
+}
+
+// Plain form for the person being onboarded: enter the invite code and a name.
+// Posts to /onboard/redeem and shows the node details. Server data is written with
+// textContent only.
+// One-button page. The invite code arrives in the link, so the person clicks once.
+function renderOnboardPage(code) {
+  const safeCode = JSON.stringify(String(code || "")).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join NouGen</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1d1d1f; --muted:#5b5b61; --card:#fff; --line:#d9d6cf; --accent:#2c5fd6; --ok:#1e7a46; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; } }
+  :root[data-theme="dark"] { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:30rem; margin:0 auto; padding:2.5rem 1rem; text-align:center; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; }
+  p { color:var(--muted); margin:.5rem 0 1.25rem; }
+  button { width:100%; font:inherit; font-weight:600; padding:1rem; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+  button[disabled] { opacity:.6; cursor:progress; }
+  button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .ok { color:var(--ok); font-weight:600; font-size:1.15rem; }
+  .err { color:var(--bad); font-weight:600; }
+  .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; margin-top:1.25rem; text-align:left; }
+  details { margin-top:1rem; }
+  code { display:block; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style></head>
+<body><main>
+  <h1>Set up NouGen</h1>
+  <p>Press the button once. Nothing else to type.</p>
+  <button id="go" type="button">Set up my NouGen</button>
+  <div id="result" role="status" aria-live="polite"></div>
+</main>
+<script>
+  const CODE = ${safeCode};
+  const go = document.getElementById("go");
+  const out = document.getElementById("result");
+  function msg(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
+  go.addEventListener("click", async () => {
+    out.replaceChildren();
+    if (!CODE) { out.append(msg("This link is missing its code. Ask for a new link.", "err")); return; }
+    go.disabled = true; go.textContent = "Setting up...";
+    try {
+      const resp = await fetch("/onboard/redeem", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: CODE }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { out.append(msg(data.error || "This link has expired. Ask for a new one.", "err")); return; }
+      const setup = JSON.stringify({ node_url: data.node_url, token: data.token, tunnel_token: data.tunnel_token });
+      const box = document.createElement("div"); box.className = "done";
+      const ok = document.createElement("p"); ok.className = "ok"; ok.textContent = "You're all set.";
+      const sub = document.createElement("p"); sub.textContent = "Your NouGen node is ready. Keep this page; it has your setup code.";
+      const det = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "Show my setup code";
+      const c = document.createElement("code"); c.textContent = setup;
+      det.append(sum, c);
+      box.append(ok, sub, det);
+      out.append(box);
+      go.hidden = true;
+    } catch (e) {
+      out.append(msg("Couldn't reach the server. Check your internet and press the button again.", "err"));
+    } finally {
+      go.disabled = false; go.textContent = "Set up my NouGen";
+    }
+  });
+</script></body></html>`;
+}
+
+function onboardPageResponse(code) {
+  return new Response(renderOnboardPage(code), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = url.origin;
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (path.startsWith("/onboard/") && path !== "/onboard/redeem") {
+      if (request.method !== "GET") return new Response("GET only", { status: 405 });
+      let code = "";
+      try { code = decodeURIComponent(path.slice("/onboard/".length)); } catch { code = ""; }
+      return onboardPageResponse(code);
+    }
     switch (path) {
       case "/":
         return new Response(
@@ -6109,6 +7054,10 @@ var worker_default = {
         return handleGoogleCallback(request, env, url);
       case "/token":
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
+      case "/onboard":
+        return request.method === "GET" ? onboardPageResponse("") : new Response("GET only", { status: 405 });
+      case "/onboard/redeem":
+        return handleOnboard(request, env);
       case "/openapi.json":
       case "/openapi":
         return json(openapiDocument(origin));
@@ -6121,7 +7070,9 @@ var worker_default = {
 };
 export {
   __test__,
+  provisionTenant,
+  handleOnboard,
+  renderOnboardPage,
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map
-

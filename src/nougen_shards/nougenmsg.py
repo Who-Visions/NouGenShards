@@ -16,6 +16,8 @@ import re
 import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
+from . import target_resolver
 
 # Every child (ssh, scp) spawns windowless: a console child of a console-less
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
@@ -66,9 +68,93 @@ def resolve_origin_host() -> str:
         return ""
 
 
+def _home() -> str:
+    """Identity-scoped NouGen root.
+
+    Tenant -> its own vault dir. Owner -> ``NOUGEN_ROOT`` else ``~/.nougen``,
+    resolved through this module's ``os.path.expanduser`` so the test-suite
+    home shim (conftest ``isolated_msg_home``) keeps owner writes out of the
+    operator's real inboxes.
+    """
+    from . import core
+    if core.is_tenant_context():
+        return str(core.active_home())
+    raw = os.environ.get("NOUGEN_ROOT", "").strip()
+    if raw:
+        return raw
+    return os.path.expanduser(os.path.join("~", ".nougen"))
+
+
+def _agy_live_pipe() -> str:
+    """Windows named pipe of the live Antigravity session.
+
+    ``NOUGEN_AGY_PIPE`` replaces it; the test suite points it at a pipe nobody
+    listens on, so a test that pings Antigravity cannot reach a live session.
+    """
+    return os.environ.get("NOUGEN_AGY_PIPE", "").strip() or r"\\.\pipe\LOCAL\agy-msg-antigravity"
+
+
+def _agy_live_socket_glob() -> str:
+    """POSIX sockets of live Antigravity sessions, as a glob pattern.
+
+    ``NOUGEN_AGY_SOCK_DIR`` replaces ``/tmp/agy-socks``; the test suite points
+    it at an empty directory. Redirecting the inbox files alone is not enough:
+    a payload sent to a live socket is written into the operator's real inbox
+    by the session on the other end.
+    """
+    base = os.environ.get("NOUGEN_AGY_SOCK_DIR", "").strip() or "/tmp/agy-socks"
+    return os.path.join(base, "*.sock")
+
+
+def _tenant_scope() -> bool:
+    """True when serving a tenant: file inboxes under its own root only, no machine pipes."""
+    from . import core
+    return core.is_tenant_context()
+
+
+def _with_archives(dirs, archive):
+    out = []
+    for d in dirs:
+        out.append(d)
+        if archive:
+            out.append(os.path.join(d, "archive"))
+    return out
+
+
+def _agy_inbox_dirs(archive: bool = False) -> List[str]:
+    """Antigravity inboxes for the active identity.
+
+    Owner paths are expanded as whole ``~/...`` strings (not ``~`` alone) so
+    tests that stub ``expanduser`` per path keep working.
+    """
+    if _tenant_scope():
+        return _with_archives([os.path.join(_home(), "inbox", "antigravity")], archive)
+    # NOUGEN_AGY_INBOX_DIR is the override agy_msg.py honours; NOUGEN_AGY_INBOX and
+    # NOUGEN_GEMINI_INBOX are the search-side names (owner only, never for a tenant).
+    agy_raw = (os.environ.get("NOUGEN_AGY_INBOX_DIR", "").strip()
+               or os.environ.get("NOUGEN_AGY_INBOX", "").strip())
+    gemini_raw = os.environ.get("NOUGEN_GEMINI_INBOX", "").strip()
+    return _with_archives([
+        os.path.expanduser(gemini_raw or os.path.join("~", ".gemini", "config", "inbox")),
+        os.path.expanduser(agy_raw) if agy_raw else os.path.join(_home(), "agy_inbox"),
+    ], archive)
+
+
+def _codex_inbox_dirs(archive: bool = False) -> List[str]:
+    if _tenant_scope():
+        return _with_archives([os.path.join(_home(), "inbox", "codex")], archive)
+    raw = os.environ.get("NOUGEN_CODEX_INBOX", "").strip()
+    base = raw or os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+    return _with_archives([base], archive)
+
+
 def fleet_hosts_path() -> Path:
     """Where this machine's fleet map lives. Public code ships no fleet names:
     a box without this file is "standalone" and routes only to itself."""
+    if _tenant_scope():
+        # A tenant has no view of the owner's fleet: its own (normally absent)
+        # host map lives under its root, so peer resolution yields no peers.
+        return Path(_home()) / "fleet_hosts.json"
     override = os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip()
     return Path(override).expanduser() if override else Path.home() / ".nougen" / "fleet_hosts.json"
 
@@ -163,12 +249,39 @@ def get_current_node() -> str:
 
 def _live_pipe_names() -> List[str]:
     """Named pipes the kernel holds right now (empty off Windows)."""
-    if os.name != "nt":
+    if os.name != "nt" or _tenant_scope():
         return []
     try:
         return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
     except OSError:
         return glob.glob(r"\\.\pipe\LOCAL\*")
+
+
+def _read_socket_reply(sock) -> bytes:
+    """Read the receiver's newline-terminated reply in full, not one recv (WG-1031)."""
+    buf = b""
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" in buf:
+            break
+    return buf
+
+
+def _confirm_socket_ack(raw: bytes) -> bool:
+    """True only for the receiver's explicit delivery ack (WG-1031).
+
+    tools/agy_sock_server.py replies {"status": "delivered", "inbox_files": [...]}
+    after it writes the message. Bytes accepted by a socket prove nothing.
+    """
+    try:
+        ack = json.loads(raw.decode("utf-8", errors="replace").strip() or "{}")
+    except ValueError:
+        return False
+    return (isinstance(ack, dict) and ack.get("status") == "delivered"
+            and bool(ack.get("inbox_files")))
 
 
 class AgentPinger:
@@ -177,6 +290,8 @@ class AgentPinger:
     @staticmethod
     def _discover_claude_endpoints() -> List[str]:
         """Return deduplicated, allow-listed Claude IPC endpoints."""
+        if _tenant_scope():
+            return []  # a tenant never reaches the host's Claude sockets or pipes
         if os.name != "nt":
             return sorted(set(
                 glob.glob("/tmp/cc-socks/*.sock")
@@ -189,7 +304,8 @@ class AgentPinger:
         # invocation (WT as default console host ignores CREATE_NO_WINDOW
         # for some launch paths) and cost ~1s of PowerShell startup.
         candidates: List[str] = list(_live_pipe_names())
-        candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
+        if not _tenant_scope():
+            candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
         allowed = re.compile(r"^\\\\\.\\pipe\\(?:LOCAL\\)?(?:cc-msg|claude)[-\\\w.]*$", re.I)
         return sorted({pipe for pipe in candidates if pipe and allowed.fullmatch(pipe)})
 
@@ -252,13 +368,13 @@ class AgentPinger:
     def _cc_registry_path() -> str:
         """Per-user registry of live Claude Code sessions {socket -> {token, ...}},
         written by the SessionStart hook: nougenmsg_register.py (nested {"sessions": {socket: entry}}) or nougenmsg_wake.py (top-level {session_id: entry}); env NOUGEN_CC_SESSIONS."""
-        raw = os.environ.get("NOUGEN_CC_SESSIONS", "").strip()
-        return raw or os.path.expanduser(os.path.join("~", ".nougen", "cc_sessions.json"))
+        raw = "" if _tenant_scope() else os.environ.get("NOUGEN_CC_SESSIONS", "").strip()
+        return raw or os.path.join(_home(), "cc_sessions.json")
 
     @staticmethod
     def _claude_inbox_dir() -> str:
-        raw = os.environ.get("NOUGEN_CLAUDE_INBOX", "").strip()
-        return raw or os.path.expanduser(os.path.join("~", ".nougen", "claude_inbox"))
+        raw = "" if _tenant_scope() else os.environ.get("NOUGEN_CLAUDE_INBOX", "").strip()
+        return raw or os.path.join(_home(), "claude_inbox")
 
     @staticmethod
     def _pipe_retries() -> int:
@@ -271,26 +387,34 @@ class AgentPinger:
     @staticmethod
     def _endpoint_gone(exc: OSError) -> bool:
         """True only when the pipe/socket does not exist any more (the session
-        ended). Busy, timeout, and refused-while-alive are not 'gone'."""
+        ended) or is permanently unreachable (e.g. ERROR_ACCESS_DENIED when the
+        pipe server runs in another security context or elevation boundary).
+        Transient conditions like busy pipe or wait timeout are NOT 'gone'."""
         win = getattr(exc, "winerror", None)
         if win is not None:
-            return win in (2, 3)  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+            # 2: ERROR_FILE_NOT_FOUND
+            # 3: ERROR_PATH_NOT_FOUND
+            # 5: ERROR_ACCESS_DENIED (e.g. pipe created in elevated or different user context)
+            return win in (2, 3, 5)
         import errno
-        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED)
+        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED, errno.EACCES)
 
     @staticmethod
     def enforce_claim_execution(text: str) -> str:
-        """Native NouGen Hardcade Claim Enforcement.
-        Any message across any lane claiming a task/relay leg is injected with
-        the physical engineering execution mandate requiring code, tests, and artifacts.
+        """Evidence labelling for text injected into a live session.
+
+        Claims are labelled (and merge claims checked when PR_CHECK_ENV is on).
+        The "[HARDCADE NATIVE MANDATE]" suffix that used to be appended to any
+        text mentioning a claim, task, baton or relay leg is gone (owner order,
+        10:40 AM EST Tue 11/17: relay notes read as teammate notes, no mandate
+        text); the name is kept for the existing callers.
         """
         if not text:
             return text
-        upper = text.upper()
-        if any(k in upper for k in ["CLAIM", "TASK", "BATON", "RELAY LEG"]):
-            mandate = "\n⚡ [HARDCADE NATIVE MANDATE]: A CLAIM legally commits this lane to immediate physical engineering execution (source code commits, passing test suites, and verified artifacts). Bare ACKs, simulated progress, and stopping without landing proof are strictly prohibited."
-            if mandate not in text:
-                return text + mandate
+        from .evidence_label import PR_CHECK_ENV, check_merge_claims, label_claim
+        text = label_claim(text)
+        if os.environ.get(PR_CHECK_ENV) == "1":
+            text = check_merge_claims(text)
         return text
 
     @staticmethod
@@ -304,13 +428,79 @@ class AgentPinger:
         return (auth_line + chr(10) + user_line + chr(10)).encode("utf-8")
 
     @staticmethod
-    def ping_claude(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def list_sessions() -> List[Dict[str, Any]]:
+        """Registered Claude Code sessions on this machine, safe to show a client.
+
+        Merges both registry shapes (nested {"sessions": {socket: entry}} and
+        top-level {session_id: entry}) and marks each one live when its pipe or
+        socket is in the kernel table right now. The socket path and its token
+        never leave this function: a client gets an id to address, a project
+        name to recognise, and a live flag. Newest registration first."""
+        if _tenant_scope():
+            return []
+        try:
+            with open(AgentPinger._cc_registry_path(), "r", encoding="utf-8") as f:
+                registry = json.load(f)
+        except (OSError, ValueError):
+            return []
+        if not isinstance(registry, dict):
+            return []
+        entries: Dict[str, Dict[str, Any]] = {}
+        nested = registry.get("sessions")
+        if isinstance(nested, dict):
+            for sock, entry in nested.items():
+                if isinstance(entry, dict):
+                    entries[str(entry.get("socket") or sock)] = entry
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("socket"):
+                entries[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+
+        def _base(path: str) -> str:
+            return os.path.basename(str(path).replace("/", "\\")).casefold()
+
+        live = {_base(p) for p in AgentPinger._discover_claude_endpoints()}
+        out = []
+        for sock, entry in entries.items():
+            sid = str(entry.get("session_id") or "").strip()
+            if not sid:
+                continue
+            cwd = str(entry.get("cwd") or "")
+            # Split on both separators: a Windows cwd read on a POSIX node (and the
+            # other way round) must still give the folder name, not the whole path.
+            project = re.split(r"[\\/]", cwd.rstrip("\\/"))[-1] if cwd else ""
+            out.append({
+                "session_id": sid,
+                "project": project or cwd,
+                "machine": str(entry.get("machine") or get_current_node()),
+                "agent": str(entry.get("agent") or "claude"),
+                "registered_utc": str(entry.get("registered_utc") or ""),
+                "live": _base(sock) in live,
+            })
+        # Live first, then newest registration first within each group.
+        live_rows = sorted([s for s in out if s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        idle_rows = sorted([s for s in out if not s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        return live_rows + idle_rows
+
+    @staticmethod
+    def ping_claude(
+        prompt: str,
+        origin: Optional[Dict[str, Any]] = None,
+        target_session: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Deliver a NouGenMsg into every live, registered Claude Code session
         over its own messaging socket, and drop the same message in the Claude
         inbox for the UserPromptSubmit drain hook. Sessions whose socket no
         longer opens are pruned from the registry. There is no ack on the wire,
         so delivery_verified stays False by design: the receiver's context is
         the proof, never the byte count (shard 17142)."""
+        if _tenant_scope():
+            inbox_dir = AgentPinger._claude_inbox_dir()
+            os.makedirs(inbox_dir, exist_ok=True)
+            fp = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
+            return {"status": "saved", "file": fp, "pipe_delivered": False,
+                    "tenant_scope": "file-inbox-only"}
         source = f"NouGenMsg-{get_current_node()}"
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
@@ -330,6 +520,32 @@ class AgentPinger:
         for sid, entry in registry.items():
             if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
                 sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+        registered_count = len(sessions)
+        if target_session:
+            target = str(target_session).strip().casefold()
+            live_names = {
+                os.path.basename(str(pipe).replace("/", "\\\\")).casefold()
+                for pipe in AgentPinger._discover_claude_endpoints()
+            }
+            selected = {
+                sock: entry for sock, entry in sessions.items()
+                if os.path.basename(str(sock).replace("/", "\\\\")).casefold() in live_names
+                if target in {
+                    str((entry or {}).get("session_id") or "").casefold(),
+                    os.path.basename(str(sock).replace("/", "\\\\")).casefold(),
+                }
+            }
+            if len(selected) != 1:
+                reason = "not_found" if not selected else "ambiguous"
+                return {
+                    "delivered": [], "pruned": [], "registered": registered_count,
+                    "inbox_file": None, "delivery_verified": False, "errors": [],
+                    "target_session": target_session,
+                    "error": f"target_session_{reason}",
+                    "note": "targeted delivery requires exactly one registered Claude session; no message was sent",
+                }
+            sessions = selected
+
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -358,14 +574,19 @@ class AgentPinger:
                         break  # no pipe/socket at all: retrying cannot help
                     time.sleep(AgentPinger._pipe_retry_wait_s())
             if last_exc is not None:
+                is_gone = AgentPinger._endpoint_gone(last_exc)
                 errors.append({"socket": sock, "error": str(last_exc), "winerror": getattr(last_exc, "winerror", None),
-                               "pruned": AgentPinger._endpoint_gone(last_exc)})
-                # Prune ONLY when the endpoint is gone. A busy pipe or a wait
+                               "pruned": is_gone})
+                # Prune when the endpoint is gone or permanently unreachable
+                # (WinError 2/3, WinError 5 Access Denied). A busy pipe or a wait
                 # timeout is the session being mid-turn (2026-09-02 20:36 EDT: a
                 # live session was dropped from the registry on one such timeout).
-                if AgentPinger._endpoint_gone(last_exc):
+                if is_gone:
                     pruned.append(sock)
                     sessions.pop(sock, None)
+                    print(f"[nougenmsg] pruned unreachable Claude endpoint {sock}: {last_exc}", file=sys.stderr, flush=True)
+                else:
+                    print(f"[nougenmsg] delivery error on Claude endpoint {sock} (retained): {last_exc}", file=sys.stderr, flush=True)
         if pruned:
             try:
                 registry["sessions"] = sessions
@@ -375,30 +596,33 @@ class AgentPinger:
                 os.replace(tmp, reg_path)
             except OSError:
                 pass
-        # inbox copy for the drain hook (and for sessions that start later)
+        # A targeted delivery must never leave a second copy in the shared
+        # Claude inbox: another session could drain it and receive the wrong
+        # project's message.
         inbox_file = None
-        try:
-            inbox_dir = AgentPinger._claude_inbox_dir()
-            os.makedirs(inbox_dir, exist_ok=True)
-            inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
-            with open(inbox_file, "w", encoding="utf-8") as f:
-                _msg_session = resolve_session()
-                _msg_host = resolve_origin_host()
-                json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
-                           "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
-                           "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
-                           **({"session": _msg_session} if _msg_session else {}),
-                           **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
-        except OSError:
-            inbox_file = None
+        if not target_session:
+            try:
+                inbox_dir = AgentPinger._claude_inbox_dir()
+                os.makedirs(inbox_dir, exist_ok=True)
+                inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
+                with open(inbox_file, "w", encoding="utf-8") as f:
+                    _msg_session = resolve_session()
+                    _msg_host = resolve_origin_host()
+                    json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
+                               "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
+                               "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
+                               **({"session": _msg_session} if _msg_session else {}),
+                               **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
+            except OSError:
+                inbox_file = None
         if not sessions and not delivered:
             note = ("no registered live Claude Code session (SessionStart hook (nougenmsg_register.py on blade, nougenmsg_wake.py on phoebus) has not run, "
                     "or every registered session is gone); inbox file dropped for the drain hook")
         else:
             note = (f"socket write accepted by {len(delivered)} live session(s); the harness writes no ack, "
                     "the receiver's context is the proof")
-        return {"delivered": delivered, "pruned": pruned, "registered": len(sessions), "inbox_file": inbox_file,
-                "delivery_verified": False, "errors": errors, "note": note}
+        return {"delivered": delivered, "pruned": pruned, "registered": registered_count, "inbox_file": inbox_file,
+                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note}
 
     @staticmethod
     def ping_antigravity(
@@ -409,10 +633,7 @@ class AgentPinger:
         origin: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Drops live event notification into Antigravity session inbox across both locations and notifies local AgyMsg bus."""
-        inboxes = [
-            os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-            os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-        ]
+        inboxes = _agy_inbox_dirs()
         filename = f"ping_{int(time.time() * 1000)}.json"
         written_files = []
 
@@ -449,9 +670,13 @@ class AgentPinger:
 
         # Dispatch to live local Win32 Named Pipe if present
         pipe_delivered = False
-        if os.name == "nt":
+        if _tenant_scope():
+            # File-inbox only: neither the Win32 named pipe nor the POSIX
+            # /tmp/agy-socks transport is the tenant's to use.
+            pass
+        elif os.name == "nt":
             try:
-                pipe_path = r"\\.\pipe\LOCAL\agy-msg-antigravity"
+                pipe_path = _agy_live_pipe()
                 pipe_payload = (json.dumps(payload) + "\n").encode("utf-8")
                 bytes_sent = AgentPinger._write_windows_named_pipe(pipe_path, pipe_payload)
                 pipe_delivered = bytes_sent > 0
@@ -460,13 +685,18 @@ class AgentPinger:
         else:
             try:
                 import glob, socket
-                for sock in glob.glob("/tmp/agy-socks/*.sock"):
+                for sock in glob.glob(_agy_live_socket_glob()):
                     try:
                         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        s.connect(sock)
-                        s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-                        s.close()
-                        pipe_delivered = True
+                        try:
+                            s.settimeout(5)
+                            s.connect(sock)
+                            s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+                            # Sending bytes is not delivery: wait for the receiver's ack.
+                            ack_ok = _confirm_socket_ack(_read_socket_reply(s))
+                        finally:
+                            s.close()
+                        pipe_delivered = pipe_delivered or ack_ok
                     except Exception:
                         pass
             except Exception:
@@ -476,16 +706,29 @@ class AgentPinger:
 
     @staticmethod
     def ping_codex(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Queue through the local Codex pipe, retaining an inbox fallback."""
+        """Queue through the local Codex pipe, retaining an inbox fallback.
+
+        Every result carries ``codex_limits`` (Codex's /status rate windows) so a
+        sender can tell "Codex is rate-paused until 7:20 PM" from "Codex ignored me".
+        """
+        try:
+            from .codex_status import status as _codex_status
+            limits = _codex_status()
+        except Exception as exc:
+            limits = {"ok": False, "error": str(exc)}
         try:
             from .codex_pipe import deliver
             res = deliver(prompt, origin=origin)
             if res.get("pipe_delivered") or (res.get("file") and res.get("status") in {"queued", "saved"}):
-                return res
+                return {**res, "codex_limits": limits}
         except Exception:
             pass
+        return {**AgentPinger._drop_codex_inbox(prompt, origin), "codex_limits": limits}
 
-        inbox_dir = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+    @staticmethod
+    def _drop_codex_inbox(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+        inbox_dir = _codex_inbox_dirs()[0]
         os.makedirs(inbox_dir, exist_ok=True)
         filename = f"ping_{int(time.time() * 1000)}.json"
         filepath = os.path.join(inbox_dir, filename)
@@ -535,8 +778,11 @@ class AgentPinger:
         build. Key off the serving machine instead.
         """
         current = get_current_node()
-        machine = current if node in ("local", "", None, current) else node
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
+        is_local = node in ("local", "", None, current)
+        machine = current if is_local else node
+        # The slot names a tag on THIS box; a remote node may not hold it.
+        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,
@@ -546,10 +792,18 @@ class AgentPinger:
         the wake daemon) instead of vanishing into the sender's stdout."""
         if not reply:
             return None
+        # Clean <think>, <|channel>thought, and Thinking Process leaks
+        clean_reply = re.sub(r"<\|think\|>.*?<\|channel\|>", "", reply, flags=re.DOTALL)
+        clean_reply = re.sub(r"<think>.*?</think>", "", clean_reply, flags=re.DOTALL)
+        clean_reply = re.sub(r"(?is)<\s*\|\s*channel\s*>thought.*?<\s*channel\s*\|\s*>", "", clean_reply)
+        clean_reply = re.sub(r"(?is)(?:thinking process|internal monologue|analysis of user statement):.*?(?=(?:final output(?:\s*\(.*?\))?:|yukiai:|\n\n|\Z))", "", clean_reply)
+        clean_reply = clean_reply.strip()
+        if not clean_reply:
+            return None
         envelope = dict(origin or {})
         envelope["original_sender"] = f"{lane}:{model}"
         try:
-            res = AgentPinger.ping_antigravity(reply, domain=f"model:{lane}", origin=envelope)
+            res = AgentPinger.ping_antigravity(clean_reply, domain=f"model:{lane}", origin=envelope)
             files = res.get("files") or res.get("written_files") or []
             return files[0] if files else "inbox"
         except Exception:  # pylint: disable=broad-except
@@ -674,6 +928,11 @@ class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
 
     _SAFE_IDENT = re.compile(r"^[A-Za-z0-9_.:@-]{1,64}$")
+    # The lanes this code has a delivery handler for, and the ones that take a ':<model>'
+    # suffix. These name code paths on a node, not fleet members: nodes, app lanes and
+    # groups come from the live table (build_target_table), never from a list here.
+    MODEL_LANES = ("ollama", "openrouter")
+    LOCAL_FAMILIES = ("claude", "all", "agents", "antigravity", "codex", *MODEL_LANES)
 
     @staticmethod
     def parse_destination(target_str: str) -> Tuple[str, str]:
@@ -690,13 +949,13 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        coach_routes, _ = fleet_identity_maps()
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
+        coach_routes, machine_routes = fleet_identity_maps()
+        known_nodes = {local_node(), *configured_fleet_nodes(), 'local', 'fleet', *coach_routes, *machine_routes, *_known_fleet_hosts()}
+        known_agents = set(NouGenMsgBus.LOCAL_FAMILIES)
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
-        model_lanes = {'ollama', 'openrouter'}
+        model_lanes = set(NouGenMsgBus.MODEL_LANES)
 
         if ':' in raw:
             parts = raw.split(':', 1)
@@ -756,6 +1015,11 @@ class NouGenMsgBus:
         supplied = dict(supplied or {})
         current = get_current_node()
         lane = cls._sender_lane(supplied)
+        if lane:
+            # Bookkeeping only: record that this lane spoke, for reply routing.
+            # Nothing here changes where a message is delivered.
+            from .lane_presence import default_presence
+            default_presence().heartbeat(lane, time.time())
         claimed_machine = supplied.get("machine")
         conflicts = list(supplied.get("conflicts") or [])
         if claimed_machine and claimed_machine != current:
@@ -802,11 +1066,14 @@ class NouGenMsgBus:
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)
         model = model or None
-        # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
-        # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
-        # for a chatty lane that should not wake a model on every ping.
-        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
-            not in ("0", "false", "no")
+        # An 'all' broadcast reaches real session lanes only (claude pipes, antigravity,
+        # codex). Model lanes are opt-in: GM 2026-10-30 reversed the 2026-09-08 default
+        # after a Gemini @all directive woke ollama:gemma4:e2b and unconfigured
+        # openrouter lanes, which echoed unverified replies and missing-key errors into
+        # ~/.nougen/claude_inbox. NOUGEN_MSG_MODEL_LANES_ON_ALL=1 restores it; an
+        # explicit '@ollama[:model]' or '@openrouter[:model]' target always works.
+        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "0").strip().lower() \
+            in ("1", "true", "yes")
 
         # A node-name target ('@blade') matched no family branch, so the node it
         # addressed returned {} and woke nobody while the caller saw "delivered"
@@ -814,11 +1081,25 @@ class NouGenMsgBus:
         # addressed node it means "this node's agent lanes"; elsewhere it is not
         # ours to deliver, and saying so beats an empty dict.
         fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
-            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
-        if family in fleet_nodes:
-            if family != (get_current_node() or "").lower():
-                return {"skipped": f"addressed to {family}, not this node"}
+            "NOUGEN_PEER_NODES", "").split(",") if n.strip()}
+        current_node = (get_current_node() or "").lower()
+        # NOUGEN_PEER_NODES being unset/incomplete used to make a node-name
+        # target match nothing below, falling through to results == {} with
+        # no indication anything was wrong (2026-11-04: connector @blade ->
+        # results.blade == {} even though blade answered the call). Compare
+        # against this node's own name directly so a self-addressed target
+        # always resolves, regardless of that env var's contents.
+        if family == current_node or family in fleet_nodes:
+            if family != current_node:
+                return {"skipped": f"addressed to {family}, not this node ({current_node or 'unknown'})"}
             family, model = "agents", None
+        elif family not in cls.LOCAL_FAMILIES:
+            if _is_local_inbox_lane(family):
+                # A lane the live table puts on this node with no pinger behind it (a
+                # connector lane such as 'chatgpt-app', seen sending here): it reads
+                # this node's inbox, so the message is dropped there for it.
+                return {family: _drop_lane_inbox(family, text, envelope)}
+            return {"error": f"unrecognized target {target!r}; nothing delivered"}
 
         if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
@@ -859,7 +1140,7 @@ class NouGenMsgBus:
         try:
             import sqlite3
             import uuid
-            db_path = os.path.expanduser(os.path.join("~", ".nougen", "messages.db"))
+            db_path = os.path.join(_home(), "messages.db")
             if os.path.exists(db_path):
                 msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
                 with sqlite3.connect(db_path, timeout=5) as conn:
@@ -1092,8 +1373,12 @@ class NouGenMsgBus:
     def emit_fleet(cls, text: str, target: str = "all",
                    origin: Optional[Dict[str, Any]] = None,
                    audience: Optional[str] = None,
-                   background: bool = False) -> Dict[str, Any]:
+                   background: bool = False,
+                   nodes: Optional[List[str]] = None) -> Dict[str, Any]:
         """Dispatches message across all nodes in the fleet (persona header applied once, here).
+
+        nodes: the peers to reach, when the caller resolved the group from the live
+        table (resolve_target); None keeps the env-configured peer list.
 
         background=True delivers locally, then hands the SSH fan-out to a daemon thread and
         reports each peer as {"queued": True}. The MCP node tools use it: peers are reached
@@ -1107,10 +1392,13 @@ class NouGenMsgBus:
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin,
                                        models_async=background)}
-        fleet_nodes = {"blade", "whoart", "phoebus"}
+        fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
-        nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
+        if nodes is not None:
+            nodes = sorted({str(n) for n in nodes} - {curr})
+        else:
+            nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
         if background and nodes:
             def _fan_out(peers=tuple(nodes)):
                 for n in peers:
@@ -1149,6 +1437,70 @@ class NouGenMsgBus:
         return results
 
     @classmethod
+    def send_resolved(cls, target: str, text: str,
+                      origin: Optional[Dict[str, Any]] = None,
+                      audience: Optional[str] = None,
+                      background: bool = False) -> Dict[str, Any]:
+        """Resolve ``target`` against the live table and send to exactly what it names.
+
+        The one dispatch for the CLI, the MCP tools and app.py. An unknown or
+        unreachable target returns the refusal and sends nothing; a group is the
+        only fan-out; every other delivery goes to its own (node, lane) once, so a
+        lane resolved to another node is never re-read as "everyone here".
+        """
+        res = resolve_target(target)
+        if not res.ok:
+            return {"delivered": False, "status": "not_resolvable", "reason": res.reason,
+                    "error": res.error, "resolvable": res.resolvable,
+                    "target": str(target)[:80]}
+        curr = get_current_node()
+        here = {curr, _self_node_name(), "local"}
+        if res.kind == "group":
+            peers = sorted({d.node for d in res.deliveries} - here)
+            results = cls.emit_fleet(text=text, target="all", origin=origin, audience=audience,
+                                     background=background, nodes=peers)
+            return {"resolution": res.as_dict(), "results": results}
+        routes, seen = [], set()
+        for d in res.deliveries:
+            node = curr if d.node in here else d.node
+            # No lane means the node itself: the receiving node reads its own name as
+            # "this node's agent lanes" (live_ping), exactly as a bare '@<node>' did.
+            route = (node, d.lane or d.node)
+            if route not in seen:
+                seen.add(route)
+                routes.append(route)
+        results: Dict[str, Any] = {}
+        remote = [r for r in routes if r[0] != curr]
+        for node, agent in routes:
+            if node == curr:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        if background and remote:
+            def _fan_out(todo=tuple(remote)):
+                # Same contract as emit_fleet's background fan-out: a failed or raising
+                # send is reported on stderr (the node's err log), never swallowed.
+                for node, agent in todo:
+                    try:
+                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                        bad = {k: v for k, v in (res or {}).items()
+                               if isinstance(v, str) and v.startswith("Error")}
+                        if bad:
+                            print(f"[nougenmsg] background send to {node}/{agent} failed: {bad}",
+                                  file=sys.stderr, flush=True)
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background send to {node}/{agent} raised: "
+                              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_fan_out, name="nougenmsg-send-resolved", daemon=True)
+            t.start()
+            cls._last_fanout_thread = t  # tests join it; nothing in production waits on it
+            for node, _ in remote:
+                results[node] = {"queued": True, "via": "ssh",
+                                 "failure_report": "stderr of the sending process"}
+        else:
+            for node, agent in remote:
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+        return {"resolution": res.as_dict(), "results": results}
+
+    @classmethod
     def list_peers(cls) -> Dict[str, Any]:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
@@ -1158,7 +1510,7 @@ class NouGenMsgBus:
         # --peers reported Antigravity "active" while no server held the pipe.
         live = set(_live_pipe_names())
         agy_pipes = sorted(p for p in live if re.search(r"\\agy-msg-", p, re.I))
-        agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        agy_reg = os.path.join(_home(), "agy_sessions.json")
         stale_agy: List[str] = []
         if os.path.exists(agy_reg):
             try:
@@ -1173,9 +1525,21 @@ class NouGenMsgBus:
             codex_pipe = codex_request({"op": "status"})
         except Exception:
             codex_pipe = {"status": "offline"}
+        try:
+            from .codex_status import status as _codex_status
+            codex_pipe = {**codex_pipe, "limits": _codex_status()}
+        except Exception:
+            pass
 
-        inbox_gemini = os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox"))
-        inbox_codex = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+        probed = cls._probe_nodes(curr)
+        try:
+            # The live table every send path resolves '@name' against, built from this
+            # same probe: what is listed here is what a send would reach right now.
+            table = target_table_summary(reachability=probed)
+        except Exception as exc:  # pylint: disable=broad-except
+            table = {"error": str(exc)}
+        inbox_gemini = _agy_inbox_dirs()[0]
+        inbox_codex = _codex_inbox_dirs()[0]
 
         gemini_messages = len(glob.glob(os.path.join(inbox_gemini, "*.json"))) if os.path.exists(inbox_gemini) else 0
         codex_messages = len(glob.glob(os.path.join(inbox_codex, "*.json"))) if os.path.exists(inbox_codex) else 0
@@ -1188,7 +1552,8 @@ class NouGenMsgBus:
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
             "antigravity_stale_registry": stale_agy,
-            **cls._probe_nodes(curr),
+            **probed,
+            "target_table": table,
         }
 
     @staticmethod
@@ -1210,8 +1575,8 @@ class NouGenMsgBus:
             explicit = os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP")
             if explicit:
                 return explicit
-            if node in ("blade", "apollo"):
-                return "blade1tb.local"
+            if node == local_node():
+                return f"{local_node()}.local"
             return f"{node}.local"
 
         def up(node: str) -> bool:
@@ -1242,13 +1607,7 @@ class NouGenMsgBus:
     @classmethod
     def read_inbox(cls, target: str = "antigravity", limit: int = 10) -> List[Dict[str, Any]]:
         """Reads recent unread messages from agent inbox across all registered directories."""
-        inbox_dirs = (
-            [
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+        inbox_dirs = _agy_inbox_dirs() if target == "antigravity" else _codex_inbox_dirs()
 
         all_files = []
         for d in inbox_dirs:
@@ -1298,13 +1657,7 @@ class NouGenMsgBus:
         """Bulk archive is destructive to unread state and requires confirmation."""
         if not confirmed:
             raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
-        inbox_dirs = (
-            [
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+        inbox_dirs = _agy_inbox_dirs() if target == "antigravity" else _codex_inbox_dirs()
 
         count = 0
         for inbox_dir in inbox_dirs:
@@ -1322,78 +1675,223 @@ class NouGenMsgBus:
         return count
 
     @classmethod
-    def search_messages(cls, query: str, target: str = "all", limit: int = 20) -> List[Dict[str, Any]]:
-        """Search across active and archived inbox messages by keyword query."""
-        q = (query or "").strip().lower()
-        if not q:
-            return []
+    def _get_msg_index_db(cls) -> str:
+        base = _home()
+        cache_dir = os.path.join(base, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, "nougenmsg_index.db")
 
+    @classmethod
+    def _init_msg_fts5(cls, conn: Any) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages_meta (
+                file_path TEXT PRIMARY KEY,
+                mtime REAL,
+                message_id TEXT,
+                source TEXT,
+                sender TEXT,
+                timestamp REAL
+            )
+        """)
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                file_path UNINDEXED,
+                message_id,
+                source,
+                sender,
+                text,
+                tokenize = 'unicode61'
+            )
+        """)
+        conn.commit()
+
+    @classmethod
+    def search_messages(cls, query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0, as_contract: bool = False) -> Any:
+        """Search active and archived inboxes through a persistent incremental FTS5 index.
+        Fulfills the Hurricane Kick 2/3 Search Contract:
+        {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
+        """
+        import time
+        import hashlib
+        import sqlite3
+
+        t_start = time.monotonic()
+        q_raw = query or ""
+        q_norm = q_raw.strip().lower()
+
+        empty_res = {
+            "complete": True,
+            "query": q_raw,
+            "normalized_query": q_norm,
+            "results": [],
+            "checked_sources": [],
+            "timed_out_sources": [],
+            "ordering_basis": "mtime_desc",
+            "coverage_hash": ""
+        }
+        if not q_norm:
+            return empty_res if as_contract else []
+
+        target = (target or "all").strip().lower()
         inbox_dirs = []
         if target in ("antigravity", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox", "archive")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox", "archive")),
-            ])
+            inbox_dirs.extend(_agy_inbox_dirs(archive=True))
+            if not _tenant_scope():
+                legacy = os.path.join(os.path.expanduser("~"), "agy_inbox")
+                inbox_dirs.extend([legacy, os.path.join(legacy, "archive")])
         if target in ("codex", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".codex", "inbox")),
-                os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
-            ])
+            inbox_dirs.extend(_codex_inbox_dirs(archive=True))
+        if target in ("claude", "all"):
+            # this PR's addition: search the Claude inbox too, resolved the same way the
+            # senders resolve it (NOUGEN_CLAUDE_INBOX, tenant-aware home)
+            claude = AgentPinger._claude_inbox_dir()
+            inbox_dirs.extend([claude, os.path.join(claude, "archive")])
 
+        checked_sources = sorted({os.path.abspath(d) for d in inbox_dirs if os.path.isdir(d)})
+        timed_out_sources = set()
         all_files = []
-        for d in inbox_dirs:
-            if os.path.exists(d):
-                all_files.extend(glob.glob(os.path.join(d, "*.json")))
+        source_by_path = {}
+        for directory in checked_sources:
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if not entry.name.lower().endswith(".json") or not entry.is_file():
+                            continue
+                        try:
+                            path = os.path.abspath(entry.path)
+                            mtime = entry.stat().st_mtime
+                        except OSError:
+                            timed_out_sources.add(directory)
+                            continue
+                        all_files.append((path, mtime))
+                        source_by_path[path] = directory
+            except OSError:
+                timed_out_sources.add(directory)
+        all_files.sort(key=lambda item: item[1], reverse=True)
 
-        files = sorted(all_files, key=os.path.getmtime, reverse=True)
+        # The FTS table was present but never populated by search_messages,
+        # forcing every query to parse thousands of inbox JSON files again.
+        # Index changed entries within the request budget and resume on the
+        # next query. Warm searches only stat entries and hit SQLite FTS.
+        index_complete = True
+        conn = None
+        indexed = {}
+        try:
+            conn = sqlite3.connect(cls._get_msg_index_db(), timeout=1.0)
+            conn.execute("PRAGMA busy_timeout=1000")
+            cls._init_msg_fts5(conn)
+            indexed = {str(path): float(mtime) for path, mtime in conn.execute("SELECT file_path, mtime FROM messages_meta")}
+            pending = [(path, mtime) for path, mtime in all_files if indexed.get(path) != mtime]
+            for offset, (fpath, mtime) in enumerate(pending):
+                if time.monotonic() - t_start >= max(0.05, timeout_s):
+                    index_complete = False
+                    timed_out_sources.update(source_by_path[p] for p, _ in pending[offset:])
+                    break
+                try:
+                    with open(fpath, "rb") as fp:
+                        raw = fp.read()
+                    data = json.loads(raw.decode("utf-8", errors="replace"))
+                    if not isinstance(data, dict):
+                        data = {}
+                    message_id = str(data.get("message_id") or data.get("id") or "")
+                    source = str(data.get("source") or data.get("origin") or "")
+                    sender = str(data.get("sender") or data.get("agent") or "")
+                    body = raw.decode("utf-8", errors="replace")
+                    conn.execute("DELETE FROM messages_fts WHERE file_path = ?", (fpath,))
+                    conn.execute("INSERT OR REPLACE INTO messages_meta (file_path, mtime, message_id, source, sender, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (fpath, mtime, message_id, source, sender, data.get("timestamp")))
+                    conn.execute("INSERT INTO messages_fts (file_path, message_id, source, sender, text) VALUES (?, ?, ?, ?, ?)",
+                                 (fpath, message_id, source, sender, body))
+                    indexed[fpath] = mtime
+                except (OSError, ValueError, sqlite3.Error):
+                    index_complete = False
+                    timed_out_sources.add(source_by_path[fpath])
+            conn.commit()
+
+            tokens = [token for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+            if not tokens:
+                tokens = [q_norm]
+            fts_query = " AND ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+            where = ["messages_fts MATCH ?"]
+            params = [fts_query]
+            source_filters = []
+            for directory in checked_sources:
+                prefix = directory.rstrip("\\/") + os.sep
+                source_filters.append("substr(messages_meta.file_path, 1, length(?)) = ?")
+                params.extend([prefix, prefix])
+            if source_filters:
+                where.append("(" + " OR ".join(source_filters) + ")")
+            sql = ("SELECT messages_meta.file_path, messages_meta.mtime FROM messages_fts "
+                   "JOIN messages_meta USING (file_path) WHERE " + " AND ".join(["(" + clause + ")" for clause in where]) +
+                   " ORDER BY messages_meta.mtime DESC LIMIT ?")
+            params.append(max(1, limit) * 5)
+            rows = conn.execute(sql, params).fetchall() if checked_sources else []
+        except sqlite3.Error:
+            # FTS5 is optional in some Python builds. Preserve bounded search
+            # behavior there rather than failing the NouGenMsg tool outright.
+            index_complete = False
+            timed_out_sources.update(checked_sources)
+            rows = [(path, mtime) for path, mtime in all_files]
+        finally:
+            if conn is not None:
+                conn.close()
+
         matches = []
         seen = set()
-        for f in files:
-            if len(matches) >= limit:
+        tokens_bytes = [token.encode("utf-8", errors="ignore") for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+        for fpath, mtime in rows:
+            if len(matches) >= max(1, limit):
+                break
+            if time.monotonic() - t_start >= max(0.05, timeout_s):
+                index_complete = False
+                timed_out_sources.add(source_by_path.get(fpath, os.path.dirname(fpath)))
                 break
             try:
-                if not os.path.exists(f):
+                if os.path.getmtime(fpath) != mtime:
                     continue
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
+                with open(fpath, "rb") as fp:
+                    raw = fp.read()
+                if tokens_bytes and not all(token in raw.lower() for token in tokens_bytes):
+                    continue
+                data = json.loads(raw.decode("utf-8", errors="replace"))
                 if not isinstance(data, dict):
                     continue
-                identity = data.get("message_id") or "|".join(
-                    str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
+                identity = data.get("message_id") or f"{data.get('source')}|{data.get('timestamp')}|{fpath}"
                 if identity in seen:
                     continue
-
-                content_str = (
-                    str(data.get("text", "")) + " " +
-                    str(data.get("content", "")) + " " +
-                    str(data.get("sender", "")) + " " +
-                    str(data.get("source", "")) + " " +
-                    str(data.get("message_id", ""))
-                ).lower()
-
-                if q in content_str:
-                    seen.add(identity)
-                    data["_file"] = os.path.basename(f)
-                    data["_mtime"] = os.path.getmtime(f)
-                    if "text" not in data and "content" in data:
-                        data["text"] = data["content"]
-                    if not data.get("sender") and data.get("source"):
-                        data["sender"] = data["source"]
-                    matches.append(data)
-            except Exception:
+                seen.add(identity)
+                data["_file"] = os.path.basename(fpath)
+                data["_mtime"] = mtime
+                if "text" not in data and "content" in data:
+                    data["text"] = data["content"]
+                if not data.get("sender") and data.get("source"):
+                    data["sender"] = data["source"]
+                matches.append(data)
+            except (OSError, ValueError):
                 continue
-        return matches
+
+        newest = all_files[0][1] if all_files else 0
+        cov_hash = hashlib.sha256(f"{len(all_files)}:{newest}:{len(indexed)}".encode("utf-8")).hexdigest()[:16]
+        contract = {
+            "complete": index_complete and not timed_out_sources,
+            "query": q_raw,
+            "normalized_query": q_norm,
+            "results": matches,
+            "checked_sources": checked_sources,
+            "timed_out_sources": sorted(timed_out_sources),
+            "ordering_basis": "mtime_desc",
+            "coverage_hash": cov_hash
+        }
+        return contract if as_contract else matches
 
     @classmethod
     def _inbound_policy_path(cls) -> str:
-        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        base = _home()
         return os.path.join(base, "inbound_policy.json")
 
     @classmethod
     def _idle_subs_path(cls) -> str:
-        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        base = _home()
         return os.path.join(base, "idle_subscriptions.json")
 
     @classmethod
@@ -1602,3 +2100,419 @@ class NouGenMsgBus:
 
         return agents
 
+
+# --- Target resolution: one live table, one resolver, every send path -----------------
+# Nothing below names a node or a lane. Nodes come from the local registry files and
+# env, lanes from this node's handlers, live sessions and the presence file, groups
+# from the same data. See target_resolver.py for the matching rules.
+_LANE_PRESENCE_LOCK = threading.Lock()
+
+
+def lane_presence_path() -> Path:
+    p = os.environ.get("NOUGEN_LANE_PRESENCE_FILE")
+    return Path(p) if p and not _tenant_scope() else Path(_home()) / "lane_presence.json"
+
+
+def lane_presence_ttl_s() -> float:
+    try:
+        v = float(os.environ.get("NOUGEN_MSG_LANE_TTL_S", "604800"))
+    except Exception:
+        return 604800.0
+    # Default a week: connector lanes send rarely, and a lane seen once still
+    # reads its inbox on that node. Capped at 30 days.
+    return max(1.0, min(2592000.0, v))
+
+
+def _full_registry_node_names() -> set:
+    """Every node this box knows: fleet map, NOUGEN_PEER_NODES, nodes.json, self.
+
+    Unscoped on purpose: lane names must never collide with ANY known node,
+    even where the scoped view below hides the rest of the fleet.
+    """
+    s = set()
+    r = target_resolver.NAME_RE
+    for n in _known_fleet_hosts():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    for n in configured_fleet_nodes():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    for n in fleet_identity_maps()[0].values():
+        if r.fullmatch(n.lower()):
+            s.add(n.lower())
+    sn = _self_node_name()
+    if r.fullmatch(sn.lower()):
+        s.add(sn.lower())
+    return s
+
+
+def _registry_node_names() -> set:
+    """Nodes visible to the current identity.
+
+    Owner: the full registry. Tenant: only this node — a tenant must never
+    resolve, group, or plant presence for another node, and the registry
+    sources (NOUGEN_PEER_NODES env, nodes.json) are process-wide, not
+    tenant-scoped, so scoping happens here, at the point of use.
+    """
+    if _tenant_scope():
+        sn = _self_node_name()
+        return {sn.lower()} if target_resolver.NAME_RE.fullmatch(sn.lower()) else set()
+    return _full_registry_node_names()
+
+
+def _self_node_name() -> str:
+    n = get_current_node()
+    return local_node() if not n or n == "standalone" else n
+
+
+def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
+    """Record that ``lane`` was seen on ``node``.
+
+    A presence claim is only as trustworthy as its name: the lane must match
+    NAME_RE and must not collide with any known node name, alias, group, or
+    self-alias (checked against the FULL registry, so a tenant-scoped view
+    cannot smuggle a fleet node's name in as a lane). The node must be in the
+    caller's scoped registry, so a tenant can only plant presence on its own
+    node, never on another tenant's or the owner's.
+    """
+    lane, node = lane.strip().lower(), node.strip().lower()
+    r = target_resolver.NAME_RE
+    if not r.fullmatch(lane) or not r.fullmatch(node):
+        return False
+    reg = _registry_node_names()
+    if node not in reg:
+        return False
+    a2n, _ = fleet_identity_maps()
+    if (
+        lane in _full_registry_node_names()
+        or lane in a2n
+        or lane in target_resolver.GROUP_KEYWORDS
+        or lane in target_resolver.SELF_ALIASES
+    ):
+        return False
+    now = now or time.time()
+    ttl = lane_presence_ttl_s()
+    path = lane_presence_path()
+    with _LANE_PRESENCE_LOCK:
+        data = {"lanes": {}}
+        try:
+            if path.exists():
+                with path.open() as f:
+                    ld = json.load(f)
+                    if isinstance(ld, dict) and isinstance(ld.get("lanes"), dict):
+                        data = ld
+        except Exception:
+            pass
+        lanes = data.setdefault("lanes", {})
+        ln = lanes.setdefault(lane, {})
+        if ln.get(node, 0) and now - ln[node] < 30:
+            return True
+        ln[node] = now
+        cut = now - ttl
+        for lname in list(lanes):
+            for n in list(lanes[lname]):
+                if lanes[lname][n] < cut:
+                    del lanes[lname][n]
+            if not lanes[lname]:
+                del lanes[lname]
+        if len(lanes) > 256:
+            lts = [(max(v.values()), k) for k, v in lanes.items() if v]
+            lts.sort()
+            for _, k in lts[: len(lanes) - 256]:
+                del lanes[k]
+        try:
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            with tmp.open("w") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except OSError:
+            return False
+    return True
+
+
+def read_lane_presence(now: Optional[float] = None) -> Dict[str, Dict[str, float]]:
+    now = now or time.time()
+    ttl = lane_presence_ttl_s()
+    path = lane_presence_path()
+    reg = _registry_node_names()
+    # Lane names are checked against the FULL registry: a stale or spoofed
+    # entry naming a fleet node as a lane is dropped even under tenant scope.
+    full_reg = _full_registry_node_names()
+    out: Dict[str, Dict[str, float]] = {}
+    r = target_resolver.NAME_RE
+    a2n, _ = fleet_identity_maps()
+    try:
+        if path.exists():
+            with path.open() as f:
+                ld = json.load(f)
+                if isinstance(ld, dict) and isinstance(ld.get("lanes"), dict):
+                    for lname, ns in ld["lanes"].items():
+                        if (
+                            not r.fullmatch(lname)
+                            or lname in full_reg
+                            or lname in a2n
+                            or lname in target_resolver.GROUP_KEYWORDS
+                            or lname in target_resolver.SELF_ALIASES
+                        ):
+                            continue
+                        lr = {}
+                        for n, ts in ns.items():
+                            if not r.fullmatch(n) or n not in reg:
+                                continue
+                            age = now - ts
+                            if age <= ttl:
+                                lr[n] = age
+                        if lr:
+                            out[lname] = lr
+    except Exception:
+        pass
+    return out
+
+
+def _is_local_inbox_lane(family: str) -> bool:
+    """Whether the live table hosts ``family`` on this node via presence, config or a
+    live session (never a handler family, never a node or group name)."""
+    try:
+        table = _TARGET_CACHE_LOCAL.get()
+    except Exception:  # pylint: disable=broad-except
+        return False
+    name = str(family or "").strip().lower()
+    if not target_resolver.NAME_RE.fullmatch(name):
+        return False
+    host = table.get("lanes", {}).get(name, {}).get(table.get("self"))
+    return bool(host) and host.get("via") in ("presence", "config", "session")
+
+
+def _drop_lane_inbox(lane: str, text: str, envelope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Write one message for ``lane`` into this node's inbox. The file name is built
+    from a timestamp and a random id only; the lane name is data inside the file."""
+    dirs = _agy_inbox_dirs()  # owner: [gemini, agy]; tenant: [its own]. The node reads agy.
+    inbox = Path(dirs[1] if len(dirs) > 1 else dirs[0])
+    message_id = uuid.uuid4().hex
+    record = {
+        "type": "live_message", "target": lane, "text": str(text),
+        "sender": (envelope or {}).get("original_sender") or "nougenmsg-bus",
+        "origin_envelope": envelope or {}, "timestamp": time.time(), "message_id": message_id,
+    }
+    try:
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / "msg_{}_{}.json".format(int(time.time() * 1000), message_id[:12])
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(record), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return {"delivered": False, "via": "inbox", "error": type(exc).__name__}
+    return {"delivered": True, "via": "inbox", "message_id": message_id}
+
+
+def build_target_table(
+    probe: bool = True, extra_local_lanes: tuple = (), reachability: Optional[Dict[str, Any]] = None
+) -> dict:
+    self_n = _self_node_name()
+    reg = _registry_node_names()
+    a2n, n2a = fleet_identity_maps()
+    r = target_resolver.NAME_RE
+    nodes = {
+        n: {"reachable": None, "aliases": sorted(a for a, nn in a2n.items() if nn == n and r.fullmatch(a))}
+        for n in sorted(reg)
+    }
+    nodes.setdefault(self_n, {"aliases": []})["reachable"] = True
+    # Tenant scope needs no reachable=None block: _registry_node_names() already
+    # returns only this node for a tenant, so no other node is in the table at
+    # all — None-means-reachable in the resolver can never leak a cross-tenant
+    # @all/@fleet/@<other-node> target. Owner tables keep the None contract.
+    if not _tenant_scope():
+        if reachability is not None:
+            R, U = (
+                set(reachability.get("nodes_reachable", [])),
+                set(reachability.get("nodes_unreachable", [])),
+            )
+            for n in nodes:
+                if n == self_n:
+                    continue
+                nodes[n]["reachable"] = True if n in R else False if n in U else None
+        elif probe:
+            pe = os.environ.get("NOUGEN_MSG_RESOLVE_PROBE", "").lower()
+            if pe not in ("0", "false", "no", "off"):
+                try:
+                    pr = NouGenMsgBus._probe_nodes(self_n)
+                    R, U = set(pr.get("nodes_reachable", [])), set(pr.get("nodes_unreachable", []))
+                    for n in nodes:
+                        if n == self_n:
+                            continue
+                        nodes[n]["reachable"] = True if n in R else False if n in U else None
+                except Exception:
+                    for n in nodes:
+                        if n != self_n:
+                            nodes[n]["reachable"] = None
+    lanes: Dict[str, Dict[str, Dict]] = {}
+    for f in NouGenMsgBus.LOCAL_FAMILIES:
+        if f != "all" and r.fullmatch(f):
+            lanes[f] = {self_n: {"via": "handler"}}
+    for lname in list(extra_local_lanes) + [
+        x.strip() for x in os.environ.get("NOUGEN_MSG_LOCAL_LANES", "").split(",") if x.strip()
+    ]:
+        lname = lname.strip().lower()
+        if not r.fullmatch(lname):
+            continue
+        if lname not in lanes:
+            lanes[lname] = {self_n: {"via": "config"}}
+    try:
+        sess = AgentPinger.list_sessions()
+    except Exception:
+        sess = []
+    for s in sess:
+        if not s.get("live"):
+            continue
+        ag = s.get("agent", "").strip().lower()
+        if not ag or not r.fullmatch(ag):
+            continue
+        sid = s.get("session_id")
+        if not sid:
+            continue
+        # A handler lane keeps via "handler" (it exists on every node running this code);
+        # live sessions are listed beside it so a session id is addressable.
+        host = lanes.setdefault(ag, {}).setdefault(self_n, {"via": "session"})
+        ids = host.setdefault("sessions", [])
+        if sid not in ids:
+            ids.append(str(sid))
+    for lname, ns in read_lane_presence().items():
+        if lanes.get(lname, {}).get(self_n, {}).get("via") == "handler":
+            # A handler lane exists on every node, so its bare name means this node;
+            # another node's copy is addressed as '<node>/<lane>'.
+            continue
+        if lname in lanes:
+            for n, age in ns.items():
+                if n not in lanes[lname]:
+                    lanes[lname][n] = {"via": "presence", "age_s": round(age, 1)}
+        else:
+            lanes[lname] = {n: {"via": "presence", "age_s": round(age, 1)} for n, age in ns.items()}
+    flanes = {
+        lname: n
+        for lname, n in lanes.items()
+        if r.fullmatch(lname)
+        and lname not in reg
+        and lname not in a2n
+        and lname not in target_resolver.GROUP_KEYWORDS
+        and lname not in target_resolver.SELF_ALIASES
+    }
+    ml = sorted(lname for lname in NouGenMsgBus.MODEL_LANES if r.fullmatch(lname))
+    groups = {}
+    # Groups expand from the scoped registry: a tenant's @all/@fleet is only
+    # this node, never the owner's fleet; fleet-host groups are filtered the
+    # same way below.
+    for kw in target_resolver.GROUP_KEYWORDS:
+        nl = sorted(reg)
+        if self_n in nl:
+            nl.remove(self_n)
+            nl.insert(0, self_n)
+        groups[kw] = nl
+    fh = _load_fleet_hosts()
+    if isinstance(fh.get("groups"), dict):
+        for gn, mem in fh["groups"].items():
+            gnl = gn.lower()
+            if (
+                not r.fullmatch(gnl)
+                or gnl in reg
+                or gnl in a2n
+                or gnl in target_resolver.GROUP_KEYWORDS
+                or gnl in flanes
+            ):
+                continue
+            fm = [m for m in mem if m in reg]
+            if fm:
+                groups[gnl] = sorted(fm)
+    return {
+        "self": self_n,
+        "nodes": nodes,
+        "lanes": flanes,
+        "model_lanes": ml,
+        "groups": groups,
+        "built_at": time.time(),
+    }
+
+
+def _target_table_identity() -> tuple:
+    """Identity key for the module-level target-table caches.
+
+    The caches are module-level, but the tenant context is a ContextVar
+    (core.bind_active_vault), so one process can serve owner then tenant (or
+    two tenants) in sequence. Without the key, the second identity reuses the
+    first identity's table until the TTL expires. The key is the full identity
+    tuple, so any switch rebuilds the table instead.
+    """
+    from . import core
+    return (core.is_tenant_context(), core.active_tenant_id(), str(core.active_vault_dir()))
+
+
+_TARGET_CACHE_LOCAL = target_resolver.TableCache(
+    lambda: build_target_table(probe=False), key_fn=_target_table_identity)
+_TARGET_CACHE_PROBED = target_resolver.TableCache(
+    lambda: build_target_table(probe=True), key_fn=_target_table_identity)
+
+
+def resolve_target(raw: Any) -> "target_resolver.Resolution":
+    """Resolve against the registry table, without the TCP probe.
+
+    The probe dials each peer's NouGenMsg receiver (port 8766 over mDNS), but
+    remote delivery goes over SSH (emit_node). On 11/17 the probe called blade
+    unreachable while ``ssh blade`` answered, so '@blade' was refused after the
+    rollout of #1100 and the node was rolled back. A peer that really cannot be
+    reached is reported by the send itself (route_failed / the bus error), never
+    silently dropped and never broadcast. The probed view stays in
+    nougenmsg_peers' target_table for operators.
+    """
+    return target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
+
+
+def target_refusal(raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        r = resolve_target(raw)
+    except Exception:
+        return None
+    if r.ok:
+        return None
+    return {
+        "delivered": False,
+        "status": "not_resolvable",
+        "reason": r.reason,
+        "error": r.error,
+        "target": str(raw)[:80],
+        "resolvable": r.resolvable,
+    }
+
+
+def target_unknown(raw: Any) -> Optional[Dict[str, Any]]:
+    """Refusal for a target that names nothing in the live table, else None.
+
+    The gate for send paths whose transport reports an unreachable peer itself (the
+    CLI and the MCP tools): it reads the unprobed table, so it costs no network call
+    and never refuses a known node for being slow to answer a probe.
+    """
+    try:
+        r = target_resolver.resolve_live(raw, _TARGET_CACHE_LOCAL)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    if r.ok:
+        return None
+    return {
+        "delivered": False,
+        "status": "not_resolvable",
+        "reason": r.reason,
+        "error": f"unrecognized target {str(raw)[:80]!r}; nothing delivered. {r.error}",
+        "resolvable": r.resolvable,
+    }
+
+
+def target_table_summary(reachability: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    t = (
+        build_target_table(reachability=reachability)
+        if reachability is not None
+        else _TARGET_CACHE_PROBED.get()
+    )
+    return target_resolver.summarise(t)
+
+
+def clear_target_cache() -> None:
+    _TARGET_CACHE_LOCAL.clear()
+    _TARGET_CACHE_PROBED.clear()

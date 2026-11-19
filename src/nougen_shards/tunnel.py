@@ -81,3 +81,23 @@ def start_tunnel(
 ) -> Dict[str, Any]:
     """Synchronous entrypoint for starting a tunnel."""
     return asyncio.run(start_tunnel_async(port, service_name, domain, auth_token))
+
+
+def get_active_tunnels(api_url: Optional[str] = None, timeout_s: Optional[float] = None) -> Dict[str, Any]:
+    """Inspect live ngrok tunnels via the local agent API. Fails soft when no agent is running."""
+    import json
+    import urllib.request
+    import urllib.error
+    url = (api_url or os.environ.get("NGROK_API_URL") or f"http://127.0.0.1:{os.environ.get('NGROK_API_PORT', '4040')}").rstrip("/") + "/api/tunnels"
+    timeout = float(timeout_s if timeout_s is not None else os.environ.get("NGROK_API_TIMEOUT_S", "3"))
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"status": "down", "api_url": url, "tunnels": [], "error": str(exc)}
+    tunnels = [
+        {"name": t.get("name"), "public_url": t.get("public_url"), "proto": t.get("proto"),
+         "addr": (t.get("config") or {}).get("addr")}
+        for t in data.get("tunnels", [])
+    ]
+    return {"status": "up" if tunnels else "idle", "api_url": url, "count": len(tunnels), "tunnels": tunnels}

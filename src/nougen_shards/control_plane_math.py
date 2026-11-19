@@ -1,6 +1,8 @@
 """Deterministic control-plane math: Pareto routing, execution Adherence, replay, harness ledger.
 
-Leg 20261001T202909Z, parts 2-4. Pure functions, stdlib only, nothing wired into live paths.
+Leg 20261001T202909Z, parts 2-4. Pure decision functions remain provider-neutral;
+validated JSON adapters are in ``control_plane_api``. The route evaluator does not
+dispatch provider calls, and the harness ledger is in-memory rather than durable.
 Promotion is NOT reimplemented: ``HarnessLedger.promote`` delegates to the existing
 ``decision.calibration.promotion_gate`` (which never auto-promotes).
 

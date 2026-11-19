@@ -1,0 +1,461 @@
+"""
+RSI (Recursive Self-Improvement) lane: a native NouGen tool, same family as
+dream.py and evolution.py, for a target repo (default NouGenRemote-Android).
+
+Gate-don't-write, matching the Dream Lane contract: this module never
+authors or applies a code edit itself. Each run checks the target repo's
+ground truth (does it build, is the self-update chain healthy), anchors
+exact temporal provenance (nougen_time + temporal_fabric), queries Exa MCP /
+live temporal search for latest ecosystem patterns (with Keymaker EXA_API_KEY
+and startPublishedDate filtering), asks a local/free fleet model to PROPOSE
+one small improvement grounded in both recent shards and latest Exa signals,
+and writes that proposal to a private report + relay leg for a Coach-level
+agent session to review and implement.
+"""
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import os
+import subprocess
+import hmac
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from nougen_time import __version__ as NOUGEN_TIME_VERSION, now as nougen_now
+from . import core
+from . import keymaker
+from . import temporal_fabric
+
+REPORTS_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGen", "rsi")
+EXA_API_URL = "https://api.exa.ai/search"
+EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+
+
+def _env_path(name: str, fallback: str) -> str:
+    raw = os.environ.get(name)
+    return raw.strip() if raw and raw.strip() else fallback
+
+
+def _repo_path() -> Path:
+    default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
+    return Path(_env_path("NOUGEN_RSI_REPO", default))
+
+
+def _reports_dir() -> Path:
+    d = Path(_env_path("NOUGEN_RSI_REPORTS_DIR", REPORTS_DIR_DEFAULT))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run(cmd: List[str], cwd: Path, timeout: int = 300) -> Dict[str, Any]:
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+            shell=(os.name == "nt"),
+        )
+        return {"ok": proc.returncode == 0, "code": proc.returncode,
+                "stdout_tail": proc.stdout[-1500:], "stderr_tail": proc.stderr[-1500:]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "code": None, "error": "timeout"}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"ok": False, "code": None, "error": str(exc)}
+
+
+def check_builds(repo: Path) -> Dict[str, Any]:
+    """Ground truth: does the target repo currently compile. Report-only."""
+    gradlew = repo / "gradlew.bat" if os.name == "nt" else repo / "gradlew"
+    if not gradlew.exists():
+        return {"checked": False, "reason": "no gradlew in repo - not a Gradle project or wrong NOUGEN_RSI_REPO"}
+    result = _run([str(gradlew), "compileDebugKotlin"], cwd=repo, timeout=300)
+    return {"checked": True, **result}
+
+
+def check_self_update_health(version_url: Optional[str] = None) -> Dict[str, Any]:
+    """Confirms the self-update chain this lane depends on is actually alive.
+
+    No operator host is hardcoded here (public-repo discipline) - the URL
+    comes from NOUGEN_RSI_SELF_UPDATE_URL or an explicit argument. Unset
+    means "not configured", not a guessed default.
+    """
+    resolved = version_url or os.environ.get("NOUGEN_RSI_SELF_UPDATE_URL")
+    if not resolved:
+        return {"ok": False, "reason": "NOUGEN_RSI_SELF_UPDATE_URL not set"}
+    try:
+        req = urllib.request.Request(resolved, headers={"User-Agent": "nougen-rsi/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return {"ok": resp.status == 200, "status": resp.status, "body": json.loads(resp.read().decode())}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"ok": False, "error": str(exc)}
+
+
+def _resolve_exa_keys() -> List[str]:
+    """Resolves all Exa API keys across keymaker aliases (EXA_API_KEY, EXA_API_KEY_1..4)."""
+    keys: List[str] = []
+    for candidate in ("EXA_API_KEY", "EXA_API_KEY_2", "EXA_API_KEY_3", "EXA_API_KEY_4", "EXA_API_KEY_1"):
+        val = keymaker.get_secret(candidate)
+        if val and val.strip() and val.strip() not in keys:
+            keys.append(val.strip())
+    return keys
+
+
+def fetch_exa_temporal_latest(
+    query: str = "Jetpack Compose Android Credential Manager OkHttp Material3 best practices bugfix",
+    days_back: int = 90,
+    num_results: int = 3,
+) -> Dict[str, Any]:
+    """
+    Queries Exa (REST API or Exa MCP JSON-RPC) with strict temporal freshness filtering
+    (`startPublishedDate` anchored via `nougen_time.now()`) so RSI proposals stay
+    grounded in the latest upstream Android/Compose/Kotlin advisories and patterns.
+    Rotates across Keymaker EXA_API_KEY slots automatically on 401/429.
+    """
+    instant = nougen_now()
+    cutoff_dt = instant.utc_dt - datetime.timedelta(days=max(1, days_back))
+    start_published = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    exa_keys = _resolve_exa_keys()
+    if not exa_keys:
+        return {
+            "ok": False,
+            "source": "exa_temporal",
+            "reason": "no EXA_API_KEY in keymaker vault or environment",
+            "start_published_date": start_published,
+            "hits": [],
+        }
+
+    payload = {
+        "query": query,
+        "type": "auto",
+        "numResults": max(1, min(num_results, 5)),
+        "startPublishedDate": start_published,
+        "contents": {"text": {"maxCharacters": 600}},
+    }
+
+    last_error = "unknown"
+    for exa_key in exa_keys:
+        try:
+            req = urllib.request.Request(
+                EXA_API_URL,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": exa_key,
+                    "User-Agent": "Mozilla/5.0 (compatible; NouGenRSI-ExaMCP/1.0)",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            results = raw.get("results") or []
+            hits: List[Dict[str, Any]] = []
+            for item in results[:num_results]:
+                hits.append({
+                    "title": item.get("title") or "",
+                    "url": item.get("url") or "",
+                    "published_date": item.get("publishedDate") or "",
+                    "snippet": (item.get("text") or "")[:300].strip(),
+                })
+            return {
+                "ok": True,
+                "source": "exa_temporal",
+                "mcp_endpoint": EXA_MCP_URL,
+                "query": query,
+                "start_published_date": start_published,
+                "evaluated_at_utc": instant.utc_iso,
+                "hits": hits,
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            last_error = str(exc)
+            continue
+
+    return {
+        "ok": False,
+        "source": "exa_temporal",
+        "query": query,
+        "start_published_date": start_published,
+        "error": last_error,
+        "hits": [],
+    }
+
+
+def _pick_model() -> str:
+    """Env-preferred > custom fleet e2b/e4b > refuse-never (Rule 0.4). Caller probes /api/tags at use time."""
+    return os.environ.get("NOUGEN_RSI_MODEL", "dav1d:e2b")
+
+
+def propose_improvement(
+    repo: Path,
+    recent_shard_titles: Optional[List[str]] = None,
+    exa_hits: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Asks a local/free model for ONE small, concrete, verifiable improvement
+    idea grounded in recent shards and latest Exa temporal intelligence.
+    This is a PROPOSAL only - rsi.py never edits repo files itself.
+    """
+    model = _pick_model()
+    instant = nougen_now()
+    context = "\n".join(f"- {t}" for t in (recent_shard_titles or [])[:10])
+    exa_context = "\n".join(
+        f"- [{h.get('published_date', 'recent')}] {h.get('title', '')}: {h.get('snippet', '')[:160]}"
+        for h in (exa_hits or [])[:3]
+        if isinstance(h, dict) and (h.get("title") or h.get("snippet"))
+    )
+    prompt = (
+        f"Current temporal anchor: {instant.utc_iso} ({instant.display_full}).\n"
+        f"You are reviewing the Android app at {repo.name} for its next small, "
+        "real, verifiable improvement - a bug fix, a missing confirm dialog, "
+        "a UX gap, nothing architectural. Recent work already shipped:\n"
+        f"{context or '(no recent history available)'}\n\n"
+        "Latest temporal web intelligence (Exa MCP):\n"
+        f"{exa_context or '(no external Exa advisories needed)'}\n\n"
+        "Propose exactly ONE improvement NOT already covered above. Reply as "
+        "JSON only: {\"title\": str, \"description\": str, \"risk\": "
+        "\"trivial|low|medium\", \"touches_secrets\": bool}."
+    )
+    try:
+        ollama_host = "http://127.0.0.1:11434"  # OLLAMA_HOST env is a bind addr, never dial it (known trap)
+        body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
+                            "stream": False, "format": "json"}).encode()
+        req = urllib.request.Request(f"{ollama_host}/api/chat", data=body,
+                                      headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode())
+        content = (data.get("message", {}) or {}).get("content", "{}")
+        proposal = json.loads(content)
+        proposal["model_used"] = model
+        proposal["temporal_anchor_utc"] = instant.utc_iso
+        return proposal
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"error": str(exc), "model_used": model, "temporal_anchor_utc": instant.utc_iso}
+
+
+def _record_bitemporal_receipt(summary: Dict[str, Any], instant_ms: int) -> Dict[str, Any]:
+    """Records a deterministic HybridLogicalClock + bitemporal receipt for the RSI cycle."""
+    event_seed = f"{summary.get('repo')}:{instant_ms}:{summary.get('status')}"
+    event_id = "rsi-" + hashlib.sha256(event_seed.encode("utf-8")).hexdigest()[:12]
+    hlc = temporal_fabric.advance_hlc(now_ms=instant_ms, node_id=os.environ.get("NOUGEN_MACHINE", "blade1tb"), event_id=event_id)
+    return {
+        "event_id": event_id,
+        "valid_from_ms": instant_ms,
+        "known_from_ms": instant_ms,
+        "hlc": {
+            "physical_ms": hlc.physical_ms,
+            "logical_counter": hlc.logical_counter,
+            "node_id": hlc.node_id,
+        },
+    }
+
+
+def _http_json(url: str, headers: Optional[Dict[str, str]] = None, body: Optional[dict] = None,
+               timeout: int = 15) -> Dict[str, Any]:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
+                                 headers={"User-Agent": "nougen-rsi/1.0", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return {"ok": resp.status == 200, "status": resp.status, "body": json.loads(raw)}
+            except ValueError:
+                return {"ok": resp.status == 200, "status": resp.status, "body": raw[:200]}
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "status": exc.code, "error": exc.read().decode("utf-8", "replace")[:200]}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"ok": False, "error": str(exc)}
+
+
+def _mint_session(secret: str, email: str, ttl_s: int = 300) -> str:
+    """Same HMAC blob the Worker mints (v1.<b64url payload>.<b64url sig>) - lets the
+    canary prove the session path end to end without a Google token."""
+    import base64
+    import hashlib
+    import time
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    now = int(time.time())
+    body = b64(json.dumps({"typ": "session", "eml": email, "iat": now, "exp": now + ttl_s}).encode())
+    return f"v1.{body}." + b64(hmac.new(secret.encode(), ("v1." + body).encode(), hashlib.sha256).digest())
+
+
+def check_surfaces() -> Dict[str, Any]:
+    """
+    Canary over every live surface the app depends on. Every host comes from
+    env (public-repo discipline: no operator host in shipped code); a surface
+    whose env is unset is reported as skipped, never as failed.
+
+      NOUGEN_RSI_WORKER_URL    -> GET /health            (nougenai-agent Worker)
+      NOUGEN_RSI_BRIDGE_URL    -> GET /api/v1/health     (nougen_remote bridge)
+        + NOUGEN_REMOTE_TOKEN  -> GET /api/v1/tools      (tool surface non-empty)
+        + NOUGEN_SESSION_SECRET-> POST /api/v1/tools/fleet_whoami with a minted
+                                  session (the auth path the phone uses)
+    """
+    out: Dict[str, Any] = {}
+    worker = os.environ.get("NOUGEN_RSI_WORKER_URL", "").rstrip("/")
+    bridge = os.environ.get("NOUGEN_RSI_BRIDGE_URL", "").rstrip("/")
+    remote_token = os.environ.get("NOUGEN_REMOTE_TOKEN", "")
+    session_secret = os.environ.get("NOUGEN_SESSION_SECRET", "")
+    canary_email = os.environ.get("NOUGEN_RSI_CANARY_EMAIL", "")
+
+    out["worker_health"] = _http_json(worker + "/health") if worker else {"skipped": True, "reason": "NOUGEN_RSI_WORKER_URL not set"}
+    out["bridge_health"] = _http_json(bridge + "/api/v1/health") if bridge else {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL not set"}
+
+    if bridge and remote_token:
+        r = _http_json(bridge + "/api/v1/tools", headers={"Authorization": "Bearer " + remote_token})
+        count = len((r.get("body") or {}).get("tools", [])) if isinstance(r.get("body"), dict) else 0
+        r["tool_count"] = count
+        if r.get("ok") and count == 0:
+            r["ok"] = False
+            r["error"] = "tool surface is empty"
+        r.pop("body", None)
+        out["bridge_tools"] = r
+    else:
+        out["bridge_tools"] = {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL or NOUGEN_REMOTE_TOKEN not set"}
+
+    if bridge and session_secret and canary_email:
+        tok = _mint_session(session_secret, canary_email)
+        r = _http_json(bridge + "/api/v1/tools/fleet_whoami", headers={"Authorization": "Bearer " + tok}, body={})
+        r.pop("body", None)
+        out["session_path"] = r
+    else:
+        out["session_path"] = {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL, NOUGEN_SESSION_SECRET or NOUGEN_RSI_CANARY_EMAIL not set"}
+
+    out["degraded"] = [k for k, v in out.items() if isinstance(v, dict) and not v.get("skipped") and not v.get("ok")]
+    return out
+
+
+def _alert_degraded(status: str, surfaces: Dict[str, Any], build: Dict[str, Any], report_path: Path) -> Dict[str, Any]:
+    """Post a relay leg so the fleet sees a broken surface without anyone
+    opening the report. NOUGEN_RSI_ALERT=0 silences it (e.g. for a dry run)."""
+    if os.environ.get("NOUGEN_RSI_ALERT", "1") == "0":
+        return {"posted": False, "reason": "NOUGEN_RSI_ALERT=0"}
+    try:
+        from . import handoff
+        failing = surfaces.get("degraded", [])
+        lines = ["## Active Incidents", f"- RSI canary status: **{status}**"]
+        for k in failing:
+            v = surfaces.get(k, {})
+            lines.append(f"- {k}: HTTP {v.get('status', '-')} {v.get('error', '')}".rstrip())
+        if not build.get("ok", True):
+            lines.append(f"- build: {build.get('error') or 'compile failed'}")
+        lines += ["", "## Recent Changes", f"- Report: {report_path}", "", "## Known Issues & Workarounds",
+                  "- Canary is read-only; it does not repair. A Coach lane should pick this up."]
+        path = handoff.create_handoff(message="\n".join(lines), agent="rsi",
+                                      goal=f"RSI canary {status}: {', '.join(failing) or 'build'}")
+        return {"posted": bool(path), "path": str(path) if path else None}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"posted": False, "error": str(exc)}
+
+
+def _previous_report() -> Optional[Dict[str, Any]]:
+    """Newest per-run report on disk (the one this run will supersede), or None."""
+    files = sorted(_reports_dir().glob("rsi_*T*.json"))
+    if not files:
+        return None
+    try:
+        with open(files[-1], "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _alert_recovered(prev_status: str, report_path: Path) -> Dict[str, Any]:
+    if os.environ.get("NOUGEN_RSI_ALERT", "1") == "0":
+        return {"posted": False, "reason": "NOUGEN_RSI_ALERT=0"}
+    try:
+        from . import handoff
+        msg = "\n".join([
+            "## Active Incidents", f"- None - RSI canary recovered to **ok** (was {prev_status}).",
+            "", "## Recent Changes", f"- Report: {report_path}",
+        ])
+        path = handoff.create_handoff(message=msg, agent="rsi", goal=f"RSI canary RECOVERED (was {prev_status})")
+        return {"posted": bool(path), "path": str(path) if path else None, "kind": "recovered"}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"posted": False, "error": str(exc)}
+
+
+def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[str, Any]:
+    """
+    One RSI cycle with Exa MCP temporal grounding and bitemporal provenance.
+    Always report-only for anything beyond the trivial allow-list.
+    """
+    repo = _repo_path()
+    instant = nougen_now()
+    timestamp = instant.utc_iso
+    instant_ms = instant.unix_timestamp_us // 1_000
+
+    build = check_builds(repo)
+    health = check_self_update_health()
+    surfaces = check_surfaces()
+
+    recent_titles: List[str] = []
+    try:
+        hits = core._title_retrieve(query="nougenremote-android", limit=10,
+                                     domain_key=None, include_research=False)
+        recent_titles = [h.get("title", "") for h in (hits or []) if isinstance(h, dict) and h.get("title")]
+    except Exception:  # pylint: disable=broad-except
+        pass  # Best-effort context only
+
+    query = exa_query or f"{repo.name} Jetpack Compose Android Credential Manager OkHttp latest best practices"
+    exa_temporal = fetch_exa_temporal_latest(query=query)
+
+    proposal = (
+        propose_improvement(repo, recent_titles, exa_hits=exa_temporal.get("hits"))
+        if build.get("ok", True)
+        else {"skipped": True, "reason": "build is currently broken - fix that before proposing new work"}
+    )
+
+    summary: Dict[str, Any] = {
+        "timestamp_utc": timestamp,
+        "temporal": instant.to_dict(NOUGEN_TIME_VERSION),
+        "repo": str(repo),
+        "build": build,
+        "self_update_health": health,
+        "surfaces": surfaces,
+        "exa_temporal_latest": exa_temporal,
+        "proposal": proposal,
+        "applied": False,  # gate-don't-write: this module never flips this to true itself
+        "status": ("BUILD_BROKEN" if not build.get("ok", True)
+                   else "DEGRADED" if (surfaces.get("degraded") or health.get("ok") is False)
+                   else "ok"),
+    }
+    summary["bitemporal_receipt"] = _record_bitemporal_receipt(summary, instant_ms)
+
+    # Per-RUN filename, not per-day: on the 30-minute schedule a per-day name
+    # overwrote itself 48 times a day and a single test run could clobber the
+    # real result. Lexical sort == chronological, so "newest = last" still
+    # holds for rsi_status / `nougen rsi status`.
+    # Alert on TRANSITIONS, not on every tick. On a 30-minute schedule a
+    # steady-state outage would otherwise post 48 identical legs a day and
+    # bury the one that mattered; and a recovery deserves its own leg so
+    # nobody keeps chasing a fixed problem.
+    prev = _previous_report()
+    prev_status = str(prev.get("status", "unknown")) if prev else "none"
+    prev_tools = ((prev or {}).get("surfaces", {}).get("bridge_tools", {}) or {}).get("tool_count")
+    now_tools = (surfaces.get("bridge_tools", {}) or {}).get("tool_count")
+    summary["previous_status"] = prev_status
+    summary["transition"] = f"{prev_status}->{summary['status']}"
+    if isinstance(prev_tools, int) and isinstance(now_tools, int) and prev_tools != now_tools:
+        summary["tool_count_delta"] = now_tools - prev_tools
+
+    report_path = _reports_dir() / f"rsi_{instant.utc_dt.strftime('%Y-%m-%dT%H%M%SZ')}.json"
+    summary["report_path"] = str(report_path)
+
+    # Decide the alert BEFORE writing, so the report on disk is complete:
+    # rsi_status (the phone) and `nougen rsi status` read the file, and an
+    # earlier version wrote it first and attached `alert` only to the
+    # in-memory return - the file never showed whether a leg was posted.
+    status = summary["status"]
+    if status != "ok" and prev_status != status:
+        summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
+    elif status != "ok":
+        summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
+    elif prev_status not in ("ok", "none", "unknown"):
+        summary["alert"] = _alert_recovered(prev_status, report_path)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    return summary

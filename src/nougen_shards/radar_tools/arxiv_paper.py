@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Single-paper arXiv recall: metadata, LaTeX full text, and claim checks.
+
+    arxiv_paper.py lookup 2609.34785            # metadata via the arXiv API (both id styles)
+    arxiv_paper.py fulltext 2609.34785          # fetch e-print source, cache extracted .tex text
+    arxiv_paper.py claim 2609.34785 '55\\.0\\%'  # where does this appear in the paper BODY?
+
+Why: radar and lab decisions were made from abstracts only. The e-print source is the
+paper's own LaTeX, so a claim can be checked against the body with plain text search,
+no PDF parsing. Clean-room: method inspired by a GPL-3 arxiv.py utility, no code taken.
+
+Disk discipline (this node runs near full): only extracted .tex text is kept, under
+~/.nougen/shards/lab/papers/<id>/fulltext.tex; downloads over MAX_SOURCE_BYTES are refused.
+"""
+from __future__ import annotations
+
+import argparse
+import gzip
+import io
+import json
+import os
+import posixpath
+import re
+import tarfile
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+
+def _vault_root() -> Path:
+    """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    # A request bound to a tenant (core.bind_active_vault) wins: one server process can serve several tenants,
+    # so the env var read here is only the process default.
+    try:
+        from nougen_shards.core import active_vault_dir, vault_context_is_set
+        if vault_context_is_set():
+            return Path(active_vault_dir())
+    except Exception:  # standalone run outside the package
+        pass
+    env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
+
+UA = "nougen-radar/arxiv_paper (+phoebus)"
+CACHE = _vault_root() / "lab" / "papers"  # process default; writes resolve per call
+
+
+def cache_dir() -> Path:
+    return _vault_root() / "lab" / "papers"
+
+
+MAX_SOURCE_BYTES = 25_000_000
+MAX_EXPANDED_BYTES = 25_000_000  # cap on decompressed and inlined source, so a small bomb cannot balloon
+NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+_NEW = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
+_OLD = re.compile(r"^([a-z\-]+(?:\.[A-Z]{2})?/\d{7})(v\d+)?$", re.I)
+
+
+def normalize_id(ref: str) -> str:
+    """Accept '2609.34785', 'arXiv:2609.34785v2', 'hep-th/9711200', abs/pdf URLs. Version kept if given."""
+    r = ref.strip()
+    r = re.sub(r"^https?://(?:www\.|export\.)?arxiv\.org/(?:abs|pdf|e-print)/", "", r)
+    r = re.sub(r"\.pdf$", "", r)
+    r = re.sub(r"^arxiv:", "", r, flags=re.I)
+    for rx in (_NEW, _OLD):
+        m = rx.match(r)
+        if m:
+            return m.group(1) + (m.group(2) or "")
+    raise ValueError(f"not an arXiv identifier: {ref!r}")
+
+
+def _get(url: str, timeout: float = 40.0, retries: int = 4) -> bytes:
+    """GET with arXiv etiquette: on 429/503 honour Retry-After (else back off 5s, 10s, 20s...)."""
+    import urllib.error
+    for attempt in range(retries + 1):
+        try:
+            return _get_once(url, timeout)
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 503) or attempt == retries:
+                raise
+            wait = e.headers.get("Retry-After")
+            time.sleep(min(120.0, float(wait)) if wait and wait.isdigit() else 5.0 * 2 ** attempt)
+        except (TimeoutError, urllib.error.URLError):  # arXiv throttles by slowing down, too
+            if attempt == retries:
+                raise
+            time.sleep(5.0 * 2 ** attempt)
+    raise AssertionError("unreachable")
+
+
+def _get_once(url: str, timeout: float) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        length = int(r.headers.get("Content-Length") or 0)
+        if length > MAX_SOURCE_BYTES:
+            raise IOError(f"refusing {length} bytes (> {MAX_SOURCE_BYTES})")
+        data = r.read(MAX_SOURCE_BYTES + 1)
+        if len(data) > MAX_SOURCE_BYTES:
+            raise IOError(f"download exceeded {MAX_SOURCE_BYTES} bytes")
+        return data
+
+
+def parse_entry(xml: bytes) -> dict:
+    e = ET.fromstring(xml).find("a:entry", NS)
+    if e is None or e.find("a:title", NS) is None:
+        raise LookupError("arXiv API returned no entry")
+    text = lambda tag: " ".join((e.findtext(tag, default="", namespaces=NS) or "").split())
+    return {
+        "id": e.findtext("a:id", namespaces=NS).split("/abs/")[-1],
+        "title": text("a:title"),
+        "authors": [" ".join(a.findtext("a:name", namespaces=NS).split()) for a in e.findall("a:author", NS)],
+        "abstract": text("a:summary"),
+        "published": text("a:published")[:10],
+        "updated": text("a:updated")[:10],
+        "primary_category": (e.find("arxiv:primary_category", NS).get("term") if e.find("arxiv:primary_category", NS) is not None else ""),
+        "categories": [c.get("term") for c in e.findall("a:category", NS)],
+        "comment": text("arxiv:comment") or None,
+        "journal_ref": text("arxiv:journal_ref") or None,
+        "doi": text("arxiv:doi") or None,
+    }
+
+
+def lookup(ref: str) -> dict:
+    aid = normalize_id(ref)
+    return parse_entry(_get(f"https://export.arxiv.org/api/query?id_list={aid}&max_results=1"))
+
+
+def extract_tex(blob: bytes) -> str:
+    """e-print payloads are a gzipped tar of sources, a single gzipped .tex, or a bare PDF."""
+    if blob[:4] == b"%PDF":
+        raise LookupError("no LaTeX source: this paper is PDF-only on arXiv")
+    if blob[:2] == b"\x1f\x8b":
+        with gzip.GzipFile(fileobj=io.BytesIO(blob)) as gz:  # bounded: a gzip bomb must not exhaust memory
+            raw = gz.read(MAX_EXPANDED_BYTES + 1)
+        if len(raw) > MAX_EXPANDED_BYTES:
+            raise IOError(f"source expands past {MAX_EXPANDED_BYTES} bytes")
+    else:
+        raw = blob
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+            texs, total = {}, 0
+            for m in tf.getmembers():
+                if not (m.isfile() and m.name.endswith(".tex")):
+                    continue
+                total += m.size
+                if total > MAX_EXPANDED_BYTES:
+                    raise IOError(f"source .tex files exceed {MAX_EXPANDED_BYTES} bytes")
+                fh = tf.extractfile(m)
+                if fh is None:  # not a regular file after all; skip rather than crash
+                    continue
+                texs[posixpath.normpath(m.name)] = fh.read().decode("utf-8", "replace")
+    except tarfile.ReadError:
+        texs = {"main.tex": raw.decode("utf-8", "replace")}
+    if not texs:
+        raise LookupError("source archive contains no .tex files")
+    main = next((n for n, t in texs.items() if "\\documentclass" in t), max(texs, key=lambda n: len(texs[n])))
+    base = posixpath.dirname(main)
+    budget = [MAX_EXPANDED_BYTES]
+
+    def inline(text: str, depth: int = 0) -> str:  # resolve \input{...} / \include{...}
+        if depth > 5:
+            return text
+        def sub(m):
+            name = m.group(1).strip()
+            name = name if name.endswith(".tex") else name + ".tex"
+            # LaTeX resolves includes relative to the main file: exact path only, never a suffix match
+            # (a stray unused/intro.tex must not stand in for intro.tex).
+            hit = texs.get(posixpath.normpath(posixpath.join(base, name)))
+            if hit is None:
+                return m.group(0)
+            budget[0] -= len(hit)
+            if budget[0] < 0:
+                raise IOError(f"inlined source exceeds {MAX_EXPANDED_BYTES} bytes")
+            return inline(hit, depth + 1)
+        return re.sub(r"\\(?:input|include)\{([^}]+)\}", sub, text)
+
+    # Strip comments from every file BEFORE inlining, so a commented-out `% \input{x}` is never expanded.
+    for n in texs:
+        texs[n] = _strip_comments(texs[n])
+    return inline(texs[main])
+
+
+def _strip_comments(text: str) -> str:
+    return re.sub(r"(?m)(?<!\\)%.*$", "", text)
+
+
+def fulltext(ref: str, refresh: bool = False) -> Path:
+    aid = normalize_id(ref)
+    out = cache_dir() / aid.replace("/", "_") / "fulltext.tex"
+    if out.exists() and not refresh:
+        return out
+    tex = extract_tex(_get(f"https://arxiv.org/e-print/{aid}"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(tex, encoding="utf-8")
+    meta = out.parent / "meta.json"
+    if not meta.exists():
+        time.sleep(3)  # arXiv API etiquette between the two calls
+        try:  # metadata is a convenience; never lose the full text over it
+            meta.write_text(json.dumps(lookup(aid), indent=2), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            (out.parent / "meta.error").write_text(f"{type(e).__name__}: {e}", encoding="utf-8")
+    return out
+
+
+def body_only(tex: str) -> str:
+    """The paper minus its preamble and abstract. A claim 'verified in the body' must not be
+    satisfied by the abstract or by a preamble macro (\\newcommand, \\title), both of which are
+    part of the LaTeX source."""
+    start = re.search(r"\\begin\{document\}", tex)
+    if not start:
+        # Fail closed: with no \begin{document} the body cannot be told apart from the preamble, so
+        # nothing counts as body evidence (a preamble-only macro must never satisfy a claim).
+        return ""
+    tex = tex[start.end():]
+    end = re.search(r"\\end\{document\}", tex)
+    if end:
+        tex = tex[:end.start()]  # text after \end{document} is not part of the paper
+    tex = re.sub(r"\\begin\{abstract\}.*?\\end\{abstract\}", " ", tex, flags=re.S)
+    if re.search(r"\\(?:begin|end)\{abstract\}", tex):
+        # An unmatched abstract boundary: the abstract cannot be told apart from the body. Fail closed.
+        return ""
+    return tex
+
+
+def body_hits(body: str, pattern: str, context: int = 90) -> list[str]:
+    """Non-empty matches of a claim pattern in an extracted body. An empty body or a zero-length match
+    (e.g. '.*' against nothing) is never evidence."""
+    text = " ".join(body.split())
+    if not text:
+        return []
+    return [text[max(0, m.start() - context): m.end() + context]
+            for m in re.finditer(pattern, text) if m.end() > m.start()]
+
+
+def claim(ref: str, pattern: str, context: int = 90) -> list[str]:
+    """Every place a claim pattern appears in the BODY (abstract excluded), with surrounding text."""
+    return body_hits(body_only(fulltext(ref).read_text(encoding="utf-8")), pattern, context)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("lookup", "fulltext"):
+        p = sub.add_parser(name)
+        p.add_argument("ref")
+    sub.choices["fulltext"].add_argument("--refresh", action="store_true")
+    pc = sub.add_parser("claim")
+    pc.add_argument("ref")
+    pc.add_argument("pattern")
+    a = ap.parse_args()
+    if a.cmd == "lookup":
+        print(json.dumps(lookup(a.ref), indent=2))
+    elif a.cmd == "fulltext":
+        p = fulltext(a.ref, a.refresh)
+        print(f"{p} ({p.stat().st_size} bytes)")
+    else:
+        hits = claim(a.ref, a.pattern)
+        print(f"{len(hits)} occurrence(s) in the body")
+        for h in hits[:20]:
+            print(f"  ...{h}...")
+        return 0 if hits else 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

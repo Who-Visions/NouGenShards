@@ -92,16 +92,29 @@ def resolve_token() -> str | None:
         return None
 
 
+def child_env(port: int, token: str | None) -> dict:
+    """Environment for the uvicorn child.
+
+    NGS_PORT is always exported as the port actually chosen: the app's listener
+    self-check reads it, and when the port came from the candidate scan rather
+    than the env it would otherwise guard nothing (Codex P2 on #886).
+    """
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    env["NGS_PORT"] = str(port)
+    if token:
+        env["NGS_NODE_TOKEN"] = token
+    return env
+
+
 def main() -> int:
     host = os.environ.get("NGS_BIND_HOST", "0.0.0.0")
     port = resolve_port()
     ip = advertised_ip()
     token = resolve_token()
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    env = child_env(port, token)
     if token:
-        env["NGS_NODE_TOKEN"] = token
         fp = hashlib.sha256(token.encode()).hexdigest()[:12]
         print(f"[*] node token: configured (fp={fp})")
     else:

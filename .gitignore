@@ -206,3 +206,20 @@ projects/
 bin/ngs-node.sh.bak*
 ~/
 !extensions/nougentube-chrome/icons/*.png
+.env.*
+!.env.example
+
+# Chrome extension icons must ship with the extension
+!integrations/chrome-capture/*.png
+
+
+# Owner-private material: never publish (see tests/test_published_surface.py)
+.handoffs/*
+!.handoffs/.gitkeep
+docs/handoffs/
+docs/wargame-catalog/
+*tax-audit*
+ops/launchd/
+
+# local git worktree checkouts
+wt/

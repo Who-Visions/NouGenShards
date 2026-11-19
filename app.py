@@ -12,16 +12,20 @@ import re
 import datetime
 import contextlib
 import functools
+import inspect
 from typing import List, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
 import time
+import asyncio
+import concurrent.futures
+import threading
 
 
 # Add src to path for absolute imports
@@ -35,6 +39,7 @@ if os.environ.get("SPACE_ID"):
 from nougen_shards import agents, bind_probe, core, history, locator, machine, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
+from nougen_shards import leakwatch
 from nougen_shards.brain_scan import scan_environment
 
 # NGS_NODE_TOKEN remains the operator credential.  A fleet peer receives its
@@ -67,11 +72,21 @@ node_mcp = MCPServer(
         "nougentube_ingest writes the resulting memories to the grid. "
         "NouGen-Verse tools analyze, plan and suggest repairs for user-provided drafts; "
         "NouGenTime tools format timestamps in Eastern Time with canonical UTC. "
-        "nougen_media_transcribe uses local Whisper for YouTube videos up to 30 minutes. "
+        "nougentube is subtitle-first with no length cap and falls back to local Whisper; nougen_media_transcribe is Whisper-only for YouTube videos up to NOUGEN_WHISPER_MAX_SECONDS (default 30 minutes). "
         "GitHub inspection and skill lookup are read-only; GitHub README capture writes a shard. "
         "ShadowDweller search retrieves Veilverse material from the shared shard grid."
     ),
 )
+
+
+def _unwrap_sync(target):
+    seen = set()
+    while hasattr(target, "fn") and callable(getattr(target, "fn")):
+        if id(target) in seen:
+            break
+        seen.add(id(target))
+        target = target.fn
+    return target
 
 
 def _offloaded(fn):
@@ -95,16 +110,21 @@ def _offloaded(fn):
     FastMCP reads to build the tool name, description and argument schema --
     inspect.signature follows __wrapped__, so the schema is unchanged.
     """
+    sync_fn = _unwrap_sync(fn)
+
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        return await run_in_threadpool(fn, *args, **kwargs)
+        res = await run_in_threadpool(sync_fn, *args, **kwargs)
+        if inspect.iscoroutine(res):
+            res = await res
+        return res
     # Keep the SYNC body reachable. FastMCP exposes a tool's raw callable as
     # ``.fn`` and in-process callers (tests, rhea, the CLI) already use that
     # contract: ``node.recall_memory.fn("q")``. functools.wraps sets
     # ``__wrapped__`` but not ``.fn``, so the first offload landed with five
     # tests calling a coroutine and subscripting it (main red from #176 at
     # 00:33Z until this). The wire path stays async; the direct path stays sync.
-    wrapper.fn = fn
+    wrapper.fn = sync_fn
     return wrapper
 
 
@@ -127,7 +147,8 @@ def recall_memory(query: str, limit: int = 5) -> list:
     # the lane the fleet's connectors actually recall through, and an empty
     # list here reads to an agent as "the substrate holds nothing on this".
     # A lane dropped by the deadline must not be able to say that.
-    if sweep_report.get("lanes_timed_out"):
+    if (sweep_report.get("lanes_timed_out") or sweep_report.get("errored")
+            or sweep_report.get("tier2_deferred") or sweep_report.get("lanes_skipped")):
         out.append(_deadline_trailer(sweep_report))
     return out
 
@@ -136,7 +157,7 @@ def recall_memory(query: str, limit: int = 5) -> list:
 @_offloaded
 def search_tool(query: str, limit: int = 5) -> list:
     """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
-    return recall_memory(query=query, limit=limit)
+    return _unwrap_sync(recall_memory)(query=query, limit=limit)
 
 
 # A stored timestamp is only usable for era math if it is ISO-shaped.
@@ -156,16 +177,8 @@ def _deadline_trailer(sweep_report: dict) -> dict:
     return {
         "id": "federation_meta",
         "event_type": "FEDERATION_STATUS",
-        "title": (f"recall INCOMPLETE: {len(dropped)} lane(s) "
-                  f"({', '.join(dropped)}) missed the "
-                  f"{sweep_report.get('deadline_s')}s deadline — absence in "
-                  "these results is NOT evidence of absence in the substrate"),
-        "content": json.dumps({
-            "lanes_timed_out": dropped,
-            "deadline_s": sweep_report.get("deadline_s"),
-            "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
-            "lanes": sweep_report.get("lanes"),
-        }),
+        "title": "recall INCOMPLETE: some stores failed, timed out, or were not searched",
+        "content": json.dumps(dict(sweep_report, complete=False)),
         "tags": json.dumps(["federation_status"]),
         "final_score": 0.0,
         "_db_index": "federation_meta",
@@ -290,6 +303,13 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
     sees a tool error rather than a quiet false."""
     result = core.capture(event_type, title, content, tags=tags,
                           original_timestamp=original_timestamp)
+    # core.capture returns a bare False when the proof-of-execution gate refuses
+    # a completion-tagged shard; dict(False) used to raise TypeError, which the
+    # client saw as an opaque tool error. Say why instead.
+    if result is False:
+        return {"captured": False, "stored": False, "reason": "poe_gate_rejected",
+                "detail": "completion-tagged shard needs proof of execution "
+                          "(an ```evidence block the PoE validator accepts), or drop the completion tag"}
     return dict(result)
 
 
@@ -556,7 +576,9 @@ def substrate_coverage() -> dict:
 @node_mcp.tool()
 @_offloaded
 def recall_window(query: str = "", since: str | None = None,
-                  until: str | None = None, limit: int = 10) -> list:
+                  until: str | None = None, limit: int = 10,
+                  start: str | None = None, end: str | None = None,
+                  when: str | None = None, tz: str | None = None) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
     recall_memory.
 
@@ -566,24 +588,79 @@ def recall_window(query: str = "", since: str | None = None,
 
     since/until are ISO prefixes and both are inclusive: since="2026-03",
     until="2026-03" is all of March; until="2026-03-14" covers that whole day.
+    start/end are aliases (some connectors advertise those names; before
+    this they were dropped and the call returned the newest shards with no
+    era filter at all). Any bound may also be a plain phrase ("march",
+    "last week", "yesterday 7pm"), and `when` names a whole period at once -
+    both resolved by nougen_shards.timewindow in `tz` (default NOUGEN_TZ/UTC).
     query is optional -- omit it to page an era, supply it to search within one.
     """
+    from nougen_shards import timewindow as _tw
+    since, until = since or start, until or end
+    if when:
+        win = _tw.parse_window(when, tz=tz)
+        if win is None:
+            raise ValueError(f"could not read when={when!r} as a time period")
+        since, until = _inclusive_lower(win.start_utc), _exclusive_to_inclusive(win.end_utc)
+    else:
+        since, until = _era_bound(since, tz, start=True), _era_bound(until, tz, start=False)
     return _window_search(query=query, since=since, until=until,
                           limit=max(1, min(limit, 50)))
 
 
+# ISO prefixes pass straight through as lexicographic bounds, fractional
+# seconds included: core.capture() stamps microseconds, and a returned shard
+# timestamp must stay reusable as a bound (Codex P2 on #980).
+_ISO_PREFIX = re.compile(r"^\d{4}(-\d{2}(-\d{2}([T ]\d{2}(:\d{2}(:\d{2}(\.\d+)?)?)?)?)?)?Z?$")
+
+
+def _exclusive_to_inclusive(end_utc: str) -> str:
+    """timewindow gives [start, end); _window_search pads `until` with U+FFFF so
+    it is inclusive to any precision, so hand it the last second before the
+    exclusive bound (covers 23:59:59.999999Z too)."""
+    from datetime import datetime, timedelta
+    dt = datetime.strptime(end_utc, "%Y-%m-%dT%H:%M:%SZ") - timedelta(seconds=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _inclusive_lower(start_utc: str) -> str:
+    """A generated lower bound must sort BEFORE every stamp in its first second.
+    '2026-03-01T00:00:00Z' > '2026-03-01T00:00:00.123456Z' lexicographically
+    ('Z' > '.'), which silently dropped the first second of every window;
+    without the Z the bound is a prefix of those stamps and sorts first."""
+    return start_utc[:-1] if start_utc.endswith("Z") else start_utc
+
+
+def _era_bound(value: Optional[str], tz: Optional[str], *, start: bool) -> Optional[str]:
+    """ISO prefixes pass through (lexicographic bounds, as before); a phrase is
+    resolved to the start (or inclusive end) of the period it names."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    if _ISO_PREFIX.match(v):
+        return v
+    from nougen_shards import timewindow as _tw
+    win = _tw.parse_window(v, tz=tz)
+    if win is None:
+        raise ValueError(f"could not read {'since' if start else 'until'}={v!r} as a time")
+    return _inclusive_lower(win.start_utc) if start else _exclusive_to_inclusive(win.end_utc)
+
+
 def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
-                   expect_title: Optional[str] = None) -> tuple:
+                   expect_title: Optional[str] = None,
+                   content_hash: Optional[str] = None) -> tuple:
     """Pin a shard id to exactly one cluster DB, or refuse.
 
-    Shard ids are per-DB AUTOINCREMENT, so id 2416 exists in several of the 9
-    DBs at once. Every mutation here keys on an id, and acting on "the first
-    match" would silently mutate a different shard than the caller meant --
-    tolerable for a utility nudge, unacceptable for a retraction or a delete.
+    Enforces CanonicalShardRef content-addressed cryptographic verification
+    across shards_amend, shards_retract, and shards_forget. Eliminates
+    cross-database integer ID collisions mathematically rather than relying
+    solely on plain-text title confirmation.
 
-    Returns (db_index, title). Raises ValueError naming the candidates when the
-    id is ambiguous, so the caller disambiguates instead of gambling.
+    Returns (db_index, title, content_hash). Raises ValueError naming the candidates
+    or hash mismatch when the target is unverified or ambiguous.
     """
+    from nougen_shards.locator import CanonicalShardRef
+
     hits = []
     indices = [db_index] if db_index is not None else range(1, core.MAX_DB_COUNT + 1)
     for i in indices:
@@ -591,47 +668,75 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
             continue
         conn = core.get_connection(i)
         try:
-            row = conn.execute("SELECT title FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            # `timestamp` only: the shards schema has no original_timestamp
+            # column (capture folds that parameter into timestamp), and core's
+            # CanonicalShardRef hashes over timestamp. Selecting the missing
+            # column raised "no such column" on every amend/retract/forget.
+            row = conn.execute(
+                "SELECT title, domain_key, content, timestamp FROM shards WHERE id = ?",
+                (shard_id,)
+            ).fetchone()
         finally:
             conn.close()
         if row:
-            hits.append((i, row[0]))
+            title = row[0] or ""
+            d_key = row[1] or ""
+            content = row[2] or ""
+            ts = row[3] or ""
+            c_hash = CanonicalShardRef.compute_hash(d_key, title, content, str(ts))
+            hits.append({"db_index": i, "title": title, "hash": c_hash})
 
     if not hits:
         raise ValueError(f"no shard with id {shard_id}"
                          + (f" in db {db_index}" if db_index is not None else " in any cluster DB"))
 
+    # Mathematical Content-Addressed Verification (CanonicalShardRef)
+    if content_hash:
+        c_hash_clean = content_hash.strip().lower()
+        exact_hash = [h for h in hits if h["hash"].lower() == c_hash_clean]
+        if not exact_hash:
+            found_hashes = "; ".join(f"db{h['db_index']} (hash={h['hash']}, title={h['title'][:40]!r})" for h in hits)
+            raise ValueError(
+                f"CanonicalShardRef hash mismatch for id {shard_id}. "
+                f"Expected content hash {content_hash!r}; found {found_hashes}. "
+                f"Mathematical verification failed — refusing mutation."
+            )
+        hits = exact_hash
+
+    # Plain-text Title Check (Secondary/Fallback confirmation)
     if expect_title:
-        exact = [h for h in hits if h[1] == expect_title]
+        exact = [h for h in hits if h["title"] == expect_title]
         if not exact:
-            found = "; ".join(f"db{i}: {t[:60]!r}" for i, t in hits)
+            found = "; ".join(f"db{h['db_index']}: {h['title'][:60]!r}" for h in hits)
             raise ValueError(
                 f"title mismatch for id {shard_id} -- refusing to touch a shard the "
                 f"caller has not seen. Expected {expect_title[:60]!r}; found {found}")
         hits = exact
 
     if len(hits) > 1:
-        found = "; ".join(f"db{i}: {t[:50]!r}" for i, t in hits)
+        found = "; ".join(f"db{h['db_index']}: {h['title'][:50]!r} (hash={h['hash']})" for h in hits)
         raise ValueError(
             f"id {shard_id} is ambiguous across cluster DBs ({found}). "
-            f"Pass db_index (recall results carry _db_index) to name the one you mean.")
+            f"Pass db_index or content_hash (via CanonicalShardRef) to mathematically isolate the target."
+        )
 
-    return hits[0]
+    matched = hits[0]
+    return matched["db_index"], matched["title"], matched["hash"]
 
 
 @node_mcp.tool()
 @_offloaded
 def shard_amend(shard_id: int, note: str, db_index: int | None = None,
-                confirm_title: str | None = None) -> dict:
+                confirm_title: str | None = None,
+                content_hash: str | None = None) -> dict:
     """Append a dated note to an existing shard, preserving everything already
     there. The append-only way to correct or extend a shard: history is never
     rewritten, it grows. Use for living dossiers and for correcting a shard that
     later turned out to be partly wrong.
 
-    PASS confirm_title. Recall is fuzzy and can hand back a neighbouring
-    shard's id; amending the wrong shard writes your note into someone else's
-    record. Supplying the expected title makes that a refusal."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    Enforces CanonicalShardRef mathematical verification when content_hash is supplied,
+    or falls back to confirm_title to prevent cross-database ID collisions."""
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     conn = core.get_connection(idx)
     try:
@@ -641,13 +746,21 @@ def shard_amend(shard_id: int, note: str, db_index: int | None = None,
         conn.commit()
     finally:
         conn.close()
-    return {"amended": shard_id, "db_index": idx, "title": title, "added_chars": len(note)}
+    return {
+        "amended": shard_id,
+        "db_index": idx,
+        "title": title,
+        "content_hash": actual_hash,
+        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}",
+        "added_chars": len(note)
+    }
 
 
 @node_mcp.tool()
 @_offloaded
 def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
-                  confirm_title: str | None = None) -> dict:
+                  confirm_title: str | None = None,
+                  content_hash: str | None = None) -> dict:
     """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
     the reason, tag it `retracted`, and floor its utility so outcome-weighted
     recall stops surfacing it.
@@ -657,15 +770,18 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
     whole point of a witness. Reach for forget only when the content must not
     exist (a secret pasted in by mistake).
 
-    PASS confirm_title. Recall is fuzzy: a query can return a plausible
-    neighbour rather than the shard you meant, and the id alone will not tell
-    you. This was not theoretical -- on 2026-08-15 a self-test recalled by
-    title, got a *different* shard's id back, and retracted real content.
-    Supplying the title you believe you are acting on turns that into a refusal
-    instead of damage."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    Enforces CanonicalShardRef mathematical verification when content_hash is supplied,
+    or falls back to confirm_title to prevent cross-database ID collisions."""
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
     if title.startswith("[RETRACTED]"):
-        return {"retracted": shard_id, "db_index": idx, "already": True, "title": title}
+        return {
+            "retracted": shard_id,
+            "db_index": idx,
+            "already": True,
+            "title": title,
+            "content_hash": actual_hash,
+            "canonical_ref": f"{idx}#{shard_id}:{actual_hash}"
+        }
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     conn = core.get_connection(idx)
     try:
@@ -686,30 +802,40 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
         conn.commit()
     finally:
         conn.close()
-    return {"retracted": shard_id, "db_index": idx, "title": f"[RETRACTED] {title}"}
+    return {
+        "retracted": shard_id,
+        "db_index": idx,
+        "title": f"[RETRACTED] {title}",
+        "content_hash": actual_hash,
+        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}"
+    }
 
 
 @node_mcp.tool()
 @_offloaded
-def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
+def shard_forget(shard_id: int, confirm_title: str | None = None, db_index: int | None = None,
+                 content_hash: str | None = None) -> dict:
     """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
     tombstone; the row and its FTS index entry are gone.
 
-    confirm_title must match the shard's current title exactly. That is not
-    ceremony: ids repeat across the 9 cluster DBs, so an id alone can name a
-    shard the caller has never seen. Requiring the title proves the caller is
-    looking at the thing they are deleting.
+    Requires either content_hash (CanonicalShardRef mathematical proof) or confirm_title
+    matching the shard's current title. Eliminates cross-database ID collisions mathematically."""
+    if not confirm_title and not content_hash:
+        raise ValueError("shard_forget requires either content_hash (CanonicalShardRef) or confirm_title.")
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
+    # core.purge_shard removes the row (FTS via trigger) AND the dedup-map
+    # entry; deleting only the row left the hash behind, so re-capturing the
+    # same text was reported as a duplicate of a shard that no longer existed.
+    receipt = core.purge_shard(shard_id, idx, content_hash=actual_hash)
+    receipt["forgotten"] = shard_id
+    receipt.setdefault("title", title)
+    return receipt
 
-    Prefer shard_retract. Use this only when the content must not exist."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
-    conn = core.get_connection(idx)
-    try:
-        # The shards_ad trigger keeps shards_fts in sync on delete.
-        conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    return {"forgotten": shard_id, "db_index": idx, "title": title, "recoverable": False}
+
+# Mathematical aliases for fleet tool parity
+shards_amend = shard_amend
+shards_retract = shard_retract
+shards_forget = shard_forget
 
 
 @node_mcp.tool()
@@ -723,8 +849,6 @@ def vault_put(key: str, value: str) -> dict:
 
     Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
     stored value matches what they intended without the value being echoed."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     keymaker.init_vault()
     keymaker.ingest_secret(key, value)
@@ -732,7 +856,8 @@ def vault_put(key: str, value: str) -> dict:
     return {"key": key,
             "stored": stored == value,
             "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
-            "vault": str(keymaker.DB_PATH)}
+            "vault": str(keymaker.db_path()),
+            "tenant": core.active_tenant_id()}
 
 
 @node_mcp.tool()
@@ -742,14 +867,12 @@ def vault_list() -> list:
 
     Enough to answer "is this credential present, and is it the one I think?"
     (compare fingerprints) without the vault becoming readable."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     out = []
-    if not keymaker.DB_PATH.exists():
+    if not keymaker.db_path().exists():
         return out
     import sqlite3 as _sq
-    conn = _sq.connect(str(keymaker.DB_PATH))
+    conn = _sq.connect(str(keymaker.db_path()))
     try:
         rows = conn.execute("SELECT secret_key, last_rotated FROM secrets ORDER BY secret_key").fetchall()
     finally:
@@ -835,6 +958,73 @@ def _registered_upstreams() -> list:
         return []
 
 
+# Logged fallbacks only; env NOUGEN_WARMUP_MAX_PASSES / NOUGEN_WARMUP_PAUSE_S win.
+_WARMUP_MAX_PASSES_FALLBACK = 8
+_WARMUP_PAUSE_S_FALLBACK = 1.0
+#: Live warm-up state, surfaced on /v1/health/local as "warm"/"warmup" so a
+#: fan-out peer can tell a cold lane from a broken one and size its grace.
+_WARMUP_STATE: dict = {"status": "pending", "passes": 0, "misses": None}
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _env_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not an int; fallback %d", name, raw, fallback)
+        return fallback
+
+
+def _env_float(name: str, fallback: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not a number; fallback %s", name, raw, fallback)
+        return fallback
+
+
+# Logged fallback only; env NOUGEN_WARMUP_EMBED_TIMEOUT_S wins.
+_WARMUP_EMBED_TIMEOUT_S_FALLBACK = 120.0
+
+
+def _warm_query_embedding(timeout_s: float) -> dict:
+    """Load the recall embedding model once with a generous budget.
+
+    Returns {"ready": bool, "model": str, "seconds": float, "error": str|None}.
+    Never raises: a lane without ollama still warms its grid.
+    """
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    started = time.perf_counter()
+    try:
+        from nougen_shards.embedding_backfill import embed as _embed  # pylint: disable=import-outside-toplevel
+        vec = _embed("warmup", model, timeout=timeout_s)
+        ready = bool(vec)
+        err = None if ready else "empty embedding"
+    except Exception as exc:  # pylint: disable=broad-except
+        ready, err = False, f"{type(exc).__name__}: {exc}"
+    secs = round(time.perf_counter() - started, 1)
+    logging.getLogger(__name__).log(logging.INFO if ready else logging.WARNING,
+                                    "warm-up embedding model %s %s in %.1fs%s", model,
+                                    "ready" if ready else "unavailable", secs, f": {err}" if err else "")
+    return {"ready": ready, "model": model, "seconds": secs, "error": err}
+
+
+def warmup_status() -> dict:
+    """Copy of the warm-up state; "warm" is True only once no grid DB was dropped."""
+    st = dict(_WARMUP_STATE)
+    st["warm"] = st.get("status") == "warm" or not _warmup_enabled()
+    return st
+
+
 def _warmup_enabled() -> bool:
     return os.environ.get("NOUGEN_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -858,13 +1048,129 @@ def _start_recall_warmup() -> None:
 
     def _run():
         started = time.perf_counter()
+        log = logging.getLogger(__name__)
+        max_passes = _env_int("NOUGEN_WARMUP_MAX_PASSES", _WARMUP_MAX_PASSES_FALLBACK)
+        pause_s = _env_float("NOUGEN_WARMUP_PAUSE_S", _WARMUP_PAUSE_S_FALLBACK)
+        _WARMUP_STATE.update({"status": "warming", "passes": 0, "misses": None, "started_utc": _utc_now_iso()})
         try:
-            core.retrieve("warmup", limit=1, domain_key="*")
-            logging.getLogger(__name__).info("recall warm-up done in %.1fs", time.perf_counter() - started)
+            # Load the query-embedding model FIRST. core's per-query embed budget
+            # (NOUGEN_QUERY_EMBED_TIMEOUT, ~6s) is sized for a resident model; a
+            # cold load on a CPU-only ollama measured 60s on whoart 2026-10-26,
+            # so every recall degraded to keyword-only until something else
+            # happened to load it. One long-budget embed here pays that once and
+            # pins the model with the backfill keep_alive.
+            # On its own thread (Codex P2 on #885): a stalled or blackholed
+            # OLLAMA_HOST would otherwise hold the grid passes for the whole
+            # embed budget and leave the recall cache cold meanwhile.
+            embed_timeout = _env_float("NOUGEN_WARMUP_EMBED_TIMEOUT_S", _WARMUP_EMBED_TIMEOUT_S_FALLBACK)
+            _WARMUP_STATE["embed"] = {"ready": False, "status": "loading"}
+
+            def _embed_bg():
+                _WARMUP_STATE["embed"] = _warm_query_embedding(embed_timeout)
+
+            _threading.Thread(target=_embed_bg, name="nougen-embed-warmup", daemon=True).start()
+            # One pass used to be the whole warm-up, but on a cold 9-DB grid one
+            # retrieve exhausts the shared scan deadline, caches only the DBs
+            # that finished, and leaves the rest cold until real traffic pays
+            # for them (blade 2026-10-26: ~3 min of deadline misses after every
+            # restart; whoart's fan-out missed its 25s grace meanwhile). Keep
+            # passing until a retrieve drops no grid DB, or the pass budget ends.
+            for n in range(1, max_passes + 1):
+                core.begin_scan_miss_tracking()
+                core.retrieve("warmup", limit=1, domain_key="*")
+                misses = core.last_scan_miss_count()
+                _WARMUP_STATE.update({"passes": n, "misses": misses})
+                if misses <= 0:
+                    _WARMUP_STATE["status"] = "warm"
+                    break
+                log.info("recall warm-up pass %d/%d: %d grid DB(s) still cold", n, max_passes, misses)
+                time.sleep(pause_s)
+            else:
+                _WARMUP_STATE["status"] = "cold"
+            log.info("recall warm-up %s after %d pass(es) in %.1fs", _WARMUP_STATE["status"],
+                     _WARMUP_STATE["passes"], time.perf_counter() - started)
         except Exception as exc:  # pylint: disable=broad-except
-            logging.getLogger(__name__).warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+            _WARMUP_STATE.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            log.warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+        finally:
+            _WARMUP_STATE["seconds"] = round(time.perf_counter() - started, 1)
 
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
+
+
+# Logged fallbacks only; env NOUGEN_LISTENER_SELFCHECK_S / _FAILS / NGS_PORT win.
+_LISTENER_SELFCHECK_S_FALLBACK = 60.0
+_LISTENER_SELFCHECK_FAILS_FALLBACK = 3
+_LISTENER_SELFCHECK_EXIT_CODE = 3
+_LISTENER_STATE: dict = {"status": "pending", "port": None, "consecutive_failures": 0, "checks": 0}
+
+
+def _listener_port() -> Optional[int]:
+    for name in ("NGS_PORT", "NOUGEN_NODE_PORT", "PORT"):
+        raw = os.environ.get(name, "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning("%s=%r is not a port; ignoring", name, raw)
+    return None
+
+
+def _probe_listener(port: int, timeout_s: float = 2.0) -> bool:
+    import socket  # pylint: disable=import-outside-toplevel
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def listener_selfcheck_status() -> dict:
+    return dict(_LISTENER_STATE)
+
+
+def _start_listener_selfcheck(exit_fn=None) -> None:
+    """Exit the process when our own accept loop is dead.
+
+    whoart 2026-10-26: uvicorn stayed alive for hours after its listening socket
+    died (asyncio "Accept failed on a socket ... WinError 64"), so every
+    process-based supervisor saw a healthy PID while :4444 refused connections
+    and the scheduled task could not rebind. A node that cannot accept its own
+    TCP connect NOUGEN_LISTENER_SELFCHECK_FAILS times in a row (every
+    NOUGEN_LISTENER_SELFCHECK_S seconds) exits with code 3 so the lane
+    supervisor / watchdog restarts it. 0 disables. No port in env = disabled.
+    """
+    interval = _env_float("NOUGEN_LISTENER_SELFCHECK_S", _LISTENER_SELFCHECK_S_FALLBACK)
+    port = _listener_port()
+    if interval <= 0 or port is None:
+        _LISTENER_STATE.update({"status": "disabled", "port": port})
+        return
+    fails_needed = _env_int("NOUGEN_LISTENER_SELFCHECK_FAILS", _LISTENER_SELFCHECK_FAILS_FALLBACK)
+    _exit = exit_fn or os._exit  # pylint: disable=protected-access
+    log = logging.getLogger(__name__)
+    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval, "fails_needed": fails_needed})
+
+    def _run():
+        # First probe only after one interval: the socket is not bound until
+        # uvicorn finishes startup, and a long grid warm-up must not count.
+        while True:
+            time.sleep(interval)
+            ok = _probe_listener(port)
+            _LISTENER_STATE["checks"] += 1
+            if ok:
+                _LISTENER_STATE["consecutive_failures"] = 0
+                continue
+            _LISTENER_STATE["consecutive_failures"] += 1
+            log.warning("listener self-check: 127.0.0.1:%d refused (%d/%d)", port,
+                        _LISTENER_STATE["consecutive_failures"], fails_needed)
+            if _LISTENER_STATE["consecutive_failures"] >= fails_needed:
+                _LISTENER_STATE["status"] = "dead"
+                log.critical("listener self-check: accept loop dead on :%d; exiting %d for the supervisor to rebind",
+                             port, _LISTENER_SELFCHECK_EXIT_CODE)
+                _exit(_LISTENER_SELFCHECK_EXIT_CODE)
+                return
+
+    threading.Thread(target=_run, name="nougen-listener-selfcheck", daemon=True).start()
 
 
 def _start_boot_quarantine(then=None) -> None:
@@ -904,11 +1210,15 @@ async def _lifespan(_app):
     # misses its deadline on every query (phoebus, 2026-09-04). The process may
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
-    # Heal the grid (malformed DB files renamed aside and recreated empty; gated by
-    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT), then warm the recall cache: both on a
-    # daemon thread so the node binds its port now, not after an O(vault) scan.
-    _start_boot_quarantine(then=_start_recall_warmup)
+    # Heal the grid in background, and warm the recall cache immediately on a
+    # background thread so the node binds its port now, and caches prime without waiting on full quarantine.
+    _start_boot_quarantine()
+    _start_recall_warmup()
+    _start_listener_selfcheck()
     _seed_upstreams()
+    # Retained-object watcher (LeakCanary's idea for a Python server). Off unless
+    # NOUGEN_LEAKWATCH=1; see nougen_shards/leakwatch.py and /debug/leakwatch.
+    leakwatch.start_from_env()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
         yield
@@ -939,11 +1249,39 @@ app = FastAPI(
     redoc_url="/redoc" if _serve_docs else None,
     openapi_url="/openapi.json" if _serve_docs else None,
 )
+
+
+@app.middleware("http")
+async def chrome_extension_cors(request: Request, call_next):
+    """CORS only for the token-gated capture endpoint."""
+    path = request.url.path
+    origin = request.headers.get("origin", "")
+    allowed = path == "/capture" and origin.startswith("chrome-extension://")
+    if request.method == "OPTIONS" and path == "/capture" and allowed:
+        response = Response(status_code=204)
+    else:
+        response = await call_next(request)
+    if allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "content-type, x-ngs-token"
+        response.headers["Access-Control-Max-Age"] = "600"
+    return response
+
+
 try:
     from space_router import router as _inference_router
     app.include_router(_inference_router)
 except Exception as _router_err:
     print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
+
+try:
+    from nougen_shards import wal_api as _wal_api
+    app.include_router(_wal_api.router)
+    _wal_api.start_dataset_commits()
+except Exception as _wal_err:
+    print(f"[WARN] WAL hallway not mounted: {_wal_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
@@ -1077,7 +1415,94 @@ async def tenant_vault_context(
     finally:
         core.reset_active_vault(tokens)
 
+
+async def capture_vault_context(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
+    token: Optional[str] = Query(None),
+):
+    """Accept ordinary node credentials or the extension's capture-only grant."""
+    supplied = x_ngs_token or authorization or token
+    if authorization and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    try:
+        tenant = _verify_token_sync(x_ngs_token=x_ngs_token,
+                                    authorization=authorization, token=token)
+    except HTTPException:
+        tenant_id = mcp_oauth.issued_token_tenant(supplied or "")
+        if not tenant_id:
+            raise
+        tenant = tenants.Tenant(tenant_id=tenant_id,
+                                label="NouGen Capture extension",
+                                vault_dir=tenants.vault_dir_for(tenant_id, core.GLOBAL_DIR))
+    lane = x_nougen_lane or tenant.lane or "default"
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    try:
+        yield tenant
+    finally:
+        core.reset_active_vault(context_tokens)
+
 # --- API Endpoints ---
+
+# Logged fallback only; env NOUGEN_HEALTH_COVERAGE_TTL_S wins.
+_HEALTH_COVERAGE_TTL_S_FALLBACK = 30.0
+_HEALTH_COVERAGE_WAIT_S_FALLBACK = 5.0
+_COVERAGE_CACHE: dict = {"at": 0.0, "value": None, "refreshing": False}
+_COVERAGE_LOCK = threading.Lock()
+
+
+def cached_substrate_coverage(now: Optional[float] = None, wait_s: Optional[float] = None) -> dict:
+    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds,
+    served stale-while-revalidate.
+
+    Health probes arrive every few seconds from peers, watchdogs and tunnels;
+    recounting nine shard tables for each one is wasted I/O that competes with
+    recall and warm-up. Past the TTL the LAST snapshot is returned at once
+    (tagged "stale": true) and one background refresh is started; only the very
+    first call, with nothing cached yet, waits for the count, and then at most
+    NOUGEN_HEALTH_COVERAGE_WAIT_S (logged fallback 5s) before answering with a
+    placeholder. whoart 2026-10-27: under memory starvation the nine COUNT(*)
+    took 37.5s and every peer probe timed out although the node was serving.
+    """
+    ttl = _env_float("NOUGEN_HEALTH_COVERAGE_TTL_S", _HEALTH_COVERAGE_TTL_S_FALLBACK)
+    t = time.monotonic() if now is None else now
+    with _COVERAGE_LOCK:
+        cached = _COVERAGE_CACHE["value"]
+        fresh = cached is not None and t - _COVERAGE_CACHE["at"] < ttl
+        refreshing = _COVERAGE_CACHE.get("refreshing", False)
+        if cached is not None and (fresh or refreshing):
+            return dict(cached, stale=not fresh)
+        _COVERAGE_CACHE["refreshing"] = True
+
+    def _refresh():
+        try:
+            value = _substrate_coverage()
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE.update({"at": time.monotonic() if now is None else now, "value": value})
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.getLogger(__name__).warning("coverage refresh failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE["refreshing"] = False
+                _COVERAGE_CACHE.get("done", threading.Event()).set()
+
+    done = threading.Event()
+    with _COVERAGE_LOCK:
+        _COVERAGE_CACHE["done"] = done
+    threading.Thread(target=_refresh, name="nougen-coverage-refresh", daemon=True).start()
+    if cached is not None:
+        return dict(cached, stale=True)
+    # Nothing cached yet: bound the wait so a cold node still answers probes.
+    budget = _env_float("NOUGEN_HEALTH_COVERAGE_WAIT_S", _HEALTH_COVERAGE_WAIT_S_FALLBACK) if wait_s is None else wait_s
+    done.wait(budget)
+    with _COVERAGE_LOCK:
+        value = _COVERAGE_CACHE["value"]
+    if value is not None:
+        return dict(value, stale=False)
+    return {"databases_mounted": 0, "databases_expected": core.MAX_DB_COUNT, "shards": 0,
+            "span": {}, "pending": True, "stale": True}
+
 
 def _substrate_coverage() -> dict:
     """Per-database mount state for the shard grid.
@@ -1201,6 +1626,82 @@ def _redaction_fingerprint() -> str:
         return redaction.pattern_fingerprint()
     except Exception:                       # pragma: no cover
         return "unavailable"
+
+
+def _leakwatch_owner(tenant: tenants.Tenant = Depends(verify_token)) -> tenants.Tenant:
+    # Heap shape is process-wide operator data, not tenant data: owner only.
+    if tenant.tenant_id != tenants.OWNER_TENANT_ID:
+        raise HTTPException(status_code=403, detail="leakwatch is owner-only")
+    return tenant
+
+
+def _local_msg_token() -> str:
+    """Token the co-located NouGenMsg node expects: env first, then the keymaker."""
+    tok = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        from nougen_shards.keymaker import get_secret  # pylint: disable=import-outside-toplevel
+        return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
+@app.post("/msg")
+async def msg_forward(request: Request, _owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Deliver a NouGenMsg to the message node running beside this one.
+
+    The fleet connector sends a peer-targeted message (``@whoart``) to
+    ``<peer origin>/msg`` - the shard node's public origin. The message node is a
+    separate process (default 127.0.0.1:8766) with no public hostname, so every
+    peer send answered 404 and "Nothing delivered" (WhoArt and blade,
+    2026-11-12). Owner token only: a tenant must not inject into the owner's
+    inbox. The local node's status and body are passed through unchanged, so a
+    refusal there is still a refusal here, never a silent drop.
+    """
+    import urllib.error  # pylint: disable=import-outside-toplevel
+    import urllib.request  # pylint: disable=import-outside-toplevel
+
+    url = os.environ.get("NOUGEN_MSG_LOCAL_URL", "http://127.0.0.1:8766/msg")
+    body = await request.body()
+    headers = {"Content-Type": "application/json"}
+    tok = _local_msg_token()
+    if tok:
+        headers["X-NGS-Token"] = tok
+
+    def _send():
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    try:
+        status, raw = await run_in_threadpool(_send)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(status_code=502,
+                            detail=f"local NouGenMsg node unreachable at {url}: {type(exc).__name__}: {exc}")
+    return Response(content=raw, status_code=status, media_type="application/json")
+
+
+@app.get("/debug/leakwatch")
+def debug_leakwatch(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Last retained-object report (type growth, leak traces, fingerprints)."""
+    w = leakwatch.instance()
+    if w is None:
+        return {"enabled": False, "hint": "start the node with NOUGEN_LEAKWATCH=1"}
+    return {"enabled": True, "interval_s": w.interval_s, "window": w.window,
+            "min_growth": w.min_growth, "report": w.last_report}
+
+
+@app.post("/debug/leakwatch/check")
+def debug_leakwatch_check(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Sample now and report (LeakCanary's tap-the-notification to dump immediately)."""
+    w = leakwatch.instance()
+    if w is None:
+        return {"enabled": False, "hint": "start the node with NOUGEN_LEAKWATCH=1"}
+    return {"enabled": True, "report": w.check()}
 
 
 @app.get("/health")
@@ -1485,14 +1986,153 @@ def _merge_rows(*groups) -> list:
     return merged
 
 
+# --- WhatsApp Cloud API webhook (public, signature-gated) -------------------
+# Meta cannot send X-NGS-Token, so this pair is the one deliberate exception:
+# GET answers the subscribe handshake, POST requires a valid X-Hub-Signature-256
+# over the raw body. Both fail closed (503) until the Keymaker holds
+# WHATSAPP_VERIFY_TOKEN / WHATSAPP_APP_SECRET. Inbound text lands in a local
+# JSONL inbox as untrusted data; nothing is written to the relay.
+
+def _wa_secret(name: str) -> Optional[str]:
+    from nougen_shards import keymaker
+    try:
+        return keymaker.get_secret(name) or None
+    except Exception:
+        return None
+
+
+@app.get("/webhooks/whatsapp")
+def whatsapp_verify(
+    mode: Optional[str] = Query(None, alias="hub.mode"),
+    token: Optional[str] = Query(None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    from nougen_shards import whatsapp
+    want = _wa_secret("WHATSAPP_VERIFY_TOKEN")
+    if not want:
+        raise HTTPException(503, "whatsapp webhook not configured")
+    out = whatsapp.verify_challenge(
+        {"hub.mode": mode or "", "hub.verify_token": token or "",
+         "hub.challenge": challenge or ""}, want)
+    if out is None:
+        raise HTTPException(403, "verify token mismatch")
+    return Response(content=out, media_type="text/plain")
+
+
+_WA_WINDOWS = None
+
+
+@app.post("/webhooks/whatsapp")
+async def whatsapp_inbound(request: Request):
+    global _WA_WINDOWS
+    from nougen_shards import whatsapp
+    secret = _wa_secret("WHATSAPP_APP_SECRET")
+    if not secret:
+        raise HTTPException(503, "whatsapp webhook not configured")
+    if _WA_WINDOWS is None:
+        _WA_WINDOWS = whatsapp.WindowTracker()
+    body = await request.body()
+    sig = request.headers.get("X-Hub-Signature-256", "")
+    try:
+        n = await run_in_threadpool(
+            whatsapp.handle_webhook, body, sig, secret, _WA_WINDOWS,
+            whatsapp.jsonl_sink())
+    except PermissionError:
+        raise HTTPException(403, "bad signature")
+    except ValueError:
+        raise HTTPException(400, "malformed payload")
+    return {"received": n}
+
+
 # Every data endpoint requires X-NGS-Token (verify_token 503s until
 # NGS_NODE_TOKEN is configured, so the node is deny-by-default). This is what
 # makes it safe to run the Space public: reads and writes are both gated;
 # only /health and the separately-authed HUD are reachable without the token.
 
+def _env_num(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        logger.warning("%s is not a number; using %s", name, default)
+        return default
+
+
+# Full federated recalls allowed at once (NOUGEN_SEARCH_CONCURRENCY, default 3) and how long an
+# extra caller may wait for a slot before it is served from the fast local lane
+# (NOUGEN_SEARCH_QUEUE_S, default 1.5).
+_SEARCH_SLOTS = threading.BoundedSemaphore(max(1, int(_env_num("NOUGEN_SEARCH_CONCURRENCY", 3))))
+
+
+def _search_queue_s() -> float:
+    return max(0.0, _env_num("NOUGEN_SEARCH_QUEUE_S", 1.5))
+
+
+def _recall_guard_enter():
+    """None when the guard is off; else the SearchAdmission that was entered.
+    Raises core.SearchBusy when the hard cap is full."""
+    if not core.recall_memory_guard_enabled():
+        return None
+    gate = core.search_admission()
+    gate.enter()
+    return gate
+
+
+def _recall_busy_response(exc):
+    retry_after = exc.retry_after
+    retry_after_int = max(1, int(-(-retry_after // 1)))
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "search_busy",
+            "retry_after_s": retry_after,
+            "active": exc.active,
+            "waiting": exc.waiting,
+        },
+        headers={
+            "Retry-After": str(retry_after_int),
+            "X-NouGen-Busy": "hard",
+        },
+    )
+
+
+def _release_slot_when_done(lane_futs: list) -> None:
+    """Free the admission slot once every lane future it admitted has finished.
+
+    federated_retrieve returns at the deadline while stragglers keep running on the shared
+    pool; releasing on return would admit another full recall on top of their disk work.
+    With no futures to wait on, release at once.
+    """
+    if not lane_futs:
+        _SEARCH_SLOTS.release()
+        return
+
+    def _wait_then_release():
+        concurrent.futures.wait(lane_futs)
+        _SEARCH_SLOTS.release()
+
+    threading.Thread(target=_wait_then_release, name="search-slot-release", daemon=True).start()
+
+
 @app.post("/search")
 def search(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """POST /search. With NOUGEN_RECALL_MEMORY_GUARD=1 the request holds one hard admission
+    slot from here until its response is built, bounded SQL sweep included, so the cap and
+    the stall counters cover all of its database work. Past the cap it is refused at once
+    with 503 and Retry-After instead of stacking one more scan on a node that is full."""
+    try:
+        hard_gate = _recall_guard_enter()
+    except core.SearchBusy as busy:
+        return _recall_busy_response(busy)
+    try:
+        return _search_admitted(req, response)
+    finally:
+        if hard_gate is not None:
+            hard_gate.leave()
+
+
+def _search_admitted(req: SearchRequest, response: Response):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -1517,8 +2157,19 @@ def search(req: SearchRequest, response: Response,
     # the result set down to a handful of in-era rows.
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
-    _no_fuzzy_token = core.NO_FUZZY.set(not req.fuzzy)
-    _fast_token = core.FAST_LOCAL.set(bool(req.fast))
+    # Admission control: a full recall fans out to every grid DB on two lanes, so N concurrent
+    # recalls are ~18N SQLite scans on one disk. Recall hooks fire one per prompt from every
+    # session; on WhoArt (2026-11-13) a dozen stacked up and EVERY call missed the 20s deadline.
+    # Over the cap, answer from the local keyword lane at once (still 200, still marked degraded)
+    # instead of joining a queue that can only make everyone late.
+    admitted = _SEARCH_SLOTS.acquire(timeout=_search_queue_s())
+    if not admitted:
+        response.headers["X-NouGen-Busy"] = "1"
+    # Overflow callers take the keyword lane with fuzzy scans off too: fuzzy is a full-table
+    # scan per missed DB, which is exactly the load admission control exists to shed.
+    _no_fuzzy_token = core.NO_FUZZY.set((not req.fuzzy) or not admitted)
+    _fast_token = core.FAST_LOCAL.set(bool(req.fast) or not admitted)
+    lane_futs: list = []
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -1527,7 +2178,8 @@ def search(req: SearchRequest, response: Response,
         # them locally — the node answered "not found" about content it holds.
         # federated_retrieve degrades every remote lane independently, so this
         # cannot fail worse than the local-only path did.
-        results = federated_retrieve(req.query, limit=fetch, sweep_report=sweep_report)
+        results = federated_retrieve(req.query, limit=fetch, sweep_report=sweep_report,
+                                     lane_futures=lane_futs)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
@@ -1538,6 +2190,8 @@ def search(req: SearchRequest, response: Response,
     finally:
         core.NO_FUZZY.reset(_no_fuzzy_token)
         core.FAST_LOCAL.reset(_fast_token)
+        if admitted:
+            _release_slot_when_done(lane_futs)
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
@@ -1592,7 +2246,8 @@ def search(req: SearchRequest, response: Response,
     # — indistinguishable from "searched everywhere, matched nothing". That is
     # the difference between an empty answer and an unasked question.
     tier2_deferred = sweep_report.get("tier2_deferred") or []
-    if sweep_report.get("errored") or lanes_timed_out or tier2_deferred:
+    if (sweep_report.get("errored") or lanes_timed_out or tier2_deferred
+            or sweep_report.get("lanes_skipped")):
         errored = sweep_report.get("errored") or []
         if lanes_timed_out:
             title = (f"federation: {len(lanes_timed_out)} lane(s) "
@@ -1611,6 +2266,9 @@ def search(req: SearchRequest, response: Response,
             "event_type": "FEDERATION_STATUS",
             "title": title,
             "content": json.dumps({
+                "complete": False,
+                "upstream_coverage": sweep_report.get("upstream_coverage"),
+                "lanes_skipped": sweep_report.get("lanes_skipped"),
                 "errored": errored,
                 "lanes_timed_out": lanes_timed_out,
                 "lanes": sweep_report.get("lanes"),
@@ -1630,23 +2288,34 @@ def search(req: SearchRequest, response: Response,
 @app.get("/v1/health/local")
 async def local_health():
     """Local vault health check for 3-vault federation peers."""
-    from nougen_shards.federation.models import VaultId
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
-    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
+    from nougen_shards.federation import VaultId
+    from nougen_shards import machine as _machine
+    _host = _machine.host_label() or _machine.hostname()
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID") or _host or "local"
+    # Default the vault id to the host family (blade1tb -> blade); "whoart" was a
+    # hardcoded default that misreported every other node's identity.
+    _family = next((v.value for v in VaultId if (_host or "").lower().startswith(v.value)), None)
+    vault_raw = (os.environ.get("NOUGEN_VAULT_ID") or _family or "whoart").lower()
     instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
     try:
         vid = VaultId(vault_raw)
     except ValueError:
         vid = VaultId.WHOART
 
-    coverage = _substrate_coverage()
+    # Coverage runs nine COUNT(*) queries. Called synchronously from this async
+    # handler it blocked uvicorn's event loop, and while warm-up had the grid
+    # busy a peer saw /v1/health/local take 19.7s against its 25s grace (whoart
+    # 2026-10-26). Serve a TTL-cached snapshot computed off the loop instead.
+    coverage = await asyncio.to_thread(cached_substrate_coverage)
     db_present = coverage.get("databases_mounted", 0)
     db_expected = coverage.get("databases_expected", 9)
-    healthy = db_present == db_expected
+    healthy = db_present == db_expected or bool(coverage.get("pending"))
 
     return {
         "healthy": healthy,
         "current": True,
+        "coverage_stale": bool(coverage.get("stale")),
+        "coverage_pending": bool(coverage.get("pending")),
         "vault_id": vid.value,
         "machine_id": machine_id,
         "instance_id": instance_id,
@@ -1654,7 +2323,36 @@ async def local_health():
         "db_expected": db_expected,
         "shard_count": coverage.get("shards", 0),
         "newest_timestamp": coverage.get("span", {}).get("latest"),
+        "warm": warmup_status()["warm"],
+        "warmup": warmup_status(),
+        "listener": listener_selfcheck_status(),
+        "recall_memory": core.recall_memory_stats(),
     }
+
+
+def _federation_v1():
+    """The v1 federation package (config/client/service). It was replaced by the
+    single-module nougen_shards/federation.py on 2026-06-10 (d2c5082), so these
+    imports raised on every call and both /v1 routes answered 500 - including
+    scope=local recall, whose imports ran before its own branch. Resolve at call
+    time; None means "not installed" and the route says so explicitly."""
+    try:
+        from nougen_shards.federation.config import load_vault_peers
+        from nougen_shards.federation.client import FederationClient
+        from nougen_shards.federation.service import FederationService
+    except ImportError:
+        return None
+    return load_vault_peers, FederationClient, FederationService
+
+
+def _federation_v1_gone(route: str):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=501, content={
+        "error": "federation_v1_unavailable",
+        "route": route,
+        "detail": "the v1 federation package was removed; use POST /search "
+                  "(federated fanout) or POST /v1/recall with scope=local",
+    })
 
 
 @app.get("/v1/health/fleet")
@@ -1664,9 +2362,10 @@ async def fleet_health_endpoint(
 ):
     """Fleet-wide 3-vault symmetric health check."""
     from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
+    v1 = _federation_v1()
+    if v1 is None:
+        return _federation_v1_gone("/v1/health/fleet")
+    load_vault_peers, FederationClient, FederationService = v1
 
     token = NODE_TOKEN or ""
     peers = load_vault_peers()
@@ -1686,9 +2385,6 @@ async def recall_endpoint(
 ):
     """3-vault loop-preventing recall endpoint."""
     from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
 
     local_only = (
         body.scope == "local"
@@ -1705,6 +2401,10 @@ async def recall_endpoint(
             "scope": "local",
         }
 
+    v1 = _federation_v1()
+    if v1 is None:
+        return _federation_v1_gone("/v1/recall (scope != local)")
+    load_vault_peers, FederationClient, FederationService = v1
     token = NODE_TOKEN or ""
     peers = load_vault_peers()
     client = FederationClient(token=token)
@@ -1715,7 +2415,7 @@ async def recall_endpoint(
 
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
-                  _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+                  _tenant: tenants.Tenant = Depends(capture_vault_context)):
     """Single-shard capture for user agents.
 
     `status` stays "ok" for the HTTP contract; whether a shard was actually
@@ -2440,9 +3140,12 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
     # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
     # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
-    from nougen_shards.nougenmsg import NouGenMsgBus
+    from nougen_shards.nougenmsg import NouGenMsgBus, target_unknown
     clean_target = target.lstrip("@").lower() if target else "all"
-    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
+    refusal = target_unknown(clean_target)
+    if refusal:
+        return {"status": "refused", "target": target, "priority": priority, **refusal}
+    res = NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async())
     return {
         "status": "delivered",
         "target": target,
@@ -2543,7 +3246,14 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
             "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
             "file": os.path.basename(f),
         })
-    node_label = os.environ.get("NOUGEN_NODE_NAME") or machine.get_current_node()
+    # get_current_node lives in nougen_shards.nougenmsg, not in machine. Looking it up on
+    # machine raised AttributeError and failed every nougenmsg_search call.
+    try:
+        from nougen_shards.nougenmsg import get_current_node
+        default_label = get_current_node()
+    except Exception:
+        default_label = "unknown"
+    node_label = os.environ.get("NOUGEN_NODE_NAME") or default_label
     return {"complete": True, "node": node_label,
             "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
 
@@ -2656,10 +3366,11 @@ def recall_graph(query: str, depth: int = 1, limit: int = 10) -> dict:
     """Graph memory recall: entity mentions and multi-hop relation walk across shards."""
     try:
         from nougen_shards import graph, vector_graph
-        try:
-            return vector_graph.search_graph(query, depth=depth, limit=limit)
-        except Exception:
-            return graph.query_subgraph(query, depth=depth, limit=limit)
+        search = getattr(vector_graph, "search_graph", None) or getattr(graph, "query_subgraph", None)
+        if search is None:
+            return {"error": "recall_graph: no graph search backend is installed on this node; "
+                             "use recall_related with a shard id", "query": query, "nodes": [], "edges": []}
+        return search(query, depth=depth, limit=limit)
     except Exception as e:
         return {"error": str(e), "query": query, "nodes": [], "edges": []}
 
@@ -2700,9 +3411,9 @@ def create_destiny(
         goal=goal,
         branch=branch,
         trigger=trigger,
-        required=required,
-        forbidden=forbidden,
-        variance=variance,
+        required_events=required,
+        forbidden_outcomes=forbidden,
+        acceptable_variance=variance,
         verification=verification,
         status=status,
         actor=actor
@@ -2725,9 +3436,9 @@ def update_destiny(
     actor: Optional[str] = None,
     evidence: Optional[str] = None
 ) -> dict:
-    """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
+    """Move a destiny to a new status (dormant, active, fulfilled, failed, superseded)."""
     from nougen_shards import destiny as _destiny
-    return _destiny.update_status(destiny_id, status=status, actor=actor, evidence=evidence)
+    return _destiny.update_status(destiny_id, status, actor=actor, evidence=evidence)
 
 
 @node_mcp.tool()
@@ -2764,9 +3475,22 @@ def fleet_status() -> dict:
 @_offloaded
 def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
-    from nougen_shards.nougenmsg import NouGenMsgBus  # emit_fleet is NouGenMsgBus's, not AgentPinger's
+    from nougen_shards.nougenmsg import NouGenMsgBus, target_unknown  # emit_fleet is NouGenMsgBus's, not AgentPinger's
     clean_target = target.lstrip("@").lower()
-    return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
+    refusal = target_unknown(clean_target)
+    if refusal:
+        return {"status": "refused", "target": target, **refusal}
+    return NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async())
+
+
+def _relay_handoffs_dir() -> "Path":
+    """Relay board for the active identity: ``active_home()/relay/.handoffs``.
+
+    Owner -> NOUGEN_ROOT (fallback ~/.nougen); tenant -> its own vault, so a
+    tenant never lists, claims or writes the owner's legs.
+    """
+    from pathlib import Path
+    return Path(core.active_home()) / "relay" / ".handoffs"
 
 
 @node_mcp.tool()
@@ -2774,7 +3498,7 @@ def fleet_send(message: str, target: str, priority: str = "high") -> dict:
 def relay_open_legs(limit: int = 15) -> list:
     """List open cross-node handoff legs from the NouGenRelay board."""
     from pathlib import Path
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     if not handoffs_dir.exists():
         return []
     legs = []
@@ -2808,7 +3532,7 @@ def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
     """Claim an open relay leg atomically to prevent duplicate swarm execution."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
@@ -2835,7 +3559,7 @@ def relay_create_leg(
     from pathlib import Path
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     leg_id = f"{stamp}__phoebus__antigravity"
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     handoffs_dir.mkdir(parents=True, exist_ok=True)
     md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
 
@@ -2868,7 +3592,7 @@ def relay_ack_leg(
 ) -> dict:
     """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
@@ -2885,6 +3609,45 @@ def relay_ack_leg(
     with open(ack_path, "w", encoding="utf-8") as f:
         json.dump(ack_data, f, indent=2)
     return {"status": "closed", "proof": ack_data}
+
+
+@node_mcp.tool()
+@_offloaded
+def evaluate_evidence_template(
+    evidence: dict,
+    template_id: str,
+    tau: float = 0.75,
+    metrics: Optional[List[dict]] = None,
+    hard_gates: Optional[List[str]] = None,
+    version: str = "1.0.0"
+) -> dict:
+    """Evaluate evidence against a deterministic bounded interval [R_min, R_max] template."""
+    from nougen_shards.result_template import MetricCriterion, ResultTemplate, evaluate_result
+    criteria = []
+    if metrics:
+        for m in metrics:
+            criteria.append(
+                MetricCriterion(
+                    name=m["name"],
+                    weight=float(m.get("weight", 1.0)),
+                    min_value=float(m.get("min_value", 0.0)),
+                    max_value=float(m.get("max_value", 1.0)),
+                    description=m.get("description", "")
+                )
+            )
+    else:
+        # Default criteria if unspecified
+        criteria.append(MetricCriterion(name="score", weight=1.0))
+
+    tmpl = ResultTemplate(
+        template_id=template_id,
+        version=version,
+        tau=float(tau),
+        metrics=tuple(criteria),
+        hard_gates=tuple(hard_gates or []),
+    )
+    result = evaluate_result(evidence, tmpl)
+    return result.to_dict()
 
 
 @node_mcp.tool()
@@ -2988,9 +3751,66 @@ def nougentube_preview(url: str, limit: int = 1) -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def nougentube_ingest(url: str, limit: int = 1) -> dict:
-    """Ingest a YouTube video or a bounded number of playlist videos as shards."""
-    return _run_nougentube(url, dry_run=False, limit=limit)
+def nougentube_ingest(url: str, limit: int = 1, wait: bool = True) -> dict:
+    """Ingest a YouTube video or a bounded number of playlist videos as shards.
+
+    ``wait=False`` returns a job id at once; poll ``nougentube_job``. Cloudflare cuts a request
+    at ~100 s with a 524 while the node keeps writing, and a caller that retried
+    on that 524 stored a video twice. The job id is derived from the request,
+    so a repeat returns the same job instead of starting a second ingest.
+    ``wait=True`` (the default until the fleet Worker polls jobs) blocks as
+    before; the per-part keys and per-video lease in nougentube already stop a
+    retried ingest from storing twice either way.
+    """
+    if wait:
+        return _run_nougentube(url, dry_run=False, limit=limit)
+    return _tube_job_submit(url, limit)
+
+
+@node_mcp.tool()
+def nougentube_job(job_id: str) -> dict:
+    """Status of a nougentube_ingest job: queued, running, done or error (with its result)."""
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(str(job_id or "").strip())
+        return dict(job) if job else {"job_id": job_id, "status": "unknown"}
+
+
+_TUBE_JOBS: dict = {}
+_TUBE_JOBS_LOCK = __import__("threading").Lock()
+
+
+def _tube_job_id(url: str, limit: int) -> str:
+    import hashlib
+    return "tube-" + hashlib.sha256(f"{url.strip()}|{int(limit)}".encode()).hexdigest()[:16]
+
+
+def _tube_job_submit(url: str, limit: int) -> dict:
+    """Start (or rejoin) the ingest job for this exact request."""
+    import threading
+    if not url or not url.strip():
+        raise ValueError("a YouTube video or playlist URL is required")
+    job_id = _tube_job_id(url, limit)
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(job_id)
+        if job and job["status"] in ("queued", "running"):
+            return {**job, "repeat": True}
+        _TUBE_JOBS[job_id] = {"job_id": job_id, "status": "queued", "source": url.strip(),
+                              "submitted_at": time.time()}
+
+    def _work():
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id]["status"] = "running"
+        try:
+            result = _run_nougentube(url, dry_run=False, limit=limit)
+            update = {"status": "done", "result": result}
+        except Exception as exc:  # noqa: BLE001  (reported to the poller, not raised)
+            update = {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id].update(update, finished_at=time.time())
+
+    threading.Thread(target=_work, name=job_id, daemon=True).start()
+    with _TUBE_JOBS_LOCK:
+        return dict(_TUBE_JOBS[job_id])
 
 
 @node_mcp.tool()
@@ -3022,11 +3842,23 @@ def nougentube_transcript(url: str) -> dict:
     }
 
 
+# Logged fallback only; env NOUGEN_WHISPER_MAX_SECONDS wins. Local Whisper on the
+# node's GPU is bounded by wall time, not by what the operator wants to ingest,
+# so the cap belongs to the Whisper path alone: subtitle extraction has no cap.
+_WHISPER_MAX_SECONDS_FALLBACK = 1800
+
+
+def _whisper_max_seconds() -> int:
+    return _env_int("NOUGEN_WHISPER_MAX_SECONDS", _WHISPER_MAX_SECONDS_FALLBACK)
+
+
 @node_mcp.tool()
 @_offloaded
 def nougen_media_transcribe(url: str, language: Optional[str] = None,
                             whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe a YouTube video with local Whisper; videos over 30 minutes are rejected."""
+    """Transcribe a YouTube video with local Whisper. Videos longer than
+    NOUGEN_WHISPER_MAX_SECONDS (fallback 1800) are rejected; use ``nougentube``
+    for subtitle-first extraction with no length cap."""
     if not url or len(url) > 2048:
         raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
     from urllib.parse import urlsplit
@@ -3051,8 +3883,12 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
                            "noplaylist": True}) as ydl:
         metadata = ydl.extract_info(url.strip(), download=False)
     duration = (metadata or {}).get("duration")
-    if not isinstance(duration, (int, float)) or duration <= 0 or duration > 1800:
-        raise ValueError("video duration must be known and no longer than 30 minutes")
+    max_seconds = _whisper_max_seconds()
+    if not isinstance(duration, (int, float)) or duration <= 0 or duration > max_seconds:
+        raise ValueError(
+            f"video duration must be known and no longer than {max_seconds} seconds "
+            f"(NOUGEN_WHISPER_MAX_SECONDS) for local Whisper; nougentube extracts "
+            f"subtitles first with no length cap")
     from nougen_shards.transcriber import NouGenTranscriber
     with tempfile.TemporaryDirectory(prefix="nougen_transcribe_") as output_dir:
         transcriber = NouGenTranscriber(output_dir=output_dir, whisper_model=whisper_model)
@@ -3076,8 +3912,72 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 @_offloaded
 def nougentube(url: str, language: Optional[str] = None,
                whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
-    return nougen_media_transcribe(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    """Transcribe a YouTube video subtitle-first (youtube-transcript-api / yt-dlp
+    subtitles, no length cap), falling back to local Whisper only when no
+    transcript exists. ``auto_shard`` captures the transcript into the active
+    vault through the NouGenTube pipeline (deduplicated per video id)."""
+    if not url or len(url) > 2048:
+        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url.strip())
+    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("NouGenTube accepts YouTube video URLs only")
+    clean = url.strip()
+    tube = _load_nougentube()
+    video_id = tube.extract_video_id(clean)
+    if not video_id or tube.is_playlist(clean):
+        raise ValueError("URL must identify one YouTube video, not a playlist")
+    fetch_transcript = getattr(tube, "fetch_transcript", None)
+    transcript, tier = ("", None)
+    language_honored = False
+    if callable(fetch_transcript):
+        import inspect as _inspect
+        try:
+            accepts_languages = "languages" in _inspect.signature(fetch_transcript).parameters
+        except (TypeError, ValueError):
+            accepts_languages = False
+        try:
+            if language and accepts_languages:
+                transcript, tier = fetch_transcript(video_id, clean, languages=[language])
+                language_honored = bool(transcript)
+            else:
+                transcript, tier = fetch_transcript(video_id, clean)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("nougentube: subtitle extraction failed for %s (%s); trying Whisper",
+                           video_id, type(exc).__name__)
+            transcript, tier = ("", None)
+    if not transcript:
+        out = _unwrap_sync(nougen_media_transcribe)(url=clean, language=language,
+                                                    whisper_model=whisper_model, auto_shard=auto_shard)
+        out["transcript_source"] = "whisper"
+        out["fallback"] = "whisper"
+        return out
+    fetch_metadata = getattr(tube, "fetch_metadata", None)
+    metadata = fetch_metadata(clean, video_id) if callable(fetch_metadata) else {}
+    metadata = metadata or {}
+    shard_status = None
+    if auto_shard:
+        process_video = getattr(tube, "process_video", None)
+        if callable(process_video):
+            shard_status = process_video(clean, dry_run=False)
+    return {
+        "title": metadata.get("title"),
+        "source": clean,
+        # Only claim a language the subtitle fetch actually selected; a module
+        # without language selection reports None rather than echoing the ask.
+        "language": language if language_honored else None,
+        "language_requested": language,
+        "duration_seconds": metadata.get("duration"),
+        "transcript": transcript[:20000],
+        "transcript_truncated": len(transcript) > 20000,
+        "transcript_source": tier,
+        "sharded": bool(shard_status) and str(shard_status).startswith(("captured", "skipped-dup")),
+        "shard_status": shard_status,
+        "model": None,
+        "fallback": "none",
+        "metadata": metadata,
+    }
 
 
 @node_mcp.tool()
@@ -3086,50 +3986,104 @@ def transcribe_media(source: str = "", url: str = "", language: Optional[str] = 
                      whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
     """Transcribe media from URL or source using local Whisper."""
     target_url = url or source
-    return nougen_media_transcribe(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    return _unwrap_sync(nougen_media_transcribe)(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
 @_offloaded
 def apply_skills(task: str) -> dict:
     """Apply and discover operational skills for a given task description."""
-    return nougen_skill_search(task=task, limit=5)
+    return _unwrap_sync(nougen_skill_search)(task=task, limit=5)
 
 
 @node_mcp.tool()
 @_offloaded
 def list_skills() -> dict:
     """List all available operational skills."""
-    return nougen_skill_search(task="", limit=20)
+    from nougen_shards import skills
+    return {"skills": [
+        {"name": item.name, "description": item.description, "summary": item.summary}
+        for item in skills.discover()
+    ]}
 
 
 @node_mcp.tool()
 @_offloaded
 def load_skill(name: str) -> dict:
     """Load the full operational specification and prompt instructions for a given skill."""
-    return nougen_skill_get(name=name)
+    result = _unwrap_sync(nougen_skill_get)(name=name)
+    if isinstance(result, dict) and not result.get("error"):
+        try:
+            from nougen_shards import skill_playbook
+            notes = skill_playbook.field_notes(name)
+        except Exception:
+            notes = []
+        if notes:
+            # Reported by earlier runs; unverified, the skill text wins on any conflict.
+            result["field_notes"] = notes
+        result["report_outcome"] = 'mark_skill(name, worked=True|False, note="<one-line lesson, optional>")'
+    return result
+
+
+@node_mcp.tool()
+@_offloaded
+def mark_skill(name: str, worked: bool, note: str = "", note_ids: Optional[List[str]] = None) -> dict:
+    """Report how a skill did after using it: worked or not, plus an optional one-line lesson.
+
+    The lesson is stored as a field note beside the skill (the skill file is not edited) and
+    shown to the next reader. note_ids are field notes this outcome confirms or contradicts.
+    """
+    from nougen_shards import skill_playbook, skills
+    skill = skills.get(name)
+    if skill is None:
+        return {"recorded": False, "error": f"no installed skill named {name!r}"}
+    result = skill_playbook.mark(skill.name, bool(worked), note or None, note_ids)
+    return {"recorded": True, **result}
 
 
 @node_mcp.tool()
 @_offloaded
 def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
-    """Search and filter recorded fleet destinies."""
-    status = None if include_finished else "active"
-    return unfinished_destinies(status=status, limit=limit)
+    """Search destinies by title, goal, trigger or verification keywords.
+
+    A query under two characters lists the unfinished ones (dormant + active).
+    include_finished also returns fulfilled, failed and superseded matches.
+    """
+    q = (query or "").strip()
+    if len(q) < 2:
+        return _unwrap_sync(unfinished_destinies)(limit=limit)
+    from nougen_shards import destiny as _destiny
+    return _destiny.search_destinies(q, limit=limit, include_finished=include_finished)
 
 
 @node_mcp.tool()
 @_offloaded
 def recall_layered(query: str, token_budget: int = 1200) -> list:
     """Layered memory retrieval packed within a tight token budget."""
-    return recall_memory(query=query, limit=10)
+    return _unwrap_sync(recall_memory)(query=query, limit=10)
 
 
 @node_mcp.tool()
 @_offloaded
-def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
-    """Retrieve related memory shards via graph topology."""
-    return recall_graph(query=str(shard_id), depth=1, limit=10)
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None,
+                   limit: int = 10) -> dict:
+    """Shards linked to shard_id in the graph mesh, walking edges in either direction."""
+    from nougen_shards import graph
+    related = graph.related_shards(shard_id, db_index, relation, limit)
+    return {"shard_id": shard_id, "db_index": db_index, "relation": relation,
+            "count": len(related), "related": related}
+
+
+@node_mcp.tool()
+@_offloaded
+def link_shards(src_id: int, dst_id: int, relation: str = "relates",
+                src_db: int = 1, dst_db: int = 1) -> dict:
+    """Create a graph edge src -[relation]-> dst between two existing shards."""
+    from nougen_shards import graph
+    created = graph.link_shards(src_id, dst_id, relation, src_db, dst_db)
+    return {"created": bool(created), "src": f"{src_id}@{src_db}", "dst": f"{dst_id}@{dst_db}",
+            "relation": relation,
+            "note": None if created else "no edge: a shard was missing, both ids are the same shard, or the edge already exists"}
 
 
 @node_mcp.tool()
@@ -3469,9 +4423,11 @@ def information_gain_evaluate(event_text: str, context_samples: Optional[List[st
 @_offloaded
 def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
                      query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
-    """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
+    """Solve bounded expressions with Z3; accepts the restricted SMT expression subset only."""
     from nougen_shards.formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return {"status": "error", "error": "Each declaration must be a [name, type] pair."}
+    typed_decls = [(d[0], d[1]) for d in declarations]
     return engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
 
 
@@ -3530,69 +4486,44 @@ def rsi_diagnostics() -> dict:
 @node_mcp.tool()
 @_offloaded
 def control_plane_context_select(query: str, budget_tokens: int = 500, nodes_json: Optional[str] = None) -> dict:
-    """Select persistent context graph memory using stored importance, query relevance and dependency expansion."""
-    from nougen_shards.control_plane_math import PersistentContextGraph, ContextNode
-    graph = PersistentContextGraph()
-    if nodes_json:
-        try:
-            data = json.loads(nodes_json)
-            for item in data:
-                graph.add_node(ContextNode(
-                    node_id=item["id"],
-                    content=item.get("content", ""),
-                    importance=float(item.get("importance", 0.5)),
-                    token_count=int(item.get("tokens", len(item.get("content", "").split()))),
-                ))
-        except Exception:
-            pass
-    return graph.select_context(query=query, budget_tokens=budget_tokens).to_dict()
+    """Select a bounded graph-aware projection from caller-supplied shard candidates."""
+    from nougen_shards.control_plane_api import context_select
+    try:
+        return context_select(query, budget_tokens, nodes_json if nodes_json is not None else "[]")
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
-def control_plane_pareto_route(routes_json: str, policy_weights_json: Optional[str] = None) -> dict:
-    """Execute multi-objective Pareto routing over quality, truth, latency, cost, robustness, memory fidelity, safety."""
-    from nougen_shards.control_plane_math import MultiObjectiveParetoRouter, RouteProfile
-    routes = []
+def control_plane_pareto_route(routes_json: str, policy_weights_json: str) -> dict:
+    """Choose from the Pareto front using explicit objective weights and provenance."""
+    from nougen_shards.control_plane_api import pareto_route
     try:
-        data = json.loads(routes_json)
-        for r in data:
-            routes.append(RouteProfile(
-                route_id=r["id"],
-                quality=float(r.get("quality", 0.8)),
-                truth=float(r.get("truth", 0.8)),
-                latency_ms=float(r.get("latency_ms", 100.0)),
-                cost_usd=float(r.get("cost_usd", 0.0)),
-                robustness=float(r.get("robustness", 0.8)),
-                memory_fidelity=float(r.get("memory_fidelity", 0.8)),
-                safety_score=float(r.get("safety_score", 0.9)),
-            ))
-    except Exception as e:
-        return {"error": f"Failed to parse routes: {e}"}
-
-    weights = json.loads(policy_weights_json) if policy_weights_json else None
-    decision = MultiObjectiveParetoRouter.route(routes, policy_weights=weights)
-    return decision.to_dict()
+        return pareto_route(routes_json, policy_weights_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
 def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_json: str, threshold: float = 0.8) -> dict:
-    """Compute execution adherence from declared workflow edges vs observed event-stream edges."""
-    from nougen_shards.control_plane_math import ExecutionAdherenceEvaluator
+    """Compare declared workflow edges with observed [source, target] event edges."""
+    from nougen_shards.control_plane_api import adherence_evaluate
     try:
-        dec = [tuple(e) for e in json.loads(declared_edges_json)]
-        obs = json.loads(observed_events_json)
-        return ExecutionAdherenceEvaluator.evaluate(dec, obs, adherence_threshold=threshold).to_dict()
-    except Exception as e:
-        return {"error": f"Failed adherence calculation: {e}"}
+        return adherence_evaluate(declared_edges_json, observed_events_json, threshold)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
 def morph_atom_catalog() -> dict:
     """Canonical registry mapping 2026-10-01 research atoms into native NouGen fleet primitives."""
-    from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    try:
+        from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     atoms = NouGenMorphCatalog.get_all_atoms()
     return {k: v.to_dict() for k, v in atoms.items()}
 
@@ -3614,7 +4545,10 @@ def morph_holistic_gate(
     tolerance: float = 0.0,
 ) -> dict:
     """Holistic promotion gate: blocks promotion on benchmark gain if truth, adherence, memory fidelity, or safety regress."""
-    from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    try:
+        from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     base = {
         "benchmark_score": baseline_benchmark,
         "truth": baseline_truth,
@@ -3636,12 +4570,13 @@ def morph_holistic_gate(
 @node_mcp.tool()
 @_offloaded
 def formal_verification_suite() -> dict:
-    """Executes the complete suite of 6 Hurricane Kick information dynamics formal proof obligations.
-    Proves idempotent duplicate capture, monotonic append-only sequence identity, provider invariants,
-    bounded working memory projections, relay lifecycle state-machine safety, and decision-equivalence merge conditions.
+    """Run bounded SMT models for information-dynamics obligations.
+
+    Results cover only the published encodings. Provider invariants are empirical;
+    implementation refinement is not established by this suite.
     """
-    from nougen_shards.formal_verification import InformationDynamicsProofEngine
-    return InformationDynamicsProofEngine.run_full_formal_verification_suite()
+    from nougen_shards.formal_verification import run_full_formal_verification_suite
+    return run_full_formal_verification_suite()
 
 
 # --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------
@@ -3982,6 +4917,96 @@ def _scope_base_url(scope) -> str:
     return f"{proto}://{host}" if host else ""
 
 
+# Tenant tool policy lives in nougen_shards.tenant_policy: every node tool is
+# labelled TENANT_SCOPED (binds to the identity's own vault/home) or OWNER_ONLY,
+# and tests/test_tenant_full_surface.py fails on any unlabelled tool.
+from nougen_shards import tenant_policy
+
+# Back-compat alias for importers/tests that referenced the old static set.
+TENANT_MCP_TOOLS = tenant_policy.TENANT_SCOPED
+
+
+class _TenantListingFilter:
+    """ASGI ``send`` wrapper: buffers a tools/list response and drops tools the
+    tenant may not call. Handles both plain JSON and streamable-HTTP SSE bodies
+    (``data: {...}`` lines). Anything unparseable passes through untouched."""
+
+    def __init__(self, send, tenant_id: str):
+        self._send = send
+        self._tenant_id = tenant_id
+        self._start = None
+        self._chunks = []
+
+    @staticmethod
+    def _filter_rpc(obj, tenant_id):
+        if (isinstance(obj, dict) and isinstance(obj.get("result"), dict)
+                and isinstance(obj["result"].get("tools"), list)):
+            obj["result"]["tools"] = tenant_policy.filter_tool_listing(
+                obj["result"]["tools"], tenant_id)
+        return obj
+
+    def _rewrite(self, body: bytes, content_type: str) -> bytes:
+        text = body.decode("utf-8", errors="replace")
+        if "text/event-stream" in content_type:
+            out = []
+            for line in text.split("\n"):
+                eol = "\r" if line.endswith("\r") else ""
+                bare = line[:-1] if eol else line
+                if bare.startswith("data:"):
+                    try:
+                        obj = json.loads(bare[5:].strip())
+                    except ValueError:
+                        out.append(line)
+                        continue
+                    out.append("data: " + json.dumps(self._filter_rpc(obj, self._tenant_id)) + eol)
+                else:
+                    out.append(line)
+            return "\n".join(out).encode("utf-8")
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            return body
+        if isinstance(obj, list):
+            obj = [self._filter_rpc(o, self._tenant_id) for o in obj]
+        else:
+            obj = self._filter_rpc(obj, self._tenant_id)
+        return json.dumps(obj).encode("utf-8")
+
+    async def flush(self):
+        """Emit whatever was withheld if the inner app ended without a final
+        body chunk (exception after response.start), so the client still gets
+        a response instead of a hung connection."""
+        if self._start is None and not self._chunks:
+            return
+        start = self._start or {"type": "http.response.start", "status": 500, "headers": []}
+        body = b"".join(self._chunks)
+        self._start, self._chunks = None, []
+        await self._send(start)
+        await self._send({"type": "http.response.body", "body": body, "more_body": False})
+
+    async def __call__(self, message):
+        kind = message.get("type")
+        if kind == "http.response.start":
+            self._start = message
+            return
+        if kind == "http.response.body":
+            self._chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in (self._start or {}).get("headers", [])}
+            body = self._rewrite(b"".join(self._chunks), headers.get("content-type", ""))
+            start = dict(self._start or {"type": "http.response.start", "status": 200, "headers": []})
+            start["headers"] = [(k, v) for k, v in start.get("headers", [])
+                                if k.decode("latin-1").lower() != "content-length"]
+            start["headers"].append((b"content-length", str(len(body)).encode()))
+            await self._send(start)
+            await self._send({"type": "http.response.body", "body": body, "more_body": False})
+            self._start, self._chunks = None, []
+            return
+        await self._send(message)
+
+
 class _TokenGatedMCP:
     """ASGI gate for the /mcp mount: same deny-by-default semantics as
     verify_token (503 unconfigured, 401 mismatch), but accepts the token as
@@ -4058,11 +5083,65 @@ class _TokenGatedMCP:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
+            if tenant.tenant_id != tenant_policy.OWNER_TENANT_ID:
+                # A tenant gets the full NouGen surface bound to its own root
+                # (vault, secrets, relay, inbox, destinies) and never the owner's
+                # machine, agents or shared services. tools/call is checked
+                # against the policy before it reaches the MCP server, and the
+                # tools/list reply is rewritten to the same set so the client
+                # only ever sees what this identity may call.
+                orig_receive = receive
+                chunks = []
+                more = True
+                while more:
+                    msg = await orig_receive()
+                    if msg.get("type") != "http.request":
+                        break
+                    chunks.append(msg.get("body", b""))
+                    more = msg.get("more_body", False)
+                raw = b"".join(chunks)
+                try:
+                    payload = json.loads(raw or b"null")
+                except ValueError:
+                    payload = None
+                calls = payload if isinstance(payload, list) else [payload]
+                lists_tools = False
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    method = call.get("method")
+                    if method == "tools/list":
+                        lists_tools = True
+                    if method != "tools/call":
+                        continue
+                    params = call.get("params")
+                    if params is None:
+                        params = {}
+                    if not isinstance(params, dict):
+                        await self._reject(send, 403, "tools/call params must be an object")
+                        return
+                    name = params.get("name")
+                    if not tenant_policy.allowed_for(tenant.tenant_id, name):
+                        await self._reject(send, 403, f"tool {name} is not available to this identity")
+                        return
+                replayed = [False]
+
+                async def replay_receive():
+                    if not replayed[0]:
+                        replayed[0] = True
+                        return {"type": "http.request", "body": raw, "more_body": False}
+                    return await orig_receive()
+
+                receive = replay_receive
+                if lists_tools:
+                    send = _TenantListingFilter(send, tenant.tenant_id)
             context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
             try:
                 await self.inner(scope, receive, send)
             finally:
                 core.reset_active_vault(context_tokens)
+                if isinstance(send, _TenantListingFilter):
+                    await send.flush()
             return
         await self.inner(scope, receive, send)
 
@@ -4164,6 +5243,82 @@ else:
         "serve the vault UI.",
         file=sys.stderr,
     )
+
+
+@node_mcp.tool()
+@_offloaded
+def semantic_context_assemble(query: str, state_json: str = "{}", budget_bytes: int = 8000) -> dict:
+    """Bound I + G + R(Q) + active task state; corrections must be caller-authorized.
+
+    The budget covers serialized context only. Inspect ready and missing_required;
+    retrieval_complete is separate and does not assert recall fidelity.
+    """
+    from nougen_shards.context_policy import context_from_json
+    try:
+        return context_from_json(query, state_json, budget_bytes)
+    except (TypeError, ValueError, KeyError) as exc:
+        return {'error': str(exc)}
+
+
+
+@node_mcp.tool()
+@_offloaded
+def context_task_checkpoint(session_id: str, state_json: str, provenance: str) -> str:
+    """Append verified compact task state for one session; never pass credentials."""
+    from nougen_shards.nougen_context import append_task_state
+    try:
+        if len(state_json) > 16000:
+            raise ValueError("state_json exceeds 16000 characters")
+        return json.dumps(append_task_state(session_id, json.loads(state_json), provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_task_current(session_id: str) -> str:
+    """Read current task checkpoint for the exact session, without transcript replay."""
+    from nougen_shards.nougen_context import current_task_state
+    return json.dumps(current_task_state(session_id), ensure_ascii=False)
+
+
+@node_mcp.tool()
+@_offloaded
+def context_feedback(packet_json: str, feedback_json: str) -> str:
+    """Measure omissions and receiver-reported context use; no inferred cognition score."""
+    from nougen_shards.context_policy import evaluate_context
+    try:
+        if max(len(packet_json), len(feedback_json)) > 1000000:
+            raise ValueError("feedback inputs exceed 1000000 characters")
+        return json.dumps(evaluate_context(json.loads(packet_json), **json.loads(feedback_json)))
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_correct(session_id: str, previous: str, current: str, provenance: str) -> str:
+    """Append a source-owner-authorized correction. Never persist a model proposal as authority."""
+    from nougen_shards.nougen_context import append_context_correction
+    try:
+        return json.dumps(append_context_correction(session_id, previous, current, provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_session_assemble(session_id: str, query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Compile federated recall with this session's durable task/correction state.
+
+    Omit recall from state_json for bounded live federation; supply recall for replay.
+    """
+    from nougen_shards.nougen_context import assemble_session_context
+    try:
+        return json.dumps(assemble_session_context(session_id, query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
 
 if __name__ == "__main__":
     import uvicorn

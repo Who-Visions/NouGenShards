@@ -72,13 +72,16 @@ lane sat dead for 19 days). ⬜ wire `lane_freshness.py --json` into
 semantic index was 100% dead — a broken sensor reporting absence as fact.
 **Invariant:** recall responses carry lane health (embedding coverage %, FTS
 reachable). Agents must not assert absence from a degraded lane.
-**Status:** ✅ `core.lane_health()` reports total shards + embedding coverage %
-across the DB grid; both empty-recall paths (`compile_recall_packet`,
-`compile_recall_packet_dual`) now emit that coverage instead of a bare marker,
-flagging "DEGRADED SEMANTIC LANE — absence unverified" below the
+**Status:** ✅ `core.lane_health()` reports per-DB health (readable, quick_check,
+shard/FTS/embedded counts), total shards + embedding coverage %, the durability
+contract as read back (journal_mode, synchronous), embedding provider status,
+and vector-cache freshness, with a `degraded_lanes` list and a
 `NOUGEN_MIN_COVERAGE_PCT` threshold (default 50, env-discovered per Rule 0.2).
-Regression suite `tests/test_lane_health.py`. ⬜ surface the same metadata in
-`federated_retrieve` cross-node returns.
+Regression suite `tests/test_lane_health.py`. The sensor is read-only and does
+not touch the recall path. ⬜ both empty-recall paths (`compile_recall_packet`,
+`compile_recall_packet_dual`) still return the bare marker — emitting lane
+health there (atlas item 202) is follow-up work, not done by the P0 lane.
+⬜ surface the same metadata in `federated_retrieve` cross-node returns.
 **Known flaky:** `tests/test_graph.py::test_related_relation_filter` leaks/depends
 on global DB state under `pytest-randomly` order (passes isolated + with fixed
 order); pre-existing, unrelated to this invariant.

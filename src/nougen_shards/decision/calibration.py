@@ -193,8 +193,13 @@ def threshold_sweep(records: Sequence[EvalRecord], cost: Mapping[Tuple[str, str]
 def promotion_gate(candidate: EvalReport, baseline: EvalReport, *, min_examples: int = 300,
                    max_ece: float = 0.10, p95_slo_ms: Optional[float] = None,
                    max_cost_per_1000: Optional[float] = None,
-                   fallback_tested: bool = False, replay_stable: bool = False) -> List[str]:
-    """Return the gates that FAIL (empty list = every gate passed). Never auto-promotes."""
+                   fallback_tested: bool = False, replay_stable: bool = False,
+                   held_out_candidate: Optional[EvalReport] = None,
+                   held_out_baseline: Optional[EvalReport] = None,
+                   ood_candidate: Optional[EvalReport] = None,
+                   ood_baseline: Optional[EvalReport] = None,
+                   min_validation_examples: int = 100) -> List[str]:
+    """Return failed gates; held-out and OOD evidence are mandatory. Never auto-promotes."""
     fails: List[str] = []
     if candidate.n < min_examples:
         fails.append(f"too few labeled examples: {candidate.n} < {min_examples}")
@@ -216,6 +221,26 @@ def promotion_gate(candidate: EvalReport, baseline: EvalReport, *, min_examples:
         fails.append("fallback with the classifier unavailable is not tested")
     if not replay_stable:
         fails.append("replay stability across pinned model versions is not tested")
+    for name, validation, validation_baseline in (
+        ("held-out", held_out_candidate, held_out_baseline),
+        ("OOD", ood_candidate, ood_baseline),
+    ):
+        if validation is None or validation_baseline is None:
+            fails.append(f"{name} validation is not measured")
+            continue
+        if validation.n < min_validation_examples:
+            fails.append(f"{name} validation has too few examples: {validation.n} < {min_validation_examples}")
+        validation_cost = validation.weighted_false_negative_cost
+        baseline_cost = validation_baseline.weighted_false_negative_cost
+        if validation_cost is None or baseline_cost is None:
+            fails.append(f"{name} weighted cost not measured for candidate or baseline")
+        elif validation_cost > baseline_cost:
+            fails.append(f"{name} weighted cost regressed: {validation_cost:.3f} > {baseline_cost:.3f}")
+        validation_ece = validation.expected_calibration_error
+        if validation_ece is None:
+            fails.append(f"{name} calibration is not measurable")
+        elif validation_ece > max_ece:
+            fails.append(f"{name} calibration outside tolerance: ece={validation_ece:.3f}")
     return fails
 
 

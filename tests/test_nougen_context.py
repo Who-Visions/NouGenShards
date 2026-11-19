@@ -274,3 +274,64 @@ def test_cloud_fallback_requires_explicit_model(monkeypatch):
     monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_MODEL", "some-cloud-tag")
     nc.query_ollama("hello")
     assert any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
+
+
+def test_ctx_execute_records_event_and_sandbox_handle(monkeypatch, capsys):
+    """`nougen ctx execute` must log an event (so `ctx search` finds it) and
+    persist the full output under a handle (Rule 0.14)."""
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    cli._ctx_execute_and_record("console.log('ctx-record-marker')")
+    captured = capsys.readouterr()
+    assert "ctx-record-marker" in captured.out
+    assert "[recorded handle=ncode_" in captured.err
+    hits = nougen_context.search_events("ctx-record-marker", limit=5)
+    assert any(h["event_type"] == "ctx_execute" for h in hits)
+    handle = captured.err.split("handle=")[1].split("]")[0]
+    assert nougen_context.fetch_sandbox(handle).strip() == "ctx-record-marker"
+
+
+def test_ctx_execute_records_successful_output_that_starts_with_error(monkeypatch, capsys):
+    """A script that prints 'Error: ...' on success is data, not a failure (Codex P2)."""
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    monkeypatch.setattr(cli.nougen_sandbox, "execute_sandboxed", lambda *a, **k: "Error: no records")
+    cli._ctx_execute_and_record("console.log('Error: no records')")
+    captured = capsys.readouterr()
+    assert "[recorded handle=ncode_" in captured.err
+    assert nougen_context.search_events("no records", limit=5)
+
+
+def test_ctx_execute_skips_real_sandbox_failures(monkeypatch, capsys):
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    monkeypatch.setattr(cli.nougen_sandbox, "execute_sandboxed",
+                        lambda *a, **k: "Execution failed (Exit 1):\nboom")
+    cli._ctx_execute_and_record("throw 1")
+    assert "[recorded handle=" not in capsys.readouterr().err
+
+
+def test_untrusted_shell_runtime_is_refused(monkeypatch):
+    """WG-1191: untrusted callers cannot run a shell interpreter."""
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo hi", language="shell")
+    assert out.startswith("Error:") and "reserved for trusted callers" in out
+
+
+def test_trusted_shell_runtime_still_runs(monkeypatch):
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo trusted-ok", language="shell", trusted=True)
+    assert "trusted-ok" in out
+
+
+def test_batch_tool_is_untrusted_and_refuses_shell(monkeypatch):
+    """Codex P1: the public batch tool must not bypass the shell refusal or the opt-in."""
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    res = nougen_sandbox.batch_execute_sandboxed([{"label": "x", "language": "shell", "code": "echo hi"}])
+    assert "reserved for trusted callers" in str(res)
+
+
+def test_batch_tool_requires_opt_in(monkeypatch):
+    monkeypatch.delenv("NOUGEN_ENABLE_SANDBOX", raising=False)
+    res = nougen_sandbox.batch_execute_sandboxed([{"label": "x", "language": "python", "code": "print(1)"}])
+    assert "disabled by default" in str(res)

@@ -271,6 +271,10 @@ def test_capture_embeds_at_write_time(tmp_path, monkeypatch):
         calls["n"] += 1
         return [0.1, 0.2, 0.3]
 
+    # PR #983 routes capture-time embedding through embed_providers.resolve(),
+    # which probes the live Ollama server; the fake below only runs when the
+    # provider resolves to ollama.
+    monkeypatch.setattr("nougen_shards.embed_providers._ollama_reachable", lambda: True)
     monkeypatch.setattr("nougen_shards.embedding_backfill.embed", fake_embed)
     assert core.capture("test", "born recallable", "body text", ["t"]).captured
     assert calls["n"] == 1, "capture() must call the embedder when given no vector"
