@@ -55,8 +55,8 @@ def test_two_devices_with_the_same_generic_hostname_get_different_ids(monkeypatc
         monkeypatch.delenv("NOUGEN_NODE_NAME", raising=False)
         monkeypatch.delenv("NOUGEN_FLEET_NODE", raising=False)
         _host(monkeypatch, "localhost")
-        # Different hardware address per device; an unreadable one makes a random id.
-        monkeypatch.setattr(uuid, "getnode", lambda n=n: 0x021122334455 + ord(n))
+        # Two devices, two OS machine ids.
+        monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda n=n: "os:machine-" + n)
         ids.add(m.current_machine_id())
     assert len(ids) == 2
 
@@ -66,10 +66,53 @@ def test_unwritable_home_still_answers_and_agrees_with_itself(box, monkeypatch):
     monkeypatch.setenv("NOUGEN_ROOT", str(box / "root" / "machine_id"))  # a file, so mkdir fails
     (box / "root").mkdir()
     (box / "root" / "machine_id").write_text("x")
-    monkeypatch.setattr(uuid, "getnode", lambda: 0x021122334455)
+    monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "os:fixed-machine")
     first = m.current_machine_id()
     assert re.fullmatch(r"device-[0-9a-f]{8}", first)
     assert m.current_machine_id() == first
+
+
+def test_unwritable_home_and_no_stable_seed_is_still_stable_not_random(box, monkeypatch):
+    """No machine id, no real MAC, no writable home: the id must not change per call/process."""
+    _host(monkeypatch, "localhost")
+    monkeypatch.setenv("NOUGEN_ROOT", str(box / "root" / "machine_id"))
+    (box / "root").mkdir()
+    (box / "root" / "machine_id").write_text("x")
+    monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "")
+    monkeypatch.setattr(uuid, "uuid4", lambda: pytest.fail("a random id must never be used here"))
+    first = m.current_machine_id()
+    assert re.fullmatch(r"device-[0-9a-f]{8}", first)
+    assert all(m.current_machine_id() == first for _ in range(5))
+
+
+def test_concurrent_first_callers_all_get_the_one_persisted_id(box, monkeypatch):
+    """No stable seed means a random id; racing first callers must still agree on one."""
+    import threading
+    _host(monkeypatch, "localhost")
+    monkeypatch.setattr(fleet_nodes, "_stable_seed", lambda: "")
+    n = 12
+    barrier = threading.Barrier(n)
+    out = []
+
+    def go():
+        barrier.wait()
+        out.append(m.current_machine_id())
+
+    threads = [threading.Thread(target=go) for _ in range(n)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    stored = (box / "root" / "machine_id").read_text().strip()
+    assert len(out) == n and set(out) == {stored}
+
+
+def test_a_random_mac_is_not_treated_as_an_identity(monkeypatch):
+    """uuid.getnode() sets the multicast bit when it invents a value; that is no seed."""
+    monkeypatch.setattr(fleet_nodes, "_OS_ID_FILES", ())
+    monkeypatch.setattr(fleet_nodes, "_windows_machine_guid", lambda: "")
+    monkeypatch.setattr(uuid, "getnode", lambda: 0x010000000001 | (1 << 40))
+    assert fleet_nodes._stable_seed() == ""
+    monkeypatch.setattr(uuid, "getnode", lambda: 0x021122334455)
+    assert fleet_nodes._stable_seed() == "mac:021122334455"
 
 
 def test_configured_fleet_box_keeps_its_fleet_node_name(box, monkeypatch, tmp_path):
