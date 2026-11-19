@@ -4081,6 +4081,42 @@ def _title_lane_enabled() -> bool:
     return os.environ.get("NOUGEN_TITLE_LANE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+#: Default per-lane RRF weights. Uniform weights are what weighted-RRF work
+#: (arXiv 2610.24341, 2610.30612) shows losing to tuned ones; values here
+#: must come from tools/recall_eval.py on a held-out split, never a guess.
+RRF_LANES = ("keyword", "vector", "exact", "title", "atoms", "graph")
+_RRF_DEFAULT_WEIGHTS = {lane: 1.0 for lane in RRF_LANES}
+_RRF_DEFAULT_K = 60
+
+
+def _rrf_lane_weights() -> dict:
+    """Per-lane fusion weights; NOUGEN_RRF_WEIGHTS="vector=1.5,title=2" overrides.
+
+    Malformed or unknown entries are ignored, so a bad env value falls back to
+    the defaults instead of breaking recall."""
+    weights = dict(_RRF_DEFAULT_WEIGHTS)
+    for part in os.environ.get("NOUGEN_RRF_WEIGHTS", "").split(","):
+        name, sep, raw = part.partition("=")
+        name = name.strip().lower()
+        if not sep or name not in weights:
+            continue
+        try:
+            val = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(val) and val >= 0:
+            weights[name] = val
+    return weights
+
+
+def _rrf_k() -> int:
+    try:
+        k = int(os.environ.get("NOUGEN_RRF_K", _RRF_DEFAULT_K))
+    except ValueError:
+        return _RRF_DEFAULT_K
+    return k if k > 0 else _RRF_DEFAULT_K
+
+
 def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_research: bool) -> list:
     """Exact-title lane. Known-item lookups (a title from a handle, a relay leg, a
     [HELD] line) lost to OR-retry filler and the recency prior: 1 in 5 eligible
@@ -4312,16 +4348,17 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         lanes = [keyword_results, vector_results]
         exact_token_results = [item for item in keyword_results
                                if _has_exact_query_tokens(query, item)]
-        lane_weights = [1.0, 1.0]
+        w = _rrf_lane_weights()
+        lane_weights = [w["keyword"], w["vector"]]
         if exact_token_results:
             # Literal all-token hits get an independent RRF vote. This prevents
             # semantic neighbours from displacing exact IDs while preserving
             # positional fusion within the keyword and vector lanes.
             lanes.append(exact_token_results)
-            lane_weights.append(1.0)
+            lane_weights.append(w["exact"])
         if _title_lane_enabled():
             lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
-            lane_weights.append(1.0)
+            lane_weights.append(w["title"])
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
             # distillation sidecar exists; before that this is a cheap stat().
@@ -4329,12 +4366,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
                     lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
-                    lane_weights.append(1.0)
+                    lane_weights.append(w["atoms"])
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
-                    lane_weights.append(1.0)
+                    lane_weights.append(w["graph"])
             except Exception as exc:  # a derived index must never break recall
                 logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
-        return reciprocal_rank_fusion(lanes, k=60, weights=lane_weights)
+        return reciprocal_rank_fusion(lanes, k=_rrf_k(), weights=lane_weights)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
