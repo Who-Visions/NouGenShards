@@ -48,6 +48,7 @@
         "https://www.youtube.com/*"
       ],
       "js": [
+        "design-tokens.js",
         "morph-core.js",
         "theme-core.js",
         "batch-core.js",

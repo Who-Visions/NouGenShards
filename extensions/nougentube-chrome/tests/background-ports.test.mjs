@@ -134,3 +134,16 @@ test('recall, map and shard: a bridge that accepts the request but never answers
     assert.match(p.posted[0].error, /took too long/, name);
   }
 });
+
+test('a reachable bridge that answers HTML is not reported as "not running"', T, async () => {
+  const html = (ok, status) => async () => ({ ok, status, json: async () => { throw new SyntaxError('Unexpected token <'); }, text: async () => '<html>502 Bad Gateway</html>' });
+  const bad = load(html(false, 502)).open('recall');
+  await bad.send({ body: {} });
+  assert.equal(bad.posted[0].ok, false);
+  assert.match(bad.posted[0].error, /bridge said 502/);
+  const odd = load(html(true, 200)).open('shard');
+  await odd.send({ doc: {} });
+  assert.equal(odd.posted[0].ok, false);
+  assert.match(odd.posted[0].error, /not with JSON/);
+  assert.doesNotMatch(odd.posted[0].error, /not running/);
+});

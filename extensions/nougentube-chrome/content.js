@@ -177,14 +177,19 @@
   }
 
   // ---------- UI ----------
+  // Colorways come from the generated design package (design-tokens.js <- designs/mono-violet/design.json),
+  // never inline copies. Short names keep the panel CSS terse; "dark" is the default, others key off data-theme.
+  const TOKEN_MAP = { bg: "--bg", card: "--surface", raised: "--raised", ln: "--border", lns: "--border-strong", tx: "--text",
+    mu: "--muted", ac: "--accent", ac2: "--extra", ok: "--good", warn: "--warn", bad: "--bad", ink: "--control-ink",
+    focus: "--focus", r: "--radius-control", rp: "--radius-panel", ow: "--outline-width" };
+  const PALETTES = Object.entries(NGT_TOKENS.themes).sort(([a], [b]) => (a === "dark" ? -1 : b === "dark" ? 1 : a < b ? -1 : 1))
+    .map(([name, t]) => (name === "dark" ? ".p{" : `.p[data-theme=${name}]{`) + Object.entries(TOKEN_MAP).map(([k, v]) => `--${k}:${t[v]}`).join(";") + "}")
+    .join("\n  ");
   let host, root;
   const CSS = `
   :host{all:initial} *{box-sizing:border-box}
-  .p{--bg:#0b0911;--card:#171321;--raised:#211a30;--ln:#332b43;--lns:#7d7094;--tx:#f5f1ff;--mu:#a79cb9;--ac:#a47bff;--ac2:#d2bbff;--ok:#4cc38a;--warn:#e6aa3a;--bad:#ff8a8a;--ink:#0b0911;--focus:#d2bbff;--r:8px;--rp:12px;--ow:1px;
-     font:14px/1.5 "Geist","Roboto",system-ui,sans-serif;color:var(--tx);background:var(--bg);border:var(--ow) solid var(--ln);border-radius:var(--rp);margin:0 0 12px;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 140px)}
-  .p[data-theme=light]{--bg:#f8f6fc;--card:#ffffff;--raised:#f0ecf8;--ln:#ddd5ec;--lns:#7d7094;--tx:#211a2f;--mu:#5e5470;--ac:#6941c6;--ac2:#4b2e9c;--ok:#1b7f4e;--warn:#8a5a00;--bad:#b42318;--ink:#ffffff;--focus:#6941c6;--r:8px;--rp:12px;--ow:1px}
-  .p[data-theme=arcade]{--bg:#17102a;--card:#261a44;--raised:#33245a;--ln:#4a3777;--lns:#9a82cc;--tx:#fff3fe;--mu:#cbbbe3;--ac:#c47dff;--ac2:#ff7ac0;--ok:#5cf2b6;--warn:#ffd166;--bad:#ff7d98;--ink:#17102a;--focus:#ffe066;--r:12px;--rp:16px;--ow:1px}
-  .p[data-theme=hardcade]{--bg:#080711;--card:#151024;--raised:#1f1733;--ln:#3a2a5c;--lns:#8a6cc4;--tx:#f8f2ff;--mu:#b9acce;--ac:#b14cff;--ac2:#00e5ff;--ok:#b6ff3b;--warn:#ffb020;--bad:#ff5c78;--ink:#080711;--focus:#00e5ff;--r:0px;--rp:2px;--ow:2px}
+  .p{font:14px/1.5 "Geist","Roboto",system-ui,sans-serif;color:var(--tx);background:var(--bg);border:var(--ow) solid var(--ln);border-radius:var(--rp);margin:0 0 12px;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 140px)}
+  ${PALETTES}
   .p[data-theme=hardcade] .tabs button{text-transform:uppercase;letter-spacing:.06em;font-size:12px}
   @supports (corner-shape:squircle){.p[data-theme=arcade],.p[data-theme=arcade] :is(button,select,input,textarea,.chip,.msg,.vf,.card,.menu,.ib){corner-shape:squircle}}
   @media (prefers-contrast:more){.p[data-theme]{--ln:var(--lns);--mu:var(--tx)}.p :is(button,select,input,textarea,.chip,.vf,.msg,.card,.menu){border-width:2px}.p :is(button,select,input,a,summary,[tabindex]):focus-visible{outline-width:3px}}
@@ -268,10 +273,7 @@
     const where = slot(); if (!where) return false;
     host = document.createElement("div"); host.id = "nougentube"; host.style.cssText = "top:72px;z-index:5;display:block"; where.el.prepend(host); place();
     root = host.attachShadow({ mode: "open" });
-    // Action chips are spans; give each actionable one button semantics, focus and Enter/Space activation.
-    const chipify = () => root.querySelectorAll("span.chip").forEach(c => { if ((c.id || c.onclick || [...c.attributes].some(a => a.name.startsWith("data-"))) && !c.hasAttribute("tabindex")) { c.setAttribute("role", "button"); c.tabIndex = 0; } });
-    new MutationObserver(chipify).observe(root, { childList: true, subtree: true });
-    root.addEventListener("keydown", e => { const c = e.target; if (c?.matches?.("span.chip[role=button]") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); c.click(); } });
+    // Actionable chips are native <button type=button>: focusable, Enter/Space for free, no role shims.
     root.innerHTML = `<style>${CSS}</style><div class="p">
       <div class="hd"><div class="lg">N</div><div class="ti">NouGenTube<small id="mdl"></small></div>
         <button class="chip" id="hs" title="Save this video to NouGenShards: the full transcript, plus the summary if you have made one">Shard</button><button class="ib" id="th" title="Theme">◐</button><button class="ib" id="key" title="Settings: provider keys and routes">⚙</button><button class="ib" id="cp" title="Copy transcript">⧉</button><button class="ib" id="dl" title="Export">⤓</button><div class="menu" id="menu" hidden><button data-x="md">Markdown (everything)</button><button data-x="txt">Transcript .txt</button><button data-x="srt">Subtitles .srt</button><button data-x="plain">Transcript, no timestamps</button><button data-x="obsidian">Obsidian note .md</button><button data-x="html">Readable page .html</button><button data-x="csv">Highlights + transcript .csv</button><button data-x="json">Everything .json</button></div>
@@ -373,7 +375,7 @@
     if (S.err) { bd.innerHTML = `<div class="mu err">${esc(S.err)}</div><div class="mu"><button class="go" id="rt">Try again</button></div>`; $("rt").onclick = () => { S.vid = null; S.fresh = true; load(); }; return; }
     if (!S.lines.length) { bd.innerHTML = transcriptLoading(); return; }
     if (S.tab === "transcript") {
-      tb.innerHTML = `<input id="q" placeholder="Search transcript…" value="${esc(S.q || "")}"><span class="chip ${S.follow ? "on" : ""}" id="fl" title="Auto-scroll with the video">Follow</span><select id="trl" title="Show the transcript in another language, translated by your model">${"<option value=\"\">" + (S.tr ? "Original language" : "Translate…") + "</option>"}${LANGS.filter(l => l !== "Auto").map(l => `<option ${S.tr && S.tr.lang === l ? "selected" : ""}>${l}</option>`).join("")}</select>${S.lang === "audio" ? `<span class="chip" title="This transcript was made by speech-to-text on this computer, so names and numbers may be wrong">from audio</span>` : ""}${S.lang === "saved" ? `<span class="chip" id="rl" title="This transcript was saved from an earlier visit. Click to fetch it from YouTube again.">saved ↻</span>` : `<span class="mu" style="padding:0">${S.lang || ""}</span>`}`;
+      tb.innerHTML = `<input id="q" placeholder="Search transcript…" value="${esc(S.q || "")}"><button type="button" class="chip ${S.follow ? "on" : ""}" id="fl" title="Auto-scroll with the video">Follow</button><select id="trl" title="Show the transcript in another language, translated by your model">${"<option value=\"\">" + (S.tr ? "Original language" : "Translate…") + "</option>"}${LANGS.filter(l => l !== "Auto").map(l => `<option ${S.tr && S.tr.lang === l ? "selected" : ""}>${l}</option>`).join("")}</select>${S.lang === "audio" ? `<span class="chip" title="This transcript was made by speech-to-text on this computer, so names and numbers may be wrong">from audio</span>` : ""}${S.lang === "saved" ? `<button type="button" class="chip" id="rl" title="This transcript was saved from an earlier visit. Click to fetch it from YouTube again.">saved ↻</button>` : `<span class="mu" style="padding:0">${S.lang || ""}</span>`}`;
       if ($("rl")) $("rl").onclick = () => { S.vid = null; S.fresh = true; load(); };
       $("q").oninput = e => { S.q = e.target.value; drawLines(); }; $("fl").onclick = () => { S.follow = !S.follow; render(); }; tb.style.flexWrap = "wrap"; $("trl").onchange = e => (e.target.value ? withAwake(() => translateTranscript(e.target.value)) : translateTranscript(""));
       drawLines();
@@ -391,8 +393,8 @@
       const canShard = (S.models || []).includes("nougenopen:auto");
       const failed = S.summary.trim().startsWith("⚠");
       bd.innerHTML = failed ? `<div class="mu err">${esc(S.summary.trim())}</div><div class="mu">Nothing was written. Pick another model above or press Regenerate.</div>` : S.summary
-        ? `<div class="acts"><span class="chip on" id="cAll" title="Report, then the full transcript, ready to paste anywhere">Copy report + transcript</span><span class="chip" id="cRep">Copy report</span>${canShard ? `<span class="chip" id="shd" title="Save the report and the full transcript to NouGenShards">Shard it</span>` : ""}</div>` + show(S.summary) + checkCard(S.summary)
-        : `<div class="mu">Summaries run on your own models. Timestamps in the result jump the video. The Intelligence report ends with the full transcript when you copy or shard it.</div><div class="acts"><span class="chip" id="cAI" title="Copies the Media Intelligence Architect instructions plus this transcript, to paste into Gemini, ChatGPT or Claude">Copy prompt + transcript for another AI</span></div>`;
+        ? `<div class="acts"><button type="button" class="chip on" id="cAll" title="Report, then the full transcript, ready to paste anywhere">Copy report + transcript</button><button type="button" class="chip" id="cRep">Copy report</button>${canShard ? `<button type="button" class="chip" id="shd" title="Save the report and the full transcript to NouGenShards">Shard it</button>` : ""}</div>` + show(S.summary) + checkCard(S.summary)
+        : `<div class="mu">Summaries run on your own models. Timestamps in the result jump the video. The Intelligence report ends with the full transcript when you copy or shard it.</div><div class="acts"><button type="button" class="chip" id="cAI" title="Copies the Media Intelligence Architect instructions plus this transcript, to paste into Gemini, ChatGPT or Claude">Copy prompt + transcript for another AI</button></div>`;
       const flash = (id, text) => navigator.clipboard.writeText(text).then(() => { const e = $(id), o = e.textContent; e.textContent = "Copied ✓"; setTimeout(() => { if (e.isConnected) e.textContent = o; }, 1300); });
       if ($("cAll")) $("cAll").onclick = () => flash("cAll", reportDoc());
       if ($("cRep")) $("cRep").onclick = () => flash("cRep", S.summary);
@@ -401,7 +403,7 @@
     } else if (S.tab === "morph") {
       renderMorph();
     } else if (S.tab === "chat") {
-      tb.innerHTML = modelPicker() + `<span class="chip ${S.scope !== "lib" ? "on" : ""}" id="sv" title="Ask about the video you are watching">This video</span><span class="chip ${S.scope === "lib" ? "on" : ""}" id="sl" title="Ask across every video you have saved to your vault">My library</span><span class="chip" data-p="What are the main takeaways?">Takeaways</span><span class="chip" data-p="List every tool, product or resource mentioned, with timestamps.">Resources</span><span class="chip" data-p="What claims here might be wrong or need checking?">Fact-check</span>`;
+      tb.innerHTML = modelPicker() + `<button type="button" class="chip ${S.scope !== "lib" ? "on" : ""}" id="sv" title="Ask about the video you are watching">This video</button><button type="button" class="chip ${S.scope === "lib" ? "on" : ""}" id="sl" title="Ask across every video you have saved to your vault">My library</button><button type="button" class="chip" data-p="What are the main takeaways?">Takeaways</button><button type="button" class="chip" data-p="List every tool, product or resource mentioned, with timestamps.">Resources</button><button type="button" class="chip" data-p="What claims here might be wrong or need checking?">Fact-check</button>`;
       wirePicker(); tb.querySelectorAll("[data-p]").forEach(c => { c.onclick = () => ask(c.dataset.p); if (S.scope === "lib") c.style.display = "none"; });
       $("sv").onclick = () => { S.scope = "video"; render(); }; $("sl").onclick = () => { S.scope = "lib"; render(); };
       bd.innerHTML = S.chat.filter(m => (m.scope || "video") === (S.scope || "video")).map(m => `<div class="msg ${m.role === "user" ? "u" : ""}">${m.role === "user" ? esc(m.content) : (m.content ? md(m.content) + srcLine(m) : DOTS)}</div>`).join("") || (S.scope === "lib" ? `<div class="mu">Ask across every video you have saved to your NouGenShards vault. Answers cite the saved report they came from.</div>` : `<div class="mu">Ask anything about this video. Answers cite timestamps.</div>`);
@@ -465,9 +467,11 @@
   // bound: a job that writes into the open video's state (summary, chat). Navigating away cancels
   // it and drops its late output; unbound jobs (batch, morph) keep running and always settle.
   function stream(messages, onDelta, onDone, bound) {
-    const v0 = S.vid, od = onDelta, oe = onDone;
+    // Generation token as well as the id: A -> B -> A gives the same id back, but a new generation, so a stream
+    // started on the first visit can never write into the second one (or save() it under v:<id>).
+    const v0 = S.vid, g0 = S.gen, od = onDelta, oe = onDone, mine = () => S.vid === v0 && S.gen === g0;
     const onStage = S.onStage, onReset = S.onReset;
-    if (bound) { onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); }; }
+    if (bound) { onDelta = d => { if (mine()) od(d); }; onDone = (e, m) => { if (mine()) oe(e, m); }; }
     // Only bound (per-video summary/chat) streams share S.port; unbound jobs
     // (morph, batch) keep isolated ports so concurrent streams never cancel each other.
     if (bound && S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
@@ -708,7 +712,7 @@
       return `<div class="vr"><span class="vok">${esc(w.ref)}</span><span>${u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${lbl}</a>` : lbl}</span></div>`;
     }).join("") : "";
     const grp = (t, a) => a.length ? `<div class="mu" style="padding:6px 0 2px">${t}</div>` + a.map(h => `<div class="vr"><span class="vok">${esc(refOf(h))}</span><span>${esc(h.title)}</span></div>`).join("") : "";
-    bd.innerHTML = `<div class="acts"><span class="chip on" id="mc">Copy morph plan</span><span class="chip" id="mb" title="Copy the plan as a prompt you can paste into a coding agent">Copy build prompt</span><span class="chip" id="ms" title="Save this plan to NouGenShards">Shard it</span></div>` +
+    bd.innerHTML = `<div class="acts"><button type="button" class="chip on" id="mc">Copy morph plan</button><button type="button" class="chip" id="mb" title="Copy the plan as a prompt you can paste into a coding agent">Copy build prompt</button><button type="button" class="chip" id="ms" title="Save this plan to NouGenShards">Shard it</button></div>` +
       (M.prior.length ? `<div class="mu">This video was morphed before: ${M.prior.map(h => esc(refOf(h))).join(", ")}.</div>` : "") +
       `<details class="vf"><summary class="vh" style="cursor:pointer">${M.vaultOff ? "Vault not read for this plan" : `Cross-referenced ${kn.length} vault shard${kn.length === 1 ? "" : "s"} and ${vd.length} other saved video${vd.length === 1 ? "" : "s"}`}${W.length ? `, ${W.length} web source${W.length === 1 ? "" : "s"}` : ""}</summary>${M.vaultOff ? `<div class="mu" style="padding:4px 0">${esc(M.vaultOff)}. Start the bridge and press Morph again to build on your shards.</div>` + wgrp : (grp("Vault knowledge", kn) + grp("Other saved videos", vd) + wgrp || `<div class="mu" style="padding:4px 0">The vault returned nothing related to this video.</div>`)}</details>` +
       `<div class="md">${wlink(md(M.text))}</div><div class="vf"><div class="vh">Checked against your vault, the web and the transcript</div>` +
@@ -925,7 +929,7 @@
     }
     const B = S.bt, done = B.items.filter(i => i.status === "done").length, errs = B.items.filter(i => i.status === "error").length, queued = B.items.filter(i => i.status === "queued" || i.status === "error").length;
     tb.innerHTML = modelPicker() + '<select id="bs" title="What each summary looks like">' + BATCH_STYLES.map(k => '<option value="' + k + '">' + STYN[k] + "</option>").join("") + "</select>" +
-      '<span class="chip ' + (B.shardAll ? "on" : "") + '" id="bsa" title="Save each finished summary and its transcript to your NouGenShards vault">Shard each</span>' +
+      '<button type="button" class="chip ' + (B.shardAll ? "on" : "") + '" id="bsa" title="Save each finished summary and its transcript to your NouGenShards vault">Shard each</button>' +
       '<button class="go" id="bgo"' + (!S.bridge || (!queued && !B.running) ? " disabled" : "") + ">" + (B.running ? '<span class="spin"></span>Stop' : done && queued ? "Continue" : "Summarize all") + "</button>";
     wirePicker(); $("bs").value = B.sty || "brief"; $("bs").onchange = e => { B.sty = e.target.value; btSave(); };
     $("bsa").onclick = () => { B.shardAll = !B.shardAll; btSave(); btPaint(); };
@@ -935,16 +939,16 @@
       const icon = it.status === "done" ? '<span class="vok">✓</span>' : it.status === "error" ? '<span class="vno">!</span>' : it.status === "queued" ? '<span class="mu">·</span>' : '<span class="spin"></span>';
       const head = '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(it.title || it.id) + "</span>";
       const meta = it.status === "done" ? '<div class="mu" style="font-size:12px">' + (it.src === "audio" ? "Transcribed from the audio on this computer, so check names and numbers. " : "") + (it.outside ? '<span class="err">' + it.outside + " timestamp" + (it.outside === 1 ? "" : "s") + " fall outside the video.</span> " : "Timestamps inside the video. ") + (it.shard ? "Saved " + esc(it.shard) + "." + (it.shardNote ? " " + esc(it.shardNote) : "") : it.shardErr ? '<span class="err">Not saved: ' + esc(it.shardErr) + "</span>" : "") + (it.model ? " · " + esc(it.model) : "") + "</div>" : it.status === "error" ? '<div class="mu err" style="font-size:12px">' + esc(it.err) + "</div>" : it.stage ? '<div class="mu" style="font-size:12px">' + esc(it.stage) + "</div>" : "";
-      const body = it.status === "done" ? '<details class="vf"><summary class="vh" style="cursor:pointer">Read the summary</summary><div class="md">' + md(it.text) + '</div><div class="acts"><span class="chip" data-cp="' + esc(it.id) + '">Copy</span>' + (it.shard ? "" : '<span class="chip" data-sh="' + esc(it.id) + '">Shard</span>') + "</div></details>" : "";
-      return '<div style="padding:6px 0;border-bottom:1px solid var(--ln)"><div class="vr">' + icon + head + '<a class="mu" href="https://www.youtube.com/watch?v=' + esc(it.id) + '" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="Open the video">↗</a><span class="chip" data-rm="' + esc(it.id) + '" title="Remove">×</span></div>' + meta + body + "</div>";
+      const body = it.status === "done" ? '<details class="vf"><summary class="vh" style="cursor:pointer">Read the summary</summary><div class="md">' + md(it.text) + '</div><div class="acts"><button type="button" class="chip" data-cp="' + esc(it.id) + '">Copy</button>' + (it.shard ? "" : '<button type="button" class="chip" data-sh="' + esc(it.id) + '">Shard</button>') + "</div></details>" : "";
+      return '<div style="padding:6px 0;border-bottom:1px solid var(--ln)"><div class="vr">' + icon + head + '<a class="mu" href="https://www.youtube.com/watch?v=' + esc(it.id) + '" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="Open the video">↗</a><button type="button" class="chip" data-rm="' + esc(it.id) + '" title="Remove">×</button></div>' + meta + body + "</div>";
     };
     bd.innerHTML = (S.bridge ? "" : '<div class="mu err">Batch needs the NouGenOpen bridge, which fetches transcripts and transcribes audio on this computer. Start <b>nougen-open serve</b> and reopen this tab.</div>') +
       '<textarea id="bl" rows="3" style="width:100%;box-sizing:border-box;background:var(--bg);color:inherit;border:1px solid var(--ln);border-radius:var(--r);padding:8px;font:inherit" placeholder="Paste YouTube links, one per line (up to ' + BATCH_MAX + '), or a playlist link">' + esc(B.draft || "") + "</textarea>" +
-      '<div class="acts"><span class="chip on" id="ba">Add links</span><span class="chip" id="bc">Add this video</span><span class="chip" id="bp" title="Add every video of the playlist this video was opened from">Add this playlist</span></div>' +
+      '<div class="acts"><button type="button" class="chip on" id="ba">Add links</button><button type="button" class="chip" id="bc">Add this video</button><button type="button" class="chip" id="bp" title="Add every video of the playlist this video was opened from">Add this playlist</button></div>' +
       (B.notes ? '<div class="mu">' + esc(B.notes) + "</div>" : "") +
       (B.items.length ? '<div style="margin:8px 0 4px;height:4px;background:var(--ln);border-radius:2px"><div style="height:4px;width:' + pct + '%;background:var(--ac);border-radius:2px"></div></div><div class="mu" style="font-size:12px">' + done + " of " + B.items.length + " done" + (errs ? ", " + errs + " failed" : "") + (B.running && S.keepAwake !== false ? " · keeping this computer awake" : "") + "</div>" : '<div class="mu">Each video gets its own summary. Videos without captions are transcribed from their audio on this computer (up to 150 minutes each).</div>') +
       B.items.map(row).join("") +
-      (done ? '<div class="acts" style="margin-top:8px"><span class="chip on" id="bcopy">Copy all summaries</span><span class="chip" id="bshall">Shard unsaved</span><span class="chip" id="bclr">Clear</span></div>' : B.items.length ? '<div class="acts" style="margin-top:8px"><span class="chip" id="bclr">Clear</span></div>' : "");
+      (done ? '<div class="acts" style="margin-top:8px"><button type="button" class="chip on" id="bcopy">Copy all summaries</button><button type="button" class="chip" id="bshall">Shard unsaved</button><button type="button" class="chip" id="bclr">Clear</button></div>' : B.items.length ? '<div class="acts" style="margin-top:8px"><button type="button" class="chip" id="bclr">Clear</button></div>' : "");
     $("bl").oninput = e => { B.draft = e.target.value; };
     $("ba").onclick = async () => { const t = $("bl").value; B.draft = ""; await batchAdd(t); };
     $("bc").onclick = () => batchAdd(S.vid ? "https://www.youtube.com/watch?v=" + S.vid : "");
@@ -1004,7 +1008,7 @@
     if (!alive()) return render();
     if (vid === S.vid) return;
     if (S.port?.bound) { S.port.cancel(); try { S.port.disconnect(); } catch {} S.port = null; }
-    Object.assign(S, { vid, lines: [], paras: [], err: null, summary: "", chat: [], hl: {}, q: "", tT0: Date.now(), tStage: "", shardMsg: "", morph: null, tr: null }); render();
+    Object.assign(S, { vid, gen: (S.gen || 0) + 1, lines: [], paras: [], err: null, summary: "", chat: [], hl: {}, q: "", tT0: Date.now(), tStage: "", shardMsg: "", morph: null, tr: null }); render();
     const st = (await chrome.storage.local.get(key()))[key()]; if (st) Object.assign(S, st);
     Object.assign(S, await chrome.storage.sync.get(["sty", "len", "lng", "custom"])); render(); note();
     try {

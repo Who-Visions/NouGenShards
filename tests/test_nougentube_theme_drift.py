@@ -1,43 +1,36 @@
-"""The NouGenTube panel palettes must match designs/mono-violet/design.json (drift check)."""
-import json
+"""The NouGenTube panel palettes come from the generated mono-violet package, never inline copies (drift check)."""
+import importlib.util
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTENT = ROOT / "extensions" / "nougentube-chrome" / "content.js"
-DESIGN = ROOT / "designs" / "mono-violet" / "design.json"
-
-# extension short var -> design package token
-MAP = {"bg": "--bg", "card": "--surface", "raised": "--raised", "ln": "--border", "lns": "--border-strong",
-       "tx": "--text", "mu": "--muted", "ac": "--accent", "ac2": "--extra", "ok": "--good", "warn": "--warn",
-       "bad": "--bad", "ink": "--control-ink", "focus": "--focus", "r": "--radius-control",
-       "rp": "--radius-panel", "ow": "--outline-width"}
+EXT = ROOT / "extensions" / "nougentube-chrome"
+CONTENT = EXT / "content.js"
+TOKENS_JS = EXT / "design-tokens.js"
+DESIGN = ROOT / "designs" / "mono-violet"
 
 
-def _norm(v):
-    v = v.strip().lower()
-    return "0px" if v in ("0", "0px") else v
+def test_generated_tokens_js_matches_design_json():
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "nougendesigns.py"), "check", str(DESIGN / "design.json"),
+                        str(DESIGN), "--tokens-js", str(TOKENS_JS)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
-def _blocks(js):
-    out = {}
-    for sel, body in re.findall(r"\.p(\[data-theme=\w+\])?\{(--bg:[^}]*)\}", js):
-        name = sel[len("[data-theme="):-1] if sel else "dark"
-        out[name] = dict(re.findall(r"--([\w-]+):([^;]+)", body))
-    return out
-
-
-def test_extension_palettes_match_mono_violet_package():
-    spec = json.loads(DESIGN.read_text(encoding="utf-8"))
-    blocks = _blocks(CONTENT.read_text(encoding="utf-8"))
-    assert set(blocks) == set(spec["themes"]), blocks.keys()
-    for theme, values in blocks.items():
-        want = {**spec["tokens"], **spec["themes"][theme]}
-        for short, token in MAP.items():
-            assert short in values, (theme, short)
-            assert _norm(values[short]) == _norm(want[token]), (theme, short, values[short], want[token])
-
-
-def test_actionable_chips_get_button_semantics():
+def test_content_script_has_no_inline_palettes():
     js = CONTENT.read_text(encoding="utf-8")
-    assert 'a.name.startsWith("data-")' in js and "c.attributes.length > 2" not in js
+    assert "${PALETTES}" in js and "NGT_TOKENS.themes" in js
+    assert not re.search(r"--(bg|ac|tx):#[0-9a-fA-F]{3,6}", js), "inline colorway values found in content.js"
+
+
+def test_manifest_loads_tokens_before_content():
+    m = (EXT / "manifest.json").read_text(encoding="utf-8")
+    assert m.index('"design-tokens.js"') < m.index('"content.js"')
+
+
+def test_actionable_chips_are_native_buttons():
+    js = CONTENT.read_text(encoding="utf-8")
+    for m in re.finditer(r'<span class="chip[^>]*>', js):
+        assert not re.search(r'(id|data-[\w-]+)=', m.group(0)), m.group(0)
+    assert 'role", "button"' not in js

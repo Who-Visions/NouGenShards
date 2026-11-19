@@ -80,8 +80,11 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.type === "openOptions") { chrome.runtime.openOptionsPage(); reply({ ok: true }); return; }
   if (msg.type === "shard") {
     fetch(NGO + "/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
-      .then(async r => { const j = await r.json(); reply(r.ok ? { ok: !!j.ok, parts: j.parts || [] } : { ok: false, error: j.error?.message || ("bridge said " + r.status) }); })
-      .catch(() => reply({ ok: false, error: "the NouGenOpen bridge is not running (nougen-open serve)" }));
+      .then(async r => { const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+        if (!r.ok) reply({ ok: false, error: j?.error?.message || ("bridge said " + r.status) });
+        else if (!j || typeof j !== "object") reply({ ok: false, error: "the bridge answered " + r.status + " but not with JSON" });
+        else reply({ ok: !!j.ok, parts: j.parts || [] }); },
+        () => reply({ ok: false, error: "the NouGenOpen bridge is not running (nougen-open serve)" }));
     return true;
   }
 });
@@ -197,8 +200,12 @@ chrome.runtime.onConnect.addListener(port => {
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
       try {
         const r = await fetch(NGO + "/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
-        const t = await r.text(); let j = {}; try { j = JSON.parse(t); } catch {}
-        send(r.ok ? bridge.ok(j) : { ok: false, error: j.error?.message || ("bridge said " + r.status), code: r.status });
+        // Read text and parse safely: a reachable bridge that answers with HTML or an empty body is reported as
+        // what it is, never as "not running" (that message is only for fetch itself failing).
+        const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+        if (!r.ok) send({ ok: false, error: j?.error?.message || ("bridge said " + r.status), code: r.status });
+        else if (!j || typeof j !== "object") send({ ok: false, error: "the bridge answered " + r.status + " but not with JSON", code: r.status });
+        else send(bridge.ok(j));
       } catch (e) {
         if (closed) return;
         send({ ok: false, error: timedOut ? "the bridge took too long" : "the NouGenOpen bridge is not running (nougen-open serve)" });
