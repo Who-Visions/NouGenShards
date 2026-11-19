@@ -314,3 +314,83 @@ def test_proxy_url_without_port_uses_scheme_default(monkeypatch):
     with pytest.raises(OSError):
         rc.open_tunnel("relay.test", 443, 1, {"HTTPS_PROXY": "http://proxy.corp"})
     assert seen == [("proxy.corp", 80)]
+
+
+@pytest.mark.parametrize("url", [
+    "ws://relay.test/_relay/connect", "http://relay.test/_relay/connect", "relay.test/_relay/connect",
+    "ftp://relay.test/x", "wss:///no-host", "", "WS://relay.test/x",
+])
+def test_insecure_relay_address_is_refused_before_any_socket_and_token_never_sent(url, monkeypatch):
+    """A plain ws:// address would carry the node token in the clear."""
+    opened = []
+    monkeypatch.setattr(rc, "open_tunnel", lambda *a, **k: opened.append(a) or (_ for _ in ()).throw(AssertionError("socket opened")))
+    with pytest.raises(rc.InsecureRelayURL):
+        rc.WebSocket.connect(url, {"Authorization": f"Bearer {TOKEN}"})
+    c = rc.RelayClient(url or "ws://relay.test/x", "alice", TOKEN, 1)
+    with pytest.raises(rc.InsecureRelayURL):
+        c.dial(1)
+    assert opened == []
+
+
+def test_a_plain_listener_never_receives_the_token():
+    """Control with a real socket: point the client at a plain ws:// listener and
+    confirm nothing connects to it at all."""
+    import socket as _socket
+    srv = _socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.settimeout(0.5)
+    port = srv.getsockname()[1]
+    try:
+        with pytest.raises(rc.InsecureRelayURL):
+            rc.RelayClient(f"ws://127.0.0.1:{port}/_relay/connect", "alice", TOKEN, 1).dial(1)
+        with pytest.raises(_socket.timeout):
+            srv.accept()
+    finally:
+        srv.close()
+
+
+def test_https_is_accepted_as_a_tls_address():
+    u = rc.require_secure_relay_url("https://relay.test/_relay/connect")
+    assert u.hostname == "relay.test" and u.scheme == "https"
+    assert rc.require_secure_relay_url("WSS://Relay.Test/x").hostname == "relay.test"
+
+
+def test_probe_and_run_exit_2_at_once_for_an_insecure_address(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(rc, "open_tunnel", lambda *a, **k: (_ for _ in ()).throw(AssertionError("socket opened")))
+    nj = tmp_path / "node.json"
+    nj.write_text(json.dumps({"id": "alice", "port": 1, "token": TOKEN, "relay_url": "ws://relay.test/_relay/connect"}))
+    for cmd in ("probe", "run"):
+        assert rc.main([cmd, "--node-json", str(nj)]) == 2
+    out = capsys.readouterr().out
+    assert out.count("must start with wss:// or https://") == 2 and TOKEN not in out
+
+
+class _FakeTLS:
+    def __init__(self):
+        self.sent = b""
+
+    def sendall(self, data):
+        self.sent += data
+        raise ConnectionError("stop after request line")
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("wss://relay.test", "GET /_relay/connect HTTP/1.1"),
+    ("wss://relay.test/", "GET /_relay/connect HTTP/1.1"),
+    ("https://relay.test/?id=n1", "GET /_relay/connect?id=n1 HTTP/1.1"),
+    ("wss://relay.test/_relay/connect?id=n1", "GET /_relay/connect?id=n1 HTTP/1.1"),
+])
+def test_bare_relay_origin_dials_the_connect_path(url, expected, monkeypatch):
+    """The relay worker only upgrades on /_relay/connect; a bare origin must not GET '/'."""
+    fake = _FakeTLS()
+
+    class _Ctx:
+        def wrap_socket(self, raw, server_hostname=None):
+            return fake
+
+    monkeypatch.setattr(rc, "open_tunnel", lambda *a, **k: object())
+    monkeypatch.setattr(rc, "tls_context", lambda env=None: _Ctx())
+    with pytest.raises(ConnectionError):
+        rc.WebSocket.connect(url, {"Authorization": f"Bearer {TOKEN}"})
+    assert fake.sent.decode().splitlines()[0] == expected

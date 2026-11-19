@@ -57,6 +57,30 @@ The setup script tries, in order, and records which one is live:
 
 The Join page moves to Step 3 on whichever transport is live and names it.
 
+How step 3 is wired:
+
+- Setup tries the relay only when the account has a relay address (`relay_url` in
+  `node.json`, or `NOUGEN_RELAY_URL`). Without one it is not tried and the step 4
+  message stands.
+- When the probe is live, setup writes the single word `relay` to the account's
+  `transport` file and restarts the supervisor. The supervisor then runs the relay
+  client in place of `cloudflared` and logs to `relay.log`. A missing or unreadable
+  `transport` file always means the tunnel.
+- The relay client has no readiness port, so the supervisor counts a running client
+  as up. Setup confirms the client really started; a supervisor too old to know the
+  relay is reported as a failure and the `transport` file is removed.
+- Provisioning: when the join worker has both `RELAY_URL` and the `RELAY_AUTH` store, a
+  download of `setup.sh` writes the account's auth record (`relay:<hostname label>` =
+  `sha256(token)`) and puts `relay_url` in `node.json`. If the store cannot be written,
+  no address is handed out. `workers/join/deploy.py` adds those two bindings only when
+  the person deploying sets both `NOUGEN_JOIN_RELAY_URL` and
+  `NOUGEN_JOIN_RELAY_AUTH_KV_ID`; one without the other stops the deploy.
+- The relay address must be `wss://` or `https://` everywhere it is read: the client,
+  the supervisor, the join worker and the deploy script all refuse anything else,
+  because the node sends its token to it.
+- A network where this is the answer: the resolver refuses the SRV lookup `cloudflared`
+  needs, or port 7844 is closed, while port 443 is open.
+
 ## Deploy
 
 ```bash
