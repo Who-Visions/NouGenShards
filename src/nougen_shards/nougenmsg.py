@@ -226,6 +226,26 @@ def coach_for_machine(value: str) -> str:
     return fleet_identity_maps()[1].get(normalized, normalized)
 
 
+def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
+    """The label a receiving session shows for a message.
+
+    It names the machine and lane that WROTE the message (stamped at the
+    origin), not the bridge that delivered it. Before this, every message a
+    Blade session received read "NouGenMsg-blade" even when WhoArt sent it.
+    Falls back to the local bridge only when the envelope carries no origin.
+    """
+    origin = origin or {}
+    sender = str(origin.get("original_sender") or "").strip()
+    machine = str(origin.get("machine") or "").strip()
+    if sender and machine and machine not in sender:
+        sender = f"{machine}/{sender}"
+    label = sender or machine
+    if label:
+        mid = str(origin.get("machine_id") or "").strip()
+        return f"{label} [{mid}]" if mid and mid != "unknown" else label
+    return f"NouGenMsg-{get_current_node()} (origin unstamped)"
+
+
 def get_current_node() -> str:
     """Which fleet node this box is, or "standalone".
 
@@ -501,7 +521,7 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        source = f"NouGenMsg-{get_current_node()}"
+        source = display_sender(origin)
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
         try:
@@ -1020,18 +1040,33 @@ class NouGenMsgBus:
             # Nothing here changes where a message is delivered.
             from .lane_presence import default_presence
             default_presence().heartbeat(lane, time.time())
-        claimed_machine = supplied.get("machine")
+        from .machine import check_asserted_node, sender_identity
+        ident = sender_identity()
+        claimed_machine = supplied.get("machine") or supplied.get("node")
         conflicts = list(supplied.get("conflicts") or [])
-        if claimed_machine and claimed_machine != current:
-            conflicts.append({"field": "machine", "claimed": claimed_machine,
-                              "transport_observed": current})
+        # A forwarded envelope already carries a relay_path stamped by the
+        # origin box; only then is its machine/original_sender the truth.
+        # Otherwise this process IS the origin, and a caller-typed node is a
+        # claim: logged as a conflict, never used as the sender.
+        forwarded = bool(supplied.get("relay_path"))
+        if forwarded:
+            sender_machine = claimed_machine or current
+            sender_id = supplied.get("machine_id") or "unknown"
+        else:
+            sender_machine = ident["node"]
+            sender_id = ident["machine_id"]
+            conflict = check_asserted_node(claimed_machine)
+            if conflict:
+                conflicts.append(conflict)
         session_id = supplied.get("session_id")
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
-            "machine": claimed_machine or current,
-            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
+            "machine": sender_machine,
+            "machine_id": sender_id,
+            "node_source": None if forwarded else ident["node_source"],
+            "coach": supplied.get("coach") or coach_for_machine(sender_machine),
             "transport_machine": current,
             "lane": lane,
             "transport": supplied.get("transport") or "nougenmsg",
@@ -1042,7 +1077,8 @@ class NouGenMsgBus:
             # traffic reaching phoebus read as nougen-phoebus, origin.machine
             # phoebus. The content carried the origin; the envelope did not,
             # so cross-machine provenance was unrecoverable after one hop.
-            "original_sender": supplied.get("original_sender") or cls.sender_label(current, lane),
+            "original_sender": (supplied.get("original_sender") if forwarded else None)
+                               or cls.sender_label(sender_machine, lane),
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
             "correlation_id": supplied.get("correlation_id"),

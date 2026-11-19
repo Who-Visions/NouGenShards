@@ -1625,6 +1625,15 @@ class CaptureResult(dict):
         return self.get("error")
 
 
+def _capture_machine() -> str:
+    """Machine stamped on a shard: the resolved node alias, not a raw hostname."""
+    try:
+        from .machine import sender_identity
+        return sender_identity()["node"]
+    except Exception:  # identity must never block a capture
+        return socket.gethostname()
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -1856,7 +1865,7 @@ def capture(event_type: str, title: str, content: str,
                     INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified, machine)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
-                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, socket.gethostname()))
+                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, _capture_machine()))
                 conn.commit()
 
                 # Log CREATED event
