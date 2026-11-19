@@ -152,3 +152,22 @@ def test_bad_env_value_falls_back_instead_of_raising(monkeypatch):
 
 def test_malformed_items_do_not_break_recall():
     assert cs.annotate("PACKET", [None, "x", {"id": 1}]) == "PACKET"
+
+
+def test_opposite_claims_with_the_same_words_are_still_a_conflict():
+    """Both carry a correction cue and nearly identical vocabulary; only the
+    negation differs. That is a contradiction, not a restatement."""
+    yes = shard(901, 1, "Correction: Acme Mechanical licence",
+                "Acme Mechanical is a licensed medical gas contractor.", "2026-08-01T10:00:00Z")
+    no = shard(902, 2, "Correction: Acme Mechanical licence",
+               "Acme Mechanical is not a licensed medical gas contractor.", "2026-08-09T10:00:00Z")
+    found = cs.find_conflicts([yes, no])
+    assert len(found) == 1 and found[0]["later"]["ref"] == "902@db2"
+
+
+def test_control_double_negative_restatement_still_is_not_a_conflict():
+    a = shard(903, 1, "Acme licence", "Acme Mechanical is not a licensed contractor and never was.",
+              "2026-08-01T10:00:00Z")
+    b = shard(904, 2, "Acme licence confirmed",
+              "Confirmed: Acme Mechanical is not a licensed contractor and never was.", "2026-08-09T10:00:00Z")
+    assert cs.find_conflicts([a, b]) == []

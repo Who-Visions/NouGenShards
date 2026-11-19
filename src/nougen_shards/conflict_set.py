@@ -124,6 +124,16 @@ def _tags(item: Dict[str, Any]) -> str:
     return str(tags)
 
 
+_NEGATION = re.compile(r"\b(?:not|no longer|never|cannot|isn't|aren't|wasn't|weren't|doesn't|don't|didn't|"
+                       r"won't|can't|without|neither|nor)\b|\bn't\b", re.I)
+
+
+def _negation_count(text: str) -> int:
+    """How many negations a shard holds. Two shards with the same vocabulary but
+    a different count are making opposite claims, not repeating each other."""
+    return len(_NEGATION.findall(text or ""))
+
+
 def _points_at(text: str, tags: str, other: Dict[str, Any]) -> Optional[str]:
     """Does this shard name the other one by reference? Returns the signal name."""
     oid, odb = _key(other)
@@ -165,6 +175,7 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "item": item, "rank": rank, "text": text, "tags": _tags(item),
             "tokens": _tokens(text), "ts": str(item.get("timestamp") or ""),
             "cue": bool(CORRECTION_CUE.search(text) or RETRACTION_CUE.search(text)),
+            "negations": _negation_count(text),
         })
 
     strength = {"supersedes_marker": 3, "names_reference": 2, "cue_overlap": 1}
@@ -195,7 +206,10 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     # Two shards that both carry a cue and say nearly the same
                     # thing are a restatement ("X is not licensed" /
                     # "Confirmed: X is not licensed"), not a disagreement.
-                    restated = earlier["cue"] and jaccard >= restatement_jaccard
+                    # ...unless one side negates and the other does not ("is
+                    # licensed" / "is not licensed"): same words, opposite claim.
+                    restated = (earlier["cue"] and jaccard >= restatement_jaccard
+                                and later["negations"] == earlier["negations"])
                     if len(shared) >= min_overlap and jaccard >= min_jaccard and not restated:
                         signal = "cue_overlap"
                 if signal and (pair is None or strength[signal] > strength[pair["signal"]]):
