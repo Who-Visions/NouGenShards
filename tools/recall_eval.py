@@ -49,6 +49,13 @@ ANALYSIS = ROOT / "analysis" / "recall_eval"
 GOLDEN = ANALYSIS / "golden.json"
 KS = (1, 3, 5, 10)
 SCORE_FIELDS = ("final_score", "utility_score_tripartite")
+
+# Structured retrieval error taxonomy (P6 regression gate)
+ERROR_MISSED_SHARD = "MISSED_SHARD"
+ERROR_STALE_RANK = "STALE_RANK"
+ERROR_WRONG_DOMAIN = "WRONG_DOMAIN"
+ERROR_FALSE_POSITIVE = "FALSE_POSITIVE"
+ERROR_LATENCY_BREACH = "LATENCY_BREACH"
 TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9]{4,}")
 STOP = frozenset("""
 about above after again against along already also because before being below
@@ -138,6 +145,106 @@ def sweep(pos: list, neg: list, fp_target: float) -> dict:
     return {"best": best, "grid": rows}
 
 
+def classify_query_failure(
+    ranked: list,
+    relevant,
+    results: list,
+    *,
+    expected_domain: str | None = None,
+    k: int = 10,
+    stale_rank_cutoff: int = 3,
+    latency_ms: float = 0.0,
+    max_latency_ms: float | None = None,
+) -> list[str]:
+    """Classify retrieval failure modes for a single positive query."""
+    errors: list[str] = []
+    rank = first_rank(ranked[:k], set(relevant))
+    if rank is None:
+        errors.append(ERROR_MISSED_SHARD)
+    elif rank > stale_rank_cutoff:
+        errors.append(ERROR_STALE_RANK)
+
+    if expected_domain and expected_domain != "*":
+        for row in results[:k]:
+            dom = row.get("domain_key") if isinstance(row, dict) else None
+            if dom is not None and dom != expected_domain:
+                errors.append(ERROR_WRONG_DOMAIN)
+                break
+
+    if max_latency_ms is not None and latency_ms > max_latency_ms:
+        errors.append(ERROR_LATENCY_BREACH)
+    return errors
+
+
+def evaluate_gate(
+    report: dict,
+    *,
+    min_recall5: float = 0.85,
+    min_mrr: float = 0.70,
+    max_fp_rate: float = 0.20,
+    max_p95_ms: float = 2000.0,
+    max_domain_leaks: int = 0,
+) -> dict:
+    """Gate-Then-Score evaluation (arXiv:2611.24039): governance gates first, quality floors second."""
+    neg_total_raw = int(report.get("negatives_total", 0) or 0)
+    neg_nonempty = int(report.get("negatives_nonempty", 0) or 0)
+    fp_rate = (neg_nonempty / neg_total_raw) if neg_total_raw > 0 else 0.0
+    domain_leaks = int(report.get("domain_leaks", 0) or 0)
+    p95_ms = float((report.get("latency_ms") or {}).get("p95") or 0.0)
+
+    overall = report.get("overall") or {}
+    recall5 = float(overall.get("recall@5", 0.0) or 0.0)
+    mrr = float(overall.get("mrr", 0.0) or 0.0)
+
+    gates = {
+        "tenant_isolation": {
+            "passed": domain_leaks <= max_domain_leaks,
+            "observed": domain_leaks,
+            "threshold": max_domain_leaks,
+        },
+        "false_positive_rate": {
+            "passed": fp_rate <= max_fp_rate,
+            "observed": round(fp_rate, 4),
+            "threshold": max_fp_rate,
+        },
+        "latency_p95_ms": {
+            "passed": p95_ms <= max_p95_ms,
+            "observed": round(p95_ms, 2),
+            "threshold": max_p95_ms,
+        },
+        "recall@5": {
+            "passed": recall5 >= min_recall5,
+            "observed": round(recall5, 4),
+            "threshold": min_recall5,
+        },
+        "mrr": {
+            "passed": mrr >= min_mrr,
+            "observed": round(mrr, 4),
+            "threshold": min_mrr,
+        },
+    }
+
+    governance_keys = ("tenant_isolation", "false_positive_rate", "latency_p95_ms")
+    quality_keys = ("recall@5", "mrr")
+    governance_passed = all(gates[g]["passed"] for g in governance_keys)
+    quality_passed = all(gates[g]["passed"] for g in quality_keys)
+
+    failures: list[str] = []
+    for name in governance_keys + quality_keys:
+        g = gates[name]
+        if not g["passed"]:
+            failures.append(f"{name}: observed {g['observed']} violates threshold {g['threshold']}")
+
+    return {
+        "passed": governance_passed and quality_passed,
+        "governance_passed": governance_passed,
+        "quality_passed": quality_passed,
+        "gates": gates,
+        "taxonomy_counts": dict(report.get("taxonomy_counts") or {}),
+        "failures": failures,
+    }
+
+
 # ---------------------------------------------------------------- build
 
 def build(n: int, neg: int, seed: int, include_research: bool = False) -> dict:
@@ -204,63 +311,113 @@ def _eastern(dt):
         return None
 
 
-def run(golden_path: Path, k: int, no_embed: bool, fp_target: float, domain: str) -> dict:
+def run(
+    golden_path: Path,
+    k: int,
+    no_embed: bool,
+    fp_target: float,
+    domain: str,
+    *,
+    out_dir: Path | None = None,
+    write_report: bool = True,
+    max_latency_ms: float | None = None,
+) -> dict:
     if no_embed:
         os.environ["NOUGEN_QUERY_EMBED"] = "0"
     core = _core()
+    orig_reorder = core.lost_in_the_middle_reorder
     core.lost_in_the_middle_reorder = list  # measure rank order, not the reader-facing interleave
-    golden = json.loads(Path(golden_path).read_text(encoding="utf-8"))
-    research = bool(golden.get("include_research", False))
+    try:
+        golden = json.loads(Path(golden_path).read_text(encoding="utf-8"))
+        research = bool(golden.get("include_research", False))
 
-    def search(q):
-        return core.retrieve(q, limit=k, domain_key=domain, include_research=research)
-    search("warm up the grid")
+        def search(q, active_domain=domain):
+            return core.retrieve(q, limit=k, domain_key=active_domain, include_research=research)
+        search("warm up the grid")
 
-    per_query, by_tier, latencies = [], {}, []
-    pos = {f: [] for f in SCORE_FIELDS}
-    for it in golden["queries"]:
-        t0 = time.perf_counter()
-        res = search(it["query"])
-        ms =(time.perf_counter() - t0) * 1000
-        latencies.append(ms)
-        ranked = [f"{r.get('id')}@{r.get('_db_index')}" for r in res]
-        s = score_query(ranked, it["relevant"], k)
-        by_tier.setdefault(it.get("tier", "manual"), []).append(s)
-        hit = res[s["rank"] - 1] if s["rank"] else None
-        for f in SCORE_FIELDS:
-            pos[f].append(hit.get(f) if hit else None)
-        per_query.append({"tier": it.get("tier"), "query": it["query"], "target": it.get("target"),
-                          "rank": s["rank"], "ms": round(ms, 1), "top": ranked[:3]})
+        per_query, by_tier, latencies = [], {}, []
+        pos = {f: [] for f in SCORE_FIELDS}
+        domain_leaks = 0
+        taxonomy_counts: dict[str, int] = {}
 
-    neg = {f: [] for f in SCORE_FIELDS}
-    for q in golden.get("negatives", []):
-        res = search(q)
-        for f in SCORE_FIELDS:
-            neg[f].append(res[0].get(f) if res else None)
+        for it in golden["queries"]:
+            q_domain = it.get("domain_key", domain)
+            t0 = time.perf_counter()
+            res = search(it["query"], active_domain=q_domain)
+            ms = (time.perf_counter() - t0) * 1000
+            latencies.append(ms)
+            ranked = [f"{r.get('id')}@{r.get('_db_index')}" for r in res]
+            s = score_query(ranked, it["relevant"], k)
+            by_tier.setdefault(it.get("tier", "manual"), []).append(s)
+            hit = res[s["rank"] - 1] if s["rank"] else None
+            for f in SCORE_FIELDS:
+                pos[f].append(hit.get(f) if hit else None)
+            if q_domain and q_domain != "*":
+                domain_leaks += sum(
+                    1 for r in res[:k]
+                    if isinstance(r, dict) and r.get("domain_key") is not None and r.get("domain_key") != q_domain
+                )
+            errors = classify_query_failure(
+                ranked,
+                it["relevant"],
+                res,
+                expected_domain=q_domain,
+                k=k,
+                latency_ms=ms,
+                max_latency_ms=max_latency_ms,
+            )
+            for err in errors:
+                taxonomy_counts[err] = taxonomy_counts.get(err, 0) + 1
+            per_query.append({
+                "tier": it.get("tier"),
+                "query": it["query"],
+                "target": it.get("target"),
+                "domain_key": q_domain,
+                "rank": s["rank"],
+                "ms": round(ms, 1),
+                "top": ranked[:3],
+                "errors": errors,
+            })
 
-    now = datetime.now(timezone.utc)
-    lat = sorted(latencies)
-    report = {
-        "created_utc": now.isoformat(timespec="seconds"), "created_eastern": _eastern(now),
-        "config": {"k": k, "embed": not no_embed and os.environ.get("NOUGEN_QUERY_EMBED", "1") != "0",
-                   "include_research": research,
-                   "distill_lanes": os.environ.get("NOUGEN_DISTILL_LANES", "1") != "0",
-                   "rerank": bool(getattr(core, "RERANK_ENABLED", False)), "domain": domain,
-                   "fp_target": fp_target, "golden": str(golden_path), "golden_created": golden.get("created_utc")},
-        "summary": {t: aggregate(rows) for t, rows in sorted(by_tier.items())},
-        "overall": aggregate([s for rows in by_tier.values() for s in rows]),
-        "latency_ms": {"p50": round(statistics.median(lat), 1),
-                       "p95": round(lat[min(len(lat) - 1, int(len(lat) * 0.95))], 1)} if lat else {},
-        "negatives_nonempty": sum(1 for s in neg[SCORE_FIELDS[0]] if s is not None),
-        "sweep": {f: sweep(pos[f], neg[f], fp_target) for f in SCORE_FIELDS},
-        "per_query": per_query,
-    }
-    ANALYSIS.mkdir(parents=True, exist_ok=True)
-    previous = sorted(ANALYSIS.glob("report_*.json"))
-    out = ANALYSIS / f"report_{now.strftime('%Y%m%dT%H%M%SZ')}.json"
-    out.write_text(json.dumps(report, indent=1), encoding="utf-8")
-    _print(report, json.loads(previous[-1].read_text(encoding="utf-8")) if previous else None, out)
-    return report
+        neg = {f: [] for f in SCORE_FIELDS}
+        neg_queries = golden.get("negatives", [])
+        for q in neg_queries:
+            res = search(q)
+            if res:
+                taxonomy_counts[ERROR_FALSE_POSITIVE] = taxonomy_counts.get(ERROR_FALSE_POSITIVE, 0) + 1
+            for f in SCORE_FIELDS:
+                neg[f].append(res[0].get(f) if res else None)
+
+        now = datetime.now(timezone.utc)
+        lat = sorted(latencies)
+        report = {
+            "created_utc": now.isoformat(timespec="seconds"), "created_eastern": _eastern(now),
+            "config": {"k": k, "embed": not no_embed and os.environ.get("NOUGEN_QUERY_EMBED", "1") != "0",
+                       "include_research": research,
+                       "distill_lanes": os.environ.get("NOUGEN_DISTILL_LANES", "1") != "0",
+                       "rerank": bool(getattr(core, "RERANK_ENABLED", False)), "domain": domain,
+                       "fp_target": fp_target, "golden": str(golden_path), "golden_created": golden.get("created_utc")},
+            "summary": {t: aggregate(rows) for t, rows in sorted(by_tier.items())},
+            "overall": aggregate([s for rows in by_tier.values() for s in rows]),
+            "latency_ms": {"p50": round(statistics.median(lat), 1),
+                           "p95": round(lat[min(len(lat) - 1, int(len(lat) * 0.95))], 1)} if lat else {},
+            "negatives_total": len(neg_queries),
+            "negatives_nonempty": sum(1 for s in neg[SCORE_FIELDS[0]] if s is not None),
+            "domain_leaks": domain_leaks,
+            "taxonomy_counts": taxonomy_counts,
+            "sweep": {f: sweep(pos[f], neg[f], fp_target) for f in SCORE_FIELDS},
+            "per_query": per_query,
+        }
+        target_dir = Path(out_dir) if out_dir is not None else ANALYSIS
+        if write_report:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            previous = sorted(target_dir.glob("report_*.json"))
+            out = target_dir / f"report_{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+            out.write_text(json.dumps(report, indent=1), encoding="utf-8")
+            _print(report, json.loads(previous[-1].read_text(encoding="utf-8")) if previous else None, out)
+        return report
+    finally:
+        core.lost_in_the_middle_reorder = orig_reorder
 
 
 def _print(rep: dict, prev, out: Path):
@@ -296,9 +453,34 @@ def main(argv=None):
     r.add_argument("--no-embed", action="store_true")
     r.add_argument("--fp-target", type=float, default=0.2)
     r.add_argument("--domain", default="*")
+    g = sub.add_parser("gate")
+    g.add_argument("--golden", type=Path, default=GOLDEN)
+    g.add_argument("--k", type=int, default=10)
+    g.add_argument("--no-embed", action="store_true")
+    g.add_argument("--fp-target", type=float, default=0.2)
+    g.add_argument("--domain", default="*")
+    g.add_argument("--min-recall5", type=float, default=0.85)
+    g.add_argument("--min-mrr", type=float, default=0.70)
+    g.add_argument("--max-fp-rate", type=float, default=0.20)
+    g.add_argument("--max-p95-ms", type=float, default=2000.0)
+    g.add_argument("--max-domain-leaks", type=int, default=0)
+    g.add_argument("--no-write", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "build":
         build(a.n, a.neg, a.seed, a.include_research)
+    elif a.cmd == "gate":
+        rep = run(a.golden, a.k, a.no_embed, a.fp_target, a.domain, write_report=not a.no_write)
+        verdict = evaluate_gate(
+            rep,
+            min_recall5=a.min_recall5,
+            min_mrr=a.min_mrr,
+            max_fp_rate=a.max_fp_rate,
+            max_p95_ms=a.max_p95_ms,
+            max_domain_leaks=a.max_domain_leaks,
+        )
+        print(json.dumps(verdict, indent=2))
+        if not verdict["passed"]:
+            raise SystemExit(1)
     else:
         run(a.golden, a.k, a.no_embed, a.fp_target, a.domain)
 
