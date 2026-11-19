@@ -462,10 +462,13 @@
     mindmap: "Produce a mind map as a nested markdown bullet outline (2-space indents, max 4 levels). Root = the video topic. Branches = main themes in order, leaves = concrete details with [m:ss]. Output ONLY the outline.",
     quiz: "Write 5 multiple-choice questions testing the key ideas. Each: question, options A-D, then \"Answer: X — [m:ss]\".",
     custom: "", brief: "Give a one-line gist, then 5-8 key points as bullets, each with its timestamp.", deep: "Give a sectioned deep-dive: ### headings per topic in order, bullets under each with timestamps, then 'Recommended to watch' (the 3 most valuable moments as [m:ss] links with why), 'Notable quotes' and 'Action items'.", steps: "Extract the procedure as numbered steps with timestamps, plus prerequisites and gotchas.", tldr: "Three sentences max, plus the single most important timestamp." };
-  function stream(messages, onDelta, onDone) {
-    const v0 = S.vid, od = onDelta, oe = onDone; onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); };
+  // bound: a job that writes into the open video's state (summary, chat). Navigating away cancels
+  // it and drops its late output; unbound jobs (batch, morph) keep running and always settle.
+  function stream(messages, onDelta, onDone, bound) {
+    const v0 = S.vid, od = onDelta, oe = onDone;
+    if (bound) { onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); }; }
     if (S.port) { try { S.port.disconnect(); } catch {} }
-    const port = S.port = chrome.runtime.connect({ name: "chat" }); let fin = false;
+    const port = S.port = chrome.runtime.connect({ name: "chat" }); port.bound = !!bound; let fin = false;
     // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
     const ka = setInterval(() => { try { port.postMessage({ ping: 1 }); } catch {} }, 15000);
     const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); onDone(e, m); };
@@ -720,13 +723,13 @@
         sys = `You are NouGenTube, writing about the YouTube video "${vtitle()}". Below are grounded, timestamped notes covering the whole video in order. Use only these notes; keep [m:ss] timestamps. When you quote, use only passages that appear inside double quotes on the QUOTE: lines, exactly as written. Markdown only.\n\nNOTES:\n${notes}`;
       } catch (e) { if (S.model === "auto") { sys = SYS(); S.mapInfo = ""; bd.innerHTML = loader("Finding the best available route", "", S.sT0); } else { S.summary = "⚠ " + e.message; b.disabled = false; b.textContent = "Regenerate"; return render(); } } }
     stream([{ role: "system", content: sys }, { role: "user", content: task }], d => { S.summary += d; if (S.tab === "summary") bd.innerHTML = show(S.summary) + WRITING; },
-      (e, fin) => { S.summary += e; if (fin) S.summary += `\n\n— ${fin.model}, ${fin.tokens} tokens, ${Math.round((Date.now() - S.sT0) / 1000)}s, ${fin.where}${S.mapInfo ? " · map: " + S.mapInfo : ""}${fin.failed && fin.failed.length ? ` · after ${fin.failed.length} failed route${fin.failed.length === 1 ? "" : "s"}` : ""}`; save(); render(); });
+      (e, fin) => { S.summary += e; if (fin) S.summary += `\n\n— ${fin.model}, ${fin.tokens} tokens, ${Math.round((Date.now() - S.sT0) / 1000)}s, ${fin.where}${S.mapInfo ? " · map: " + S.mapInfo : ""}${fin.failed && fin.failed.length ? ` · after ${fin.failed.length} failed route${fin.failed.length === 1 ? "" : "s"}` : ""}`; save(); render(); }, true);
   }
   function ask(q) {
     S.chat.push({ role: "user", content: q }, { role: "assistant", content: "" }); render(); const a = S.chat[S.chat.length - 1];
     S.onStage = null; S.onReset = () => { a.content = ""; };
     stream([{ role: "system", content: SYS() + (S.lng && S.lng !== "Auto" ? `\nAlways answer in ${S.lng}.` : "") }, ...S.chat.slice(0, -1).filter(m => m.scope !== "lib").slice(-10)], d => { a.content += d; if (S.tab === "chat") { const ms = $("bd").querySelectorAll(".msg"); ms[ms.length - 1].innerHTML = md(a.content); $("bd").scrollTop = 1e9; } },
-      e => { a.content += e; save(); render(); });
+      e => { a.content += e; save(); render(); }, true);
   }
 
   // ---------- Translate the transcript (Glasp: "in the language you choose"; NoteGPT: 60+ languages) ----------
@@ -976,7 +979,7 @@
     if (!mount()) return setTimeout(load, 500);
     if (!alive()) return render();
     if (vid === S.vid) return;
-    if (S.port) { try { S.port.disconnect(); } catch {} S.port = null; }
+    if (S.port?.bound) { try { S.port.disconnect(); } catch {} S.port = null; }
     Object.assign(S, { vid, lines: [], paras: [], err: null, summary: "", chat: [], hl: {}, q: "", tT0: Date.now(), tStage: "", shardMsg: "", morph: null, tr: null }); render();
     const st = (await chrome.storage.local.get(key()))[key()]; if (st) Object.assign(S, st);
     Object.assign(S, await chrome.storage.sync.get(["sty", "len", "lng", "custom"])); render(); note();

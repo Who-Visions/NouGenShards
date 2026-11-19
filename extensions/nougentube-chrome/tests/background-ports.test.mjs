@@ -17,7 +17,7 @@ const plain = x => JSON.parse(JSON.stringify(x));
 const T = { timeout: 5000 };   // a request that hangs fails in 5 s instead of stalling the run
 const abortError = () => new DOMException('aborted', 'AbortError');
 const fast = (fn, ms, ...a) => setTimeout(fn, ms / 1000, ...a);
-const reply = (body, ok = true, status = 200) => ({ ok, status, json: async () => body });
+const reply = (body, ok = true, status = 200) => ({ ok, status, json: async () => body, text: async () => JSON.stringify(body) });
 // A request that never answers; it fails with an AbortError only if the caller aborts it.
 const hangs = seen => (_u, { signal } = {}) => new Promise((_, reject) => { seen.signal = signal; signal?.addEventListener('abort', () => reject(abortError())); });
 
