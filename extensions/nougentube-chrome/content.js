@@ -269,7 +269,7 @@
     host = document.createElement("div"); host.id = "nougentube"; host.style.cssText = "top:72px;z-index:5;display:block"; where.el.prepend(host); place();
     root = host.attachShadow({ mode: "open" });
     // Action chips are spans; give each actionable one button semantics, focus and Enter/Space activation.
-    const chipify = () => root.querySelectorAll("span.chip").forEach(c => { if ((c.id || c.attributes.length > 2 || c.onclick) && !c.hasAttribute("tabindex")) { c.setAttribute("role", "button"); c.tabIndex = 0; } });
+    const chipify = () => root.querySelectorAll("span.chip").forEach(c => { if ((c.id || c.onclick || [...c.attributes].some(a => a.name.startsWith("data-"))) && !c.hasAttribute("tabindex")) { c.setAttribute("role", "button"); c.tabIndex = 0; } });
     new MutationObserver(chipify).observe(root, { childList: true, subtree: true });
     root.addEventListener("keydown", e => { const c = e.target; if (c?.matches?.("span.chip[role=button]") && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); c.click(); } });
     root.innerHTML = `<style>${CSS}</style><div class="p">
