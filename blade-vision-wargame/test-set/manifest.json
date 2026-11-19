@@ -1,0 +1,504 @@
+{
+  "built": "2026-11-19",
+  "congress": {
+    "camera": "Forest Hill Blvd & S Congress Ave (pbc-wf01-9d7b-fbc9-f7cb-d0c1)",
+    "frames": [
+      {
+        "file": "fh-001.jpg",
+        "ground_truth_count": 3,
+        "ground_truth_vehicles": [
+          {
+            "id": "V1",
+            "movement": "unclassified",
+            "note": "White SUV mid-intersection, taillights facing the camera (heading north-east). Entry and exit both unobserved: gone by fh-002."
+          },
+          {
+            "id": "V2",
+            "movement": "unclassified",
+            "note": "Far east leg, taillights, heading east. Its movement through the intersection happened before the burst."
+          },
+          {
+            "id": "V3",
+            "movement": "unclassified",
+            "note": "Second car on the far east leg with V2, taillights, heading east. Movement through the intersection unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:28Z",
+        "sha256": "e473fe2546b1608f9ca1932cea9f58dc5bfc4e6f2931f62b2ad0d76889b83e2c"
+      },
+      {
+        "file": "fh-002.jpg",
+        "ground_truth_count": 2,
+        "ground_truth_vehicles": [
+          {
+            "id": "V2",
+            "movement": "unclassified",
+            "note": "Far east leg, taillights, heading east. Its movement through the intersection happened before the burst."
+          },
+          {
+            "id": "V3",
+            "movement": "unclassified",
+            "note": "Second car on the far east leg with V2, taillights, heading east. Movement through the intersection unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:33Z",
+        "sha256": "36c9c64371e4c20909ddfa5ee36a868bc33f4612ad125a9b50c8880327d1936e"
+      },
+      {
+        "file": "fh-003.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:27:38Z",
+        "sha256": "68d0073ff6dc215727e75749b52eec2dae9440bb8c88e2f79a04e8d3ca296fca"
+      },
+      {
+        "file": "fh-004.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:43Z",
+        "sha256": "5c418ffdb4f379e036bd7c836e7b277236dc5651bc7189f0aeba63f8bb720655"
+      },
+      {
+        "file": "fh-005.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:48Z",
+        "sha256": "1e7d946859d2b43f1324ab154fcef2da857807d1ceb6e3a9061f9c804d321b07"
+      },
+      {
+        "file": "fh-006.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:53Z",
+        "sha256": "d6b6da364a42ef1f708b2dcf2eb9d70f1717b09b570638ae4552e33d77f65d34"
+      },
+      {
+        "file": "fh-007.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:27:58Z",
+        "sha256": "b224e27d099e1700a9f18d204acd921fbac0d1940724f0e8669ed0ccbc0ef874"
+      },
+      {
+        "file": "fh-008.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:28:03Z",
+        "sha256": "0b68712f9b46807c35e48f33c13465feba942b34eefe149c5d1ce86e0b63ee0c"
+      },
+      {
+        "file": "fh-009.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:28:18Z",
+        "sha256": "122d5b98a5763ac212356e6af024cb78d653be3821f9e906452116dd618ec1de"
+      },
+      {
+        "file": "fh-010.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V4",
+            "movement": "through",
+            "note": "Dark car, headlights facing the camera, crawled south across 7 frames; last seen 03:28:23 south of the intersection centre, past both turn exits, still heading due south. The exit itself is unobserved (20 s feed gap to fh-011). Through under either approach reading."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:28:23Z",
+        "sha256": "b13f3c2ec76d729eb11c3e5cc0f73f80bd2f9be6364bddaa36408778ca876cb3"
+      },
+      {
+        "file": "fh-011.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:28:43Z",
+        "sha256": "fb34edc487925cb3636382dd6270ef3bc96307ded3fe18fac3f582a917d05d7f"
+      },
+      {
+        "file": "fh-012.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:28:48Z",
+        "sha256": "5cd15bddfb6b6a181095a00b3e46bff81ef1dd0bd08b9a46b153a2dcb516e660"
+      },
+      {
+        "file": "fh-016.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:28:53Z",
+        "sha256": "1d846ee3102fa881ffd5f82d8e05096c6f41cc4060a0119a2896c38a63927e3e"
+      },
+      {
+        "file": "fh-019.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:28:58Z",
+        "sha256": "e1f0915930e55906e66c98d0d021a8efb98b7f5445c432672e24108249bc4a1d"
+      },
+      {
+        "file": "fh-020.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V7",
+            "movement": "unclassified",
+            "note": "Dark car mid-intersection heading east-north-east at fh-020, far east leg at fh-021. Entered during all-red between fh-019 and fh-020; entry leg unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:03Z",
+        "sha256": "7ecaf7227267a0301d670c4e3f745311395b7052e78a955268432c0143cbc2d4"
+      },
+      {
+        "file": "fh-021.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V7",
+            "movement": "unclassified",
+            "note": "Dark car mid-intersection heading east-north-east at fh-020, far east leg at fh-021. Entered during all-red between fh-019 and fh-020; entry leg unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:08Z",
+        "sha256": "fa150d86ffea2b49d613d5ad53f0f17f55b6e1710082c781e5a7c8cc72b58903"
+      },
+      {
+        "file": "fh-022.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V8",
+            "movement": "unclassified",
+            "note": "Light sedan, side profile, heading west in the south lanes. Consistent with a U-turn east of the intersection or an early left from NB Congress; entry and exit unobserved. Not a clean left/through/right."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:13Z",
+        "sha256": "64663e47c1c31893c4396ae6abfd588e3692aade7731fa08dfe992c2fae23b11"
+      },
+      {
+        "file": "fh-023.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:29:18Z",
+        "sha256": "d852a18fde3c5401388fd8753983689074b5a9d0607d2b275f4cc9bc143d6a3f"
+      },
+      {
+        "file": "fh-024.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:29:23Z",
+        "sha256": "41587b64d9611d89a4b7c531b603b06e48a78cc61215dc0181871224d40b7eb5"
+      },
+      {
+        "file": "fh-025.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:29:28Z",
+        "sha256": "2b615a6fb57b7cab5861516a3fa944ccd7deed8dcc53eacd8ffefbe6332959e9"
+      },
+      {
+        "file": "fh-026.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:29:33Z",
+        "sha256": "e94d67d2ca45f5159cd33492c519243c0b62336cf884121734f93b40d9d3c7ea"
+      },
+      {
+        "file": "fh-027.jpg",
+        "ground_truth_count": 3,
+        "ground_truth_vehicles": [
+          {
+            "id": "V13",
+            "movement": "unclassified",
+            "note": "Dark car, far east leg, taillights. Re-sighted at the same spot fh-030/fh-031/fh-034 (queue crawl) and counted once, not again."
+          },
+          {
+            "id": "V14",
+            "movement": "unclassified",
+            "note": "Second car on the far east leg with V13, taillights. Movement through the intersection unobserved."
+          },
+          {
+            "id": "V15",
+            "movement": "unclassified",
+            "note": "Right edge at fh-027, bottom-right moving south at fh-028. Reads as an EB-to-SB right turn, but the exit onto the south leg was never seen (gone by fh-029; may have used the SE-corner driveway). Unclassified."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:38Z",
+        "sha256": "5b801557c95519ea29f23d222d5fdb3908dfd7c3e59a205cbd010fc0d01a8a41"
+      },
+      {
+        "file": "fh-028.jpg",
+        "ground_truth_count": 2,
+        "ground_truth_vehicles": [
+          {
+            "id": "V12",
+            "movement": "unclassified",
+            "note": "White car with headlights, centre-right. Vanishes by fh-029; the centre of that frame is behind water droplets. Single-frame sighting."
+          },
+          {
+            "id": "V15",
+            "movement": "unclassified",
+            "note": "Right edge at fh-027, bottom-right moving south at fh-028. Reads as an EB-to-SB right turn, but the exit onto the south leg was never seen (gone by fh-029; may have used the SE-corner driveway). Unclassified."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:43Z",
+        "sha256": "f71c24e01ec7a0db80f452305bb201ec8aff4c8ef9e96cf48a37a4544231fc62"
+      },
+      {
+        "file": "fh-029.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V9",
+            "movement": "unclassified",
+            "note": "Dark car, red taillight bar, centre of the intersection heading north. Gone by fh-030 with no car on the north leg; exit unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:48Z",
+        "sha256": "bc57f69222a766f87babbb6cc568b0126c9bb1c755fd84e407390a46ac5b9cdf"
+      },
+      {
+        "file": "fh-030.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:53Z",
+        "sha256": "334091ebcacfc8ddada255af3092569a2173d27f5b3b550b57f97c3e6f0da18c"
+      },
+      {
+        "file": "fh-031.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:29:58Z",
+        "sha256": "5787f7b9742fc3538b3a594ba2b401ecfb249439166b631c3bcec76fcd376562"
+      },
+      {
+        "file": "fh-032.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          }
+        ],
+        "in_frame_ts": null,
+        "sha256": "720e0835169460d92451dc0663bb1ee34f494e56c467796c4a5917c8813ad539"
+      },
+      {
+        "file": "fh-033.jpg",
+        "ground_truth_count": 1,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:30:08Z",
+        "sha256": "36e541d6067a4072002c5c51da2709e06d579a347702f5c73ee9b06c420e0b61"
+      },
+      {
+        "file": "fh-034.jpg",
+        "ground_truth_count": 3,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          },
+          {
+            "id": "V11",
+            "movement": "unclassified",
+            "note": "Dark car at the bottom edge, heading west (same pattern as V8). Single-frame sighting; entry and exit unobserved."
+          },
+          {
+            "id": "V18",
+            "movement": "unclassified",
+            "note": "Dark car at the far left edge, red glow (taillights facing the intersection). Already past the intersection heading west; movement through it unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:30:13Z",
+        "sha256": "afbc5cb26ee241896c816759f941cec9ef32969cc17aeae8ffaf18b488ed82b5"
+      },
+      {
+        "file": "fh-035.jpg",
+        "ground_truth_count": 2,
+        "ground_truth_vehicles": [
+          {
+            "id": "V10",
+            "movement": "unclassified",
+            "note": "Dark car, headlights facing the camera, crawled south across 6 frames; last seen 03:30:18 still in the intersection box, north of the south crosswalk. Exit unobserved (40 s feed gap to fh-036). Through-or-right, not resolved."
+          },
+          {
+            "id": "V19",
+            "movement": "unclassified",
+            "note": "Dark car with taillights on the east leg, closer to the intersection than the fh-027 queue. First seen fh-035; movement through the intersection unobserved."
+          }
+        ],
+        "in_frame_ts": "2026-11-19T08:30:18Z",
+        "sha256": "9f76cebacafe1d8d36b4f860f530f8a49a62d318abeef9d2a1527a50a82306ac"
+      },
+      {
+        "file": "fh-036.jpg",
+        "ground_truth_count": 0,
+        "ground_truth_vehicles": [],
+        "in_frame_ts": "2026-11-19T08:30:58Z",
+        "sha256": "fbf97d991e50889c4e356a1381dc8b05785b74286ce82fecfd71f0b8d7e264c1"
+      }
+    ],
+    "frames_n": 31,
+    "ground_truth_source": "~/workspace/eye-turning/turning-counts.json (human review of all 31 distinct frames, 2026-11-19)",
+    "ground_truth_totals": {
+      "left": 0,
+      "right": 0,
+      "through": 1,
+      "total": 15,
+      "unclassified": 14
+    },
+    "note": "Per-frame counts count vehicles VISIBLE in that frame per the human review. A vehicle seen in 6 frames (e.g. V10) is counted once in the totals but appears in each frame it is visible in. The model is scored per-frame against ground_truth_count, and on the 15-vehicle total across the set. 14/15 vehicles are unclassified by the human \u2014 the model cannot beat that on movement; score movement only on V-through (the 1 classified through) and count accuracy on the rest."
+  },
+  "military": {
+    "camera": "Forest Hill Blvd & Military Trl (pbc-wf01-943e-2bc2-f22e-2cd6)",
+    "frames": [
+      {
+        "file": "fh-001.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:29:36Z",
+        "sha256": "16e3006db6a870604e80be62d7e206affffe35e5c6a212ba5f3b69c675c4e68b"
+      },
+      {
+        "file": "fh-002.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:29:41Z",
+        "sha256": "c5aeb8aed5fc47f128c851050f738384449e3b63a7d93aa647aa06ba9495f2b8"
+      },
+      {
+        "file": "fh-003.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:29:46Z",
+        "sha256": "5ad0e919138fb0767b3d66077770aadf1c1ca1894b6bb3759df426190774e0d4"
+      },
+      {
+        "file": "fh-004.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:29:51Z",
+        "sha256": "61c2e8f83a5fd322610581084ad6118dbfd0bca5a0dfe6036cfb4663e6ee3a8b"
+      },
+      {
+        "file": "fh-005.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:29:56Z",
+        "sha256": "ea2b1c78da531322aea2d6908c933e402b6496c45f4304f4928df15db5ce9333"
+      },
+      {
+        "file": "fh-006.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:01Z",
+        "sha256": "dbd728a7dc9002394221f6f500b0b1d4103f9f0e57e5dc8e875e981018f6d587"
+      },
+      {
+        "file": "fh-007.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:06Z",
+        "sha256": "0fe5996b695cbadcc9bdfa30c934e73cee4e243d9abd0e6595adb15acee6fe37"
+      },
+      {
+        "file": "fh-008.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:11Z",
+        "sha256": "ae2157b2821068b05427a363944cb9481bba2252a730171c439e020d4decbc54"
+      },
+      {
+        "file": "fh-009.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:16Z",
+        "sha256": "6d49ac9efb78ffc74ecf60228b427ac6d48eaea53a1a27c45a7ebcee122ce9e9"
+      },
+      {
+        "file": "fh-010.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:21Z",
+        "sha256": "c97f40cb77a614bf4802f75b2b288a820c21d8282119acdbbb4e162f6ad50b38"
+      },
+      {
+        "file": "fh-011.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:26Z",
+        "sha256": "0916623cb14c742e863f7705124e7025bf21b408ecb71fa531b1d638bc883c48"
+      },
+      {
+        "file": "fh-012.jpg",
+        "ground_truth_count": null,
+        "ground_truth_vehicles": null,
+        "in_frame_ts": "2026-11-19T07:30:31Z",
+        "sha256": "440e9af2d1573dafcf0ed792b81980207f567d36706b770cf2c47c18e29a2e99"
+      }
+    ],
+    "frames_n": 12,
+    "ground_truth_source": null,
+    "note": "No hand count exists for this set. Score descriptively only: per-frame vehicle count + conditions, to be compared against a hand count done at run time. Do NOT present Military counts as validated."
+  },
+  "test_set": "blade-vision-wargame v1",
+  "totals": {
+    "congress": 31,
+    "frames": 43,
+    "military": 12
+  }
+}
