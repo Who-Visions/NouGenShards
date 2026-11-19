@@ -1210,6 +1210,13 @@ async def _lifespan(_app):
     # misses its deadline on every query (phoebus, 2026-09-04). The process may
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
+    # A node whose vault folder is nearly empty while the local install's vault
+    # is full is serving the wrong folder. Warn by default; refuse only when
+    # NOUGEN_VAULT_MISMATCH=refuse (nougen_shards/vault_unify.py).
+    _configured_vault = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    if _configured_vault:
+        from nougen_shards import vault_unify as _vault_unify  # pylint: disable=import-outside-toplevel
+        _vault_unify.startup_check(Path(_configured_vault))
     # Heal the grid in background, and warm the recall cache immediately on a
     # background thread so the node binds its port now, and caches prime without waiting on full quarantine.
     _start_boot_quarantine()

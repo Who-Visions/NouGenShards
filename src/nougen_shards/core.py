@@ -366,7 +366,15 @@ def _resolve_vault_dir() -> Path:
     explicit = os.environ.get("NOUGEN_VAULT_DIR")
     if explicit:
         VAULT_SOURCE = "NOUGEN_VAULT_DIR"
-        return Path(explicit).expanduser().resolve()
+        chosen = Path(explicit).expanduser().resolve()
+        # A node folder may point at the vault a local install already filled,
+        # so the node and the local tools use one vault (vault_unify.py).
+        from . import vault_unify as _vault_unify  # pylint: disable=import-outside-toplevel
+        pointed = _vault_unify.read_pointer(chosen)
+        if pointed is not None:
+            VAULT_SOURCE = "NOUGEN_VAULT_DIR -> VAULT_POINTER"
+            return pointed
+        return chosen
 
     # Opt-in only, and anchored to the package rather than to CWD, so the
     # answer does not change with the directory a process happens to start in.
