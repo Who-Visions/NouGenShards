@@ -184,6 +184,8 @@ def _read_head(s: socket.socket, limit: int = 65536) -> bytes:
 
 # ------------------------------------------------------------------ minimal WebSocket
 SECURE_RELAY_SCHEMES = ("wss", "https")
+# The only path the relay worker upgrades on (workers/relay/worker.js).
+RELAY_CONNECT_PATH = os.environ.get("NOUGEN_RELAY_CONNECT_PATH", "/_relay/connect")
 
 
 class InsecureRelayURL(ValueError):
@@ -219,7 +221,10 @@ class WebSocket:
         raw = open_tunnel(u.hostname, port, timeout, env, resolver)
         sock = tls_context(env).wrap_socket(raw, server_hostname=u.hostname)
         key = base64.b64encode(os.urandom(16)).decode()
-        path = (u.path or "/") + (("?" + u.query) if u.query else "")
+        # The relay only upgrades on /_relay/connect; a bare origin
+        # (wss://relay.example) would GET "/" and receive a 404.
+        base_path = u.path if u.path not in ("", "/") else RELAY_CONNECT_PATH
+        path = base_path + (("?" + u.query) if u.query else "")
         host = u.hostname if u.port in (None, 443, 80) else f"{u.hostname}:{u.port}"
         lines = [f"GET {path} HTTP/1.1", f"Host: {host}", "Upgrade: websocket", "Connection: Upgrade",
                  f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", "User-Agent: nougen-relay"]
