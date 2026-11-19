@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "NouGenTube",
+  "version": "0.16.1",
+  "description": "YouTube transcript, summary, chat and shards. Runs on your own models: local Ollama, the NouGenOpen free fleet, or your own provider keys.",
+  "action": {
+    "default_title": "NouGenTube: bring the panel forward"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "declarativeNetRequest",
+    "power"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://localhost:11434/*",
+    "http://127.0.0.1:11434/*",
+    "http://127.0.0.1:8765/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.deepseek.com/*",
+    "https://openrouter.ai/*",
+    "https://integrate.api.nvidia.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "inject.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "design-tokens.js",
+        "morph-core.js",
+        "theme-core.js",
+        "batch-core.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ollama_origin",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "options_page": "options.html",
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
+}
