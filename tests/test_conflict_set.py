@@ -67,6 +67,53 @@ def test_reference_plus_cue_is_flagged_even_with_little_shared_vocabulary():
     assert found and found[0]["signal"] == "names_reference"
 
 
+def test_control_agreeing_negative_restatement_is_not_a_conflict():
+    first = shard(801, 1, "Acme licence",
+                  "Acme Mechanical is not a licensed medical gas contractor.", "2026-08-01T10:00:00Z")
+    again = shard(802, 2, "Acme licence confirmed",
+                  "Confirmed: Acme Mechanical is not a licensed medical gas contractor.",
+                  "2026-08-09T10:00:00Z")
+    assert cs.find_conflicts([first, again]) == []
+    # The real correction on the same subject is still caught.
+    assert len(cs.find_conflicts([OLD, FIX])) == 1
+
+
+def cloud(peer, shard_id, db, title, content, ts, tags=None):
+    """A hit as connectors/cloud.py returns it: ids rewritten, origin in source_locator."""
+    return {"id": f'cloud_["{peer}",{db},{shard_id}]', "_db_index": f"cloud_{peer}",
+            "source_locator": {"node": peer, "peer_id": peer, "db_index": db, "shard_id": shard_id},
+            "title": title, "content": content, "timestamp": ts, "tags": tags or []}
+
+
+def test_supersedes_marker_matches_shards_fetched_from_a_peer():
+    old = cloud("peer-a", 101, 1, "Acme Mechanical profile", "Gas fuel piping contractor.",
+                "2026-07-19T10:00:00Z")
+    fix = cloud("peer-a", 505, 2, "Acme licence status", "Eligible for exam only.",
+                "2026-08-06T09:00:00Z", tags=["supersedes:101@db1"])
+    found = cs.find_conflicts([old, fix])
+    assert found and found[0]["signal"] == "supersedes_marker"
+    assert found[0]["earlier"]["ref"] == "101@db1" and found[0]["later"]["ref"] == "505@db2"
+    assert found[0]["earlier"]["source_node"] == "peer-a"
+
+
+def test_same_id_on_two_peers_is_two_shards_not_one():
+    a = cloud("peer-a", 101, 1, "Acme Mechanical profile",
+              "Acme Mechanical is a gas fuel piping and medical gas contractor serving the county.",
+              "2026-07-19T10:00:00Z")
+    b = cloud("peer-b", 101, 1, "Correction: Acme Mechanical trade",
+              "Correction: Acme Mechanical installs residential air conditioning. The gas fuel piping "
+              "framing in the earlier profile is wrong.", "2026-08-03T15:00:00Z")
+    assert len(cs.find_conflicts([a, b])) == 1
+
+
+def test_without_timestamps_the_side_carrying_the_cue_is_the_disputing_side():
+    old = dict(OLD, timestamp="")
+    fix = dict(FIX, timestamp="")
+    for order in ([old, fix], [fix, old]):
+        found = cs.find_conflicts(order)
+        assert len(found) == 1 and found[0]["later"]["ref"] == "202@db4"
+
+
 def test_earlier_shard_cannot_dispute_a_later_one():
     early_fix = dict(FIX, timestamp="2026-01-01T00:00:00Z")
     assert cs.find_conflicts([OLD, early_fix]) == []

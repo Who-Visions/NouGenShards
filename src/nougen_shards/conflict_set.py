@@ -39,6 +39,8 @@ ENV_MAX_PAIRS = "NOUGEN_CONFLICT_MAX_PAIRS"
 ENV_SNIPPET_CHARS = "NOUGEN_CONFLICT_SNIPPET_CHARS"
 ENV_SCAN_CHARS = "NOUGEN_CONFLICT_SCAN_CHARS"
 
+ENV_RESTATEMENT_JACCARD = "NOUGEN_CONFLICT_RESTATEMENT_JACCARD"
+_FALLBACK_RESTATEMENT_JACCARD = 0.6
 _FALLBACK_MIN_OVERLAP = 4
 _FALLBACK_MIN_JACCARD = 0.08
 _FALLBACK_MAX_PAIRS = 5
@@ -80,8 +82,28 @@ def enabled() -> bool:
     return os.environ.get(ENV_ENABLED, "1").strip().lower() not in ("0", "false", "off", "no")
 
 
+def _locator(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Where a shard fetched from a peer really lives. Peer results arrive with
+    ``id`` rewritten to ``cloud_<identity>`` and ``_db_index`` to
+    ``cloud_<peer>``; the id and database a correction would name are kept in
+    ``source_locator``."""
+    loc = item.get("source_locator")
+    return loc if isinstance(loc, dict) else {}
+
+
 def _key(item: Dict[str, Any]) -> Tuple[str, str]:
+    """The (shard id, database) a reference such as ``101@db1`` would name."""
+    loc = _locator(item)
+    if loc.get("shard_id") is not None:
+        return str(loc.get("shard_id")), str(loc.get("db_index") if loc.get("db_index") is not None else "")
     return str(item.get("id", "")), str(item.get("_db_index", item.get("db", "")) or "")
+
+
+def _identity(item: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Unique per shard across nodes: the same id and database on two different
+    peers are two different shards."""
+    sid, db = _key(item)
+    return sid, db, str(_locator(item).get("node") or "")
 
 
 def _ref(item: Dict[str, Any]) -> str:
@@ -132,6 +154,7 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     min_jaccard = _env_float(ENV_MIN_JACCARD, _FALLBACK_MIN_JACCARD)
     max_pairs = _env_int(ENV_MAX_PAIRS, _FALLBACK_MAX_PAIRS)
     scan_chars = _env_int(ENV_SCAN_CHARS, _FALLBACK_SCAN_CHARS)
+    restatement_jaccard = _env_float(ENV_RESTATEMENT_JACCARD, _FALLBACK_RESTATEMENT_JACCARD)
 
     prepared = []
     for rank, item in enumerate(items):
@@ -149,10 +172,15 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     for i, a in enumerate(prepared):
         for b in prepared[i + 1:]:
-            if _key(a["item"]) == _key(b["item"]):
+            if _identity(a["item"]) == _identity(b["item"]):
                 continue
-            # The disputing side is the later one; without timestamps, the one
-            # that carries the cue.
+            # Which side is disputing which:
+            #  - both timestamps known: only the later shard can dispute the
+            #    earlier one;
+            #  - a timestamp missing: either order is tried, and the disputing
+            #    side is the one that carries the marker or the cue. If both
+            #    sides qualify equally, the higher-ranked hit is reported as the
+            #    disputing side (``a`` comes first in rank order).
             pair = None
             for later, earlier in ((a, b), (b, a)):
                 if later["ts"] and earlier["ts"] and later["ts"] < earlier["ts"]:
@@ -163,13 +191,18 @@ def find_conflicts(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if signal is None and later["cue"]:
                     shared = later["tokens"] & earlier["tokens"]
                     union = later["tokens"] | earlier["tokens"]
-                    if len(shared) >= min_overlap and union and len(shared) / len(union) >= min_jaccard:
+                    jaccard = len(shared) / len(union) if union else 0.0
+                    # Two shards that both carry a cue and say nearly the same
+                    # thing are a restatement ("X is not licensed" /
+                    # "Confirmed: X is not licensed"), not a disagreement.
+                    restated = earlier["cue"] and jaccard >= restatement_jaccard
+                    if len(shared) >= min_overlap and jaccard >= min_jaccard and not restated:
                         signal = "cue_overlap"
                 if signal and (pair is None or strength[signal] > strength[pair["signal"]]):
                     pair = {"signal": signal, "later": later, "earlier": earlier}
             if pair is None:
                 continue
-            ident = frozenset((_key(pair["later"]["item"]), _key(pair["earlier"]["item"])))
+            ident = frozenset((_identity(pair["later"]["item"]), _identity(pair["earlier"]["item"])))
             if ident in seen:
                 continue
             seen.add(ident)
@@ -191,7 +224,7 @@ def _describe(side: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ref": _ref(item), "rank": side["rank"], "timestamp": side["ts"],
         "title": str(item.get("title") or "").strip(),
-        "source_node": str(item.get("source_node") or item.get("node") or ""),
+        "source_node": str(_locator(item).get("node") or item.get("source_node") or item.get("node") or ""),
     }
 
 
