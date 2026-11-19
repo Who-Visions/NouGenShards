@@ -43,6 +43,8 @@ ENV_FREE_HEADROOM = "NOUGEN_VAULT_UNIFY_FREE_HEADROOM_MB"
 # setup itself can write a handful (a welcome note, a connection test).
 _FALLBACK_STRAY_MAX = 5
 _FALLBACK_FREE_HEADROOM_MB = 256
+ENV_BACKUP_NAME_TRIES = "NOUGEN_VAULT_UNIFY_BACKUP_NAME_TRIES"
+_FALLBACK_BACKUP_NAME_TRIES = 100
 
 SAME = "same_path"
 POINTED = "pointed"
@@ -109,8 +111,49 @@ def read_pointer(vault_dir: Path) -> Optional[Path]:
 
 
 def resolve(vault_dir: Path) -> Path:
-    """The vault a folder really stands for (follows one pointer)."""
+    """The vault a folder really stands for (follows one pointer).
+
+    ``read_pointer`` returns a path that is already user-expanded and resolved.
+    """
     return read_pointer(vault_dir) or Path(vault_dir)
+
+
+ENV_VAULT = "NOUGEN_VAULT_DIR"
+ENV_CONFIGURED = "NOUGEN_VAULT_DIR_CONFIGURED"
+
+
+def configured_vault() -> str:
+    """The vault folder this process was started with, before any pointer was
+    followed. Empty when none was set."""
+    return (os.environ.get(ENV_CONFIGURED, "") or os.environ.get(ENV_VAULT, "")).strip()
+
+
+def adopt_pointer_into_env() -> Optional[Path]:
+    """Follow the pointer once for the whole process.
+
+    Many modules read ``NOUGEN_VAULT_DIR`` straight from the environment instead
+    of asking ``core``. If only ``core`` followed the pointer, those readers
+    would keep opening the nearly empty node folder after a repair. So when the
+    configured folder holds a pointer, the environment variable itself is
+    repointed (the original is kept in ``NOUGEN_VAULT_DIR_CONFIGURED``), and
+    every reader, and every child process, sees the one vault.
+
+    Called from the package ``__init__``. Never raises.
+    """
+    try:
+        raw = os.environ.get(ENV_VAULT, "").strip()
+        if not raw:
+            return None
+        target = read_pointer(Path(raw).expanduser())
+        if target is None:
+            return None
+        os.environ.setdefault(ENV_CONFIGURED, raw)
+        os.environ[ENV_VAULT] = str(target)
+        log.warning("NouGen vault: %s points at %s; using that vault for this process", raw, target)
+        return target
+    except Exception as exc:  # pylint: disable=broad-except
+        log.warning("vault pointer not applied: %s", exc)
+        return None
 
 
 def db_files(vault_dir: Path) -> List[Path]:
@@ -276,7 +319,20 @@ def apply(node_vault: Path, local_vault: Optional[Path] = None, *,
         return report
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    backup_dir = root / f"vault_unify_{stamp}"
+    # Each repair gets a folder of its own. Two repairs in the same second
+    # used to share one and the second overwrote the first one's backups.
+    root.mkdir(parents=True, exist_ok=True)
+    backup_dir = None
+    for attempt in range(_env_int(ENV_BACKUP_NAME_TRIES, _FALLBACK_BACKUP_NAME_TRIES)):
+        candidate = root / (f"vault_unify_{stamp}" if attempt == 0 else f"vault_unify_{stamp}_{attempt}")
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        backup_dir = candidate
+        break
+    if backup_dir is None:
+        raise VaultUnifyError(f"could not create a fresh backup folder under {root}. Nothing was changed.")
     copied = {
         "node": _copy_vault_dbs(node_dir, backup_dir / "node"),
         "local": _copy_vault_dbs(local_dir, backup_dir / "local"),

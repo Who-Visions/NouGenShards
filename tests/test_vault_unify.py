@@ -142,6 +142,53 @@ def test_count_never_creates_or_modifies_a_vault(tmp_path):
     assert not missing.exists()
 
 
+def test_pointer_path_is_user_expanded_and_resolved(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    target = make_vault(home / "vault", 2)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    node = make_vault(tmp_path / "n", 0)
+    (node / vu.POINTER_NAME).write_text("~/vault/../vault", encoding="utf-8")
+    assert vu.read_pointer(node) == target.resolve()
+    assert vu.resolve(node) == target.resolve()
+
+
+def test_two_repairs_in_the_same_second_keep_separate_backups(vaults, tmp_path, monkeypatch):
+    node_a, _, tmp = vaults
+    node_b = make_vault(tmp_path / "second-account" / "shards", 2)
+    monkeypatch.setattr(vu.time, "strftime", lambda *a, **k: "20260101T000000Z")
+    first = vu.apply(node_a)
+    second = vu.apply(node_b)
+    assert first["backup_dir"] != second["backup_dir"]
+    assert vu.count_shards(tmp / "backups" / "vault_unify_20260101T000000Z" / "node") == 1
+    assert vu.count_shards(tmp / "backups" / "vault_unify_20260101T000000Z_1" / "node") == 2
+
+
+def test_readers_that_use_the_environment_directly_follow_the_pointer(vaults, monkeypatch):
+    """mrsb, persona, the HUDs and others read NOUGEN_VAULT_DIR themselves."""
+    node, local, _ = vaults
+    vu.apply(node)
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(node))
+    monkeypatch.delenv(vu.ENV_CONFIGURED, raising=False)
+    assert vu.adopt_pointer_into_env() == local.resolve()
+    import os
+    assert os.environ["NOUGEN_VAULT_DIR"] == str(local.resolve())
+    assert vu.configured_vault() == str(node)
+    # Running it again changes nothing and keeps the original on record.
+    assert vu.adopt_pointer_into_env() is None
+    assert vu.configured_vault() == str(node)
+
+
+def test_control_no_pointer_leaves_the_environment_alone(vaults, monkeypatch):
+    node, _, _ = vaults
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(node))
+    monkeypatch.delenv(vu.ENV_CONFIGURED, raising=False)
+    assert vu.adopt_pointer_into_env() is None
+    import os
+    assert os.environ["NOUGEN_VAULT_DIR"] == str(node)
+    assert vu.ENV_CONFIGURED not in os.environ
+
+
 def test_core_resolver_follows_the_pointer(vaults, monkeypatch):
     node, local, _ = vaults
     vu.apply(node)

@@ -3622,7 +3622,7 @@ def cmd_vault_unify(args):
     """Report, and with --apply repair, a node that opened a different vault
     folder than the one the local install filled (nougen_shards/vault_unify.py)."""
     from nougen_shards import vault_unify  # pylint: disable=import-outside-toplevel
-    node_vault = getattr(args, "node_vault", None) or os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    node_vault = getattr(args, "node_vault", None) or vault_unify.configured_vault()
     if not node_vault:
         print("No node vault to check: pass --node-vault, or set NOUGEN_VAULT_DIR to the "
               "folder the node was started with.", file=sys.stderr)
