@@ -44,8 +44,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RELAY_DIR = ROOT / "workers" / "relay"
 RELAY_CONFIG = RELAY_DIR / "wrangler.jsonc"
-# The relay worker only upgrades on this path; a bare origin gets 404.
-RELAY_CONNECT_PATH = os.environ.get("NOUGEN_GOLIVE_RELAY_PATH", "/_relay/connect")
+RELAY_WORKER = RELAY_DIR / "worker.js"
 JOIN_WORKER = ROOT / "workers" / "join" / "worker.js"
 CF_API = os.environ.get("NOUGEN_GOLIVE_CF_API", "https://api.cloudflare.com/client/v4")
 
@@ -150,6 +149,20 @@ def relay_config(path: Path = RELAY_CONFIG) -> tuple[str, str]:
     return kv[0], hosts[0]
 
 
+def relay_paths(path: Path = RELAY_WORKER) -> tuple[str, str]:
+    """(connect path, health path) as the relay worker routes them.
+
+    The worker only upgrades on its connect path; a bare origin 404s. Read
+    both from the worker source so this tool can never drift from it.
+    """
+    routes = set(re.findall(r'pathname\s*===\s*"(/[^"]+)"', path.read_text(encoding="utf-8")))
+    connect = sorted(r for r in routes if r.endswith("/connect"))
+    health = sorted(r for r in routes if r.endswith("/health"))
+    if not connect or not health:
+        raise GateError(f"{path.name}: could not find the connect and health routes")
+    return connect[0], health[0]
+
+
 def pinned_supervisor(path: Path = JOIN_WORKER) -> str:
     """The supervisor release tag the join worker downloads, e.g. supervisor-v1.3.2."""
     m = re.search(r"releases/download/(supervisor-v[0-9][^/\"']*)/", path.read_text(encoding="utf-8"))
@@ -179,7 +192,8 @@ def step_merged(ctx: Ctx) -> str:
 
 def step_relay(ctx: Ctx) -> str:
     ctx.kv_id, host = relay_config()
-    ctx.relay_url = f"wss://{host}{RELAY_CONNECT_PATH}"
+    connect, health = relay_paths()
+    ctx.relay_url = f"wss://{host}{connect}"
     r = ctx.run(keyfor_argv([sys.executable, str(Path(__file__).resolve()), "_cf-account", ctx.kv_id]))
     if r.returncode != 0:
         raise GateError(f"account resolve failed: {(r.stderr or r.stdout).strip()[-300:]}")
@@ -195,10 +209,10 @@ def step_relay(ctx: Ctx) -> str:
         did = "deployed"
     else:
         did = "dry run, would run: " + " ".join(shlex.quote(a) for a in deploy)
-    status, body = ctx.fetch(f"https://{host}/_relay/health", health_timeout())
+    status, body = ctx.fetch(f"https://{host}{health}", health_timeout())
     healthy = status == 200 and body.strip() == "ok"
     if ctx.apply and not healthy:
-        raise GateError(f"relay deployed but https://{host}/_relay/health answered {status} {body[:80]!r}")
+        raise GateError(f"relay deployed but https://{host}{health} answered {status} {body[:80]!r}")
     return f"account {ctx.account_id[:6]}... owns RELAY_AUTH {ctx.kv_id[:6]}...; {did}; health {status}{' ok' if healthy else ' (not live yet)'}"
 
 
@@ -235,7 +249,7 @@ def step_supervisor(ctx: Ctx) -> str:
 def step_join(ctx: Ctx) -> str:
     if not (ctx.relay_url and ctx.kv_id):
         ctx.kv_id, host = relay_config()
-        ctx.relay_url = f"wss://{host}{RELAY_CONNECT_PATH}"
+        ctx.relay_url = f"wss://{host}{relay_paths()[0]}"
     cmd = (f"$env:NOUGEN_JOIN_RELAY_URL='{ctx.relay_url}'; "
            f"$env:NOUGEN_JOIN_RELAY_AUTH_KV_ID='{ctx.kv_id}'; "
            f"python workers/join/deploy.py")

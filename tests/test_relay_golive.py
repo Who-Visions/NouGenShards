@@ -121,3 +121,25 @@ def test_cf_account_without_token(monkeypatch):
 
 def test_strip_jsonc_keeps_urls_in_strings():
     assert json.loads(rg.strip_jsonc('{"a": "https://x//y", // c\n "b": [1,],}')) == {"a": "https://x//y", "b": [1]}
+
+
+def test_relay_paths_come_from_worker_source():
+    connect, health = rg.relay_paths()
+    assert connect.endswith("/connect") and health.endswith("/health")
+
+
+def test_probe_and_url_use_worker_paths():
+    seen = []
+    lines = []
+    ctx = rg.Ctx(apply=False, run=FakeRun(), fetch=lambda u, t: (seen.append(u), (200, "ok"))[1])
+    assert rg.run_steps(ctx, out=lines.append) == 0
+    connect, health = rg.relay_paths()
+    assert seen and seen[0].endswith(health)
+    assert ctx.relay_url.endswith(connect)
+
+
+def test_relay_paths_missing_routes(tmp_path):
+    f = tmp_path / "worker.js"
+    f.write_text("export default {}", encoding="utf-8")
+    with pytest.raises(rg.GateError):
+        rg.relay_paths(f)
