@@ -3,7 +3,7 @@
   const S = { vid: null, lines: [], title: "", tab: "transcript", follow: true, summary: "", chat: [], hl: {}, port: null };
   const fmt = s => { s = Math.floor(s); const h = s / 3600 | 0, m = (s % 3600) / 60 | 0, x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
   const parseTs = t => t.split(":").map(Number).reduce((a, b) => a * 60 + b, 0);
-  const esc = t => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const video = () => document.querySelector("video.html5-main-video, video");
   const seek = t => { const v = video(); if (v) { v.currentTime = t; v.play(); } };
 
@@ -466,14 +466,20 @@
   // it and drops its late output; unbound jobs (batch, morph) keep running and always settle.
   function stream(messages, onDelta, onDone, bound) {
     const v0 = S.vid, od = onDelta, oe = onDone;
+    const onStage = S.onStage, onReset = S.onReset;
     if (bound) { onDelta = d => { if (S.vid === v0) od(d); }; onDone = (e, m) => { if (S.vid === v0) oe(e, m); }; }
-    if (S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
-    const port = S.port = chrome.runtime.connect({ name: "chat" }); port.bound = !!bound; let fin = false;
+    // Only bound (per-video summary/chat) streams share S.port; unbound jobs
+    // (morph, batch) keep isolated ports so concurrent streams never cancel each other.
+    if (bound && S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
+    const port = chrome.runtime.connect({ name: "chat" });
+    port.bound = !!bound;
+    if (bound) S.port = port;
+    let fin = false;
     // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
     const ka = setInterval(() => { try { port.postMessage({ ping: 1 }); } catch {} }, 15000);
-    const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); onDone(e, m); };
+    const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); if (bound && S.port === port) S.port = null; onDone(e, m); };
     port.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
-    port.onMessage.addListener(m => { if (m.stage && S.onStage) S.onStage(m.stage); if (m.reset && S.onReset) S.onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
+    port.onMessage.addListener(m => { if (m.stage && onStage) onStage(m.stage); if (m.reset && onReset) onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
     port.onDisconnect.addListener(() => end("\n\n⚠ The extension's background page stopped before the answer arrived. Press Regenerate."));
     port.postMessage({ messages });
   }
@@ -559,20 +565,23 @@
   async function shardIt(id) {
     const b = $(typeof id === "string" ? id : "shd"); if (!b || b.dataset.busy) return;
     if (!S.lines.length) { S.shardMsg = "Nothing to save yet: the transcript has not loaded."; return note(); }
+    const v0 = S.vid;
     const label = b.textContent; b.dataset.busy = "1"; b.innerHTML = '<span class="spin"></span> Saving';
     const has = !!S.summary.trim();
     const doc = {
       title: `${vtitle()} — NouGenTube ${has ? (STYN[S.sty] || "summary") : "transcript"}`.slice(0, 190), content: has ? reportDoc() : copyText(),
-      tags: ["nougentube", "tube-report:" + S.vid, has ? (S.sty || "summary") : "transcript"], source_uri: "https://www.youtube.com/watch?v=" + S.vid };
+      tags: ["nougentube", "tube-report:" + v0, has ? (S.sty || "summary") : "transcript"], source_uri: "https://www.youtube.com/watch?v=" + v0 };
     // Saving can take a while; use a kept-alive connection and retry once. A repeat is safe:
     // the vault recognises identical content and does not store it twice.
     const once = () => new Promise(res => { const p = chrome.runtime.connect({ name: "shard" }); const ka = setInterval(() => { try { p.postMessage({ ping: 1 }); } catch {} }, 15000);
       const fin = v => { clearInterval(ka); res(v); try { p.disconnect(); } catch {} };
       p.onMessage.addListener(fin); p.onDisconnect.addListener(() => fin(null)); p.postMessage({ doc }); });
     let r = await once(); if (!r) r = await once();
+    if (b.isConnected) { delete b.dataset.busy; b.textContent = label; }
+    if (S.vid !== v0) return;   // navigated away while saving: do not overwrite the new video's state
     S.shardMsg = r?.ok ? `Saved to NouGenShards: ${r.parts.length} shard${r.parts.length === 1 ? "" : "s"} (${r.parts.map(p => p.shard_id != null ? `${p.shard_id}@db${p.db_index}` : (p.captured ? "new" : "already stored")).join(", ")}).`
       : `Could not save to NouGenShards: ${r?.error || "the local bridge did not answer"}`;
-    delete b.dataset.busy; b.textContent = label; save(); render(); note();
+    save(); render(); note();
   }
 
   // ---------- Morph: turn the video's ideas into something to build, using what the vault already holds ----------
@@ -689,8 +698,15 @@
     const k = morphCheck(M), row = (ok, t) => `<div class="vr"><span class="${ok ? "vok" : "vno"}">${ok ? "✓" : "!"}</span><span>${t}</span></div>`;
     const kn = M.shards.filter(h => h.kind !== "video"), vd = M.shards.filter(h => h.kind === "video");
     const W = M.web || [], wmap = Object.fromEntries(W.map(w => [w.ref, w]));
-    const wlink = h => h.replace(/\[(w\d+)\]/g, (m, r) => wmap[r] ? `<a href="${esc(safeUrl(wmap[r].url))}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="${esc(wmap[r].title)}">[${r}]</a>` : m);
-    const wgrp = W.length ? `<div class="mu" style="padding:6px 0 2px">Latest on the web${M.webVia ? " (" + esc(M.webVia) + ")" : ""}</div>` + W.map(w => `<div class="vr"><span class="vok">${w.ref}</span><span><a href="${esc(safeUrl(w.url))}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${esc(w.title || w.url)}</a></span></div>`).join("") : "";
+    const wlink = h => h.replace(/\[(w\d+)\]/g, (m, r) => {
+      const w = wmap[r], u = w ? safeUrl(w.url) : "";
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="${esc(w.title || "")}">[${esc(r)}]</a>` : m;
+    });
+    const wgrp = W.length ? `<div class="mu" style="padding:6px 0 2px">Latest on the web${M.webVia ? " (" + esc(M.webVia) + ")" : ""}</div>` + W.map(w => {
+      const u = safeUrl(w.url);
+      const lbl = esc(w.title || w.url || "");
+      return `<div class="vr"><span class="vok">${esc(w.ref)}</span><span>${u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${lbl}</a>` : lbl}</span></div>`;
+    }).join("") : "";
     const grp = (t, a) => a.length ? `<div class="mu" style="padding:6px 0 2px">${t}</div>` + a.map(h => `<div class="vr"><span class="vok">${esc(refOf(h))}</span><span>${esc(h.title)}</span></div>`).join("") : "";
     bd.innerHTML = `<div class="acts"><span class="chip on" id="mc">Copy morph plan</span><span class="chip" id="mb" title="Copy the plan as a prompt you can paste into a coding agent">Copy build prompt</span><span class="chip" id="ms" title="Save this plan to NouGenShards">Shard it</span></div>` +
       (M.prior.length ? `<div class="mu">This video was morphed before: ${M.prior.map(h => esc(refOf(h))).join(", ")}.</div>` : "") +
@@ -699,9 +715,11 @@
       k.lines.map(r => row(r.ok, esc(r.text))).join("") + `</div>`;
     $("mc").onclick = () => navigator.clipboard.writeText(morphDoc(M)).then(() => { const e = $("mc"); e.textContent = "Copied ✓"; setTimeout(() => { if (e.isConnected) e.textContent = "Copy morph plan"; }, 1300); });
     $("mb").onclick = () => navigator.clipboard.writeText(["Build what this plan describes. Work through First build steps in order, one step at a time, and report after each. Recall each cited shard from NouGenShards by its reference before reusing it, and treat Gaps as open questions to resolve, not as work to invent.", "", morphDoc(M)].join(String.fromCharCode(10))).then(() => { const e = $("mb"); e.textContent = "Copied ✓"; setTimeout(() => { if (e.isConnected) e.textContent = "Copy build prompt"; }, 1300); });
-    $("ms").onclick = async () => { const b = $("ms"); if (b.dataset.busy) return; b.dataset.busy = "1"; b.innerHTML = '<span class="spin"></span> Saving';
-      const doc = { title: `${vtitle()} — NouGenTube morph (${tname(M)})`.slice(0, 190), content: morphDoc(M), tags: ["nougentube", "tube-morph:" + S.vid, "morph-" + M.target], source_uri: "https://www.youtube.com/watch?v=" + S.vid };
+    $("ms").onclick = async () => { const b = $("ms"); if (b.dataset.busy) return; const v0 = S.vid; b.dataset.busy = "1"; b.innerHTML = '<span class="spin"></span> Saving';
+      const doc = { title: `${vtitle()} — NouGenTube morph (${tname(M)})`.slice(0, 190), content: morphDoc(M), tags: ["nougentube", "tube-morph:" + v0, "morph-" + M.target], source_uri: "https://www.youtube.com/watch?v=" + v0 };
       let r = await portCall("shard", { doc }); if (!r) r = await portCall("shard", { doc });
+      if (b.isConnected) delete b.dataset.busy;
+      if (S.vid !== v0 || S.morph !== M) return;   // navigated away or re-morphed while saving
       S.shardMsg = r?.ok ? `Morph plan saved to NouGenShards: ${r.parts.map(p => p.shard_id != null ? `${p.shard_id}@db${p.db_index}` : "stored").join(", ")}.` : `Could not save to NouGenShards: ${r?.error || "the local bridge did not answer"}`;
       save(); renderMorph(); note(); };
   }
