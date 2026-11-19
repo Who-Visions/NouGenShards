@@ -162,3 +162,46 @@ def test_nothing_state_changing_or_code_running_is_on_either_tool_list():
              "release", "create", "put", "fetch", "crawl", "import", "verify", "solve", "review")
     for tool in ap.LOCAL_MCP_TOOLS + ap.GATEWAY_MCP_TOOLS:
         assert not any(word in tool for word in risky), tool
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX permission bits")
+def test_private_settings_file_stays_private(settings):
+    import os
+    import stat
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"allow": []}}), encoding="utf-8")
+    os.chmod(settings, 0o600)
+    old_umask = os.umask(0o022)
+    try:
+        ap.apply()
+        assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+        ap.remove()
+        assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+    finally:
+        os.umask(old_umask)
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX permission bits")
+def test_new_settings_file_is_created_owner_only(settings):
+    import os
+    import stat
+    old_umask = os.umask(0o022)
+    try:
+        ap.apply()
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+
+
+def test_a_failed_write_leaves_the_settings_and_no_temp_file(settings, monkeypatch):
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"allow": ["Bash(git status)"]}}), encoding="utf-8")
+    before = settings.read_text(encoding="utf-8")
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+    monkeypatch.setattr(ap.os, "replace", boom)
+    with pytest.raises(OSError):
+        ap.apply()
+    assert settings.read_text(encoding="utf-8") == before
+    assert not list(settings.parent.glob("*.nougen-tmp"))

@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,7 @@ ENV_GATEWAY_SERVER = "NOUGEN_AGENT_GATEWAY_SERVER"
 _FALLBACK_MCP_SERVER = "nougen-shards"
 _FALLBACK_CLI_NAMES = "nougen"
 MARKER_KEY = "nougenAgentPermissions"
+_NEW_FILE_MODE = 0o600
 
 # Read-only or own-vault commands. Prefix rules (``:*``) are used only where
 # every form of the subcommand is safe to run unattended.
@@ -187,9 +189,30 @@ def _write(path: Path, data: Dict[str, Any]) -> Optional[Path]:
             n += 1
             backup = path.with_name(f"{path.name}.nougen-backup-{stamp}-{n}")
         shutil.copy2(path, backup)
+    # Keep the file as private as it was. A settings file can hold credentials;
+    # writing the replacement with default permissions would turn a 0600 file
+    # into a world-readable one. A new file is created owner-only.
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else _NEW_FILE_MODE
+    except OSError:
+        mode = _NEW_FILE_MODE
     tmp = path.with_name(path.name + ".nougen-tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, _NEW_FILE_MODE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return backup
 
 
