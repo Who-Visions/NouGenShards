@@ -130,7 +130,7 @@
     return new Promise(resolve => {
       let clickedAt = 0, lastCount = -1, stableSince = 0, done = false, raf = 0; const t0 = performance.now();
       const finish = rows => {
-        if (done) return; done = true; obs.disconnect(); clearInterval(tick); clearTimeout(limit);
+        if (done) return; done = true; try { document.removeEventListener("visibilitychange", kick); } catch {} obs.disconnect(); clearInterval(tick); clearTimeout(limit);
         if (!userOpen) {
           document.querySelector(`${PANELS.split(",")[0]} #visibility-button button`)?.click();
           style.textContent = `${PANELS}{display:none!important}`;   // newer panels render even when "HIDDEN"
@@ -296,7 +296,7 @@
       addEventListener("resize", again); const flexy = document.querySelector("ytd-watch-flexy"); if (flexy) new MutationObserver(again).observe(flexy, { attributes: true });
     }
     root.getElementById("key").onclick = () => chrome.runtime.sendMessage({ type: "openOptions" });
-    root.addEventListener("click", e => { const a = e.target.closest("[data-seek]"); if (a) { e.stopPropagation(); seek(+a.dataset.seek); } });
+    root.addEventListener("click", e => { const a = e.target.closest("[data-seek]"); if (a) { e.preventDefault(); e.stopPropagation(); seek(+a.dataset.seek); } });
     chrome.runtime.sendMessage({ type: "models" }, r => { if (r?.ok) { S.models = r.models; S.model = r.current; S.labels = r.labels || {}; S.bridge = r.nougenopen; S.ollamaErr = r.ollamaErr; } root.getElementById("mdl").textContent = label(S.model || ""); render(); });
     return true;
   }
@@ -312,7 +312,7 @@
 
   // timestamps like [12:34] in model output -> clickable seek links
   function md(t) {
-    let h = esc(t).replace(/\[?\b(\d{1,2}:\d{2}(?::\d{2})?)\b(?:,\s*)?\]?/g, (m, ts) => `<a class="t" data-seek="${parseTs(ts)}">${ts}</a>${/,/.test(m) ? " " : ""}`)
+    let h = esc(t).replace(/\[?\b(\d{1,2}:\d{2}(?::\d{2})?)\b(?:,\s*)?\]?/g, (m, ts) => `<a class="t" href="#" role="button" data-seek="${parseTs(ts)}">${ts}</a>${/,/.test(m) ? " " : ""}`)
       .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/^#{1,4} (.+)$/gm, "<h3>$1</h3>");
     // Tables. Some models put a whole table on one line ("| a | b | |---|---| | x | y |"): split it into rows first.
     h = h.replace(/^\|.*\|\s*:?-{3,}.*$/gm, l => l.replace(/\|\s+\|/g, "|\n|"));
@@ -810,7 +810,7 @@
     stream([{ role: "system", content: sys }, ...hist], d => {
       a.content += d;
       if (S.tab === "chat" && S.scope === "lib") { const ms = $("bd").querySelectorAll(".msg"), el = ms[ms.length - 1]; if (el) el.innerHTML = md(a.content) + srcLine(a); }
-    }, e => { if (e) return fail(e.replace(/^[\s⚠]+/, "")); save(); render(); });
+    }, e => { if (e) return fail(e.replace(/^[\s⚠]+/, "")); save(); render(); }, true);
   }
 
   // ---------- Batch: many videos or a playlist, one summary each (NoteGPT: "batch summarize up to 20 videos") ----------
@@ -887,13 +887,14 @@
     B.running = true; B.stop = false; btPaint();
     const release = holdAwake();
     const tally = () => progress(B.items.filter(i => i.status === "done").length + "/" + B.items.length);
+    try {
     tally();
     for (const it of B.items) {
       if (B.stop) break;
       if (it.status !== "queued" && it.status !== "error") continue;
       try { await batchOne(it); tally(); } catch (e) { it.status = "error"; it.err = String(e.message || e).replace(/^[\s⚠]+/, ""); it.stage = ""; btSave(); btPaint(); }
     }
-    release(); B.running = false; btSave(); btPaint();
+    } finally { release(); B.running = false; btSave(); btPaint(); }
   }
   async function batchAdd(text) {
     const B = S.bt, notes = [], have = new Set(B.items.map(i => i.id));
