@@ -212,7 +212,7 @@ pyparsing==3.3.3
     # via httplib2
 python-dateutil==2.9.0.post0
     # via pandas
-python-multipart==0.0.32
+python-multipart==0.0.33
     # via
     #   gradio
     #   mcp
