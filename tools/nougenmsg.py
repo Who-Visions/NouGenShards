@@ -809,7 +809,10 @@ def main():
         return
 
     curr = get_current_node()
-    if not raw_text:
+    # A hop receiver must not re-style: the origin already finalized the text,
+    # and re-styling stamped it with THIS box's name and time ("BLADE /
+    # CLAUDE-CLI" on WhoArt's message), which also defeated delivery dedupe.
+    if not raw_text and not from_hop:
         text = house_style(text, curr, resolve_agent_label())
     if multi_target:
         res = NouGenMsgBus.send_resolved(multi_target, text, origin=origin)

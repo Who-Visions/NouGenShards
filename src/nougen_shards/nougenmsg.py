@@ -226,6 +226,61 @@ def coach_for_machine(value: str) -> str:
     return fleet_identity_maps()[1].get(normalized, normalized)
 
 
+def _ping_dedupe_ttl_s() -> float:
+    """Window in which an identical Claude ping is delivered only once.
+
+    NOUGEN_PING_DEDUPE_S overrides; 0 disables. The default is a logged
+    fallback, sized to cover the minutes-long gap seen between the direct
+    route and the ssh hop route delivering the same message.
+    """
+    raw = os.environ.get("NOUGEN_PING_DEDUPE_S", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else 600.0
+    except ValueError:
+        print(f"[nougenmsg] bad NOUGEN_PING_DEDUPE_S={raw!r}; using 600", file=sys.stderr)
+        return 600.0
+
+
+def _ping_seen_before(prompt: str, target_session: Optional[str]) -> bool:
+    """True when this exact prompt already went to the same audience recently.
+
+    A message can reach a box twice: once over the direct route and once over
+    the ssh hop (tools/nougenmsg.py --local --origin-b64). Each copy used to be
+    written into every live Claude session, so a 12-session box spent tokens on
+    every broadcast twice. Keyed on the prompt text plus the target session;
+    the ledger lives beside the Claude inbox and is pruned on every write.
+    Any I/O problem fails open (deliver), never silent loss.
+    """
+    ttl = _ping_dedupe_ttl_s()
+    if ttl <= 0:
+        return False
+    import hashlib
+    key = hashlib.sha256(f"{target_session or '*'}|{prompt}".encode("utf-8", "replace")).hexdigest()[:32]
+    try:
+        state_dir = os.path.join(os.path.dirname(AgentPinger._claude_inbox_dir()), "state")
+        os.makedirs(state_dir, exist_ok=True)
+        path = os.path.join(state_dir, "claude_ping_seen.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                seen = json.load(f)
+            if not isinstance(seen, dict):
+                seen = {}
+        except (OSError, ValueError):
+            seen = {}
+        now = time.time()
+        seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < ttl}
+        if key in seen:
+            return True
+        seen[key] = now
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(seen, f)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return False
+
+
 def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
     """The label a receiving session shows for a message.
 
@@ -529,6 +584,11 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
+        if _ping_seen_before(prompt, target_session):
+            return {"delivered": [], "pruned": [], "registered": 0, "inbox_file": None,
+                    "delivery_verified": False, "errors": [], "target_session": target_session,
+                    "duplicate": True,
+                    "note": "identical message already delivered to this box within NOUGEN_PING_DEDUPE_S; skipped"}
         source = display_sender(origin)
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
