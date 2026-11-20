@@ -21,6 +21,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'node_lane_repo.ps1')
 
 $Root      = Split-Path -Parent $PSScriptRoot          # ...\Outpost\NouGen
 $VenvPython = Join-Path $Root '.venv\Scripts\python.exe'
@@ -158,7 +159,25 @@ switch ($Action) {
     'start' {
         $running = Get-NodePid
         $listener = Get-ListenerPid
-        if ($listener) { "node already running (listener pid $listener) on $BaseUrl"; break }
+        if ($listener) {
+            # Only OUR node counts as running. A listener started from another
+            # checkout serves that checkout's code (2026-11-19: a dev tree on a
+            # PR branch, missing the leak fix, held 4444 while this lane said OK).
+            # NGS_NODE_ENFORCE_REPO=0 restores the old accept-anything behavior.
+            $owner = Get-ProcessRepo -ProcessId $listener
+            $enforce = $env:NGS_NODE_ENFORCE_REPO -ne '0'
+            if (-not $owner -or (Test-SameRepo $owner $Root) -or -not $enforce) {
+                "node already running (listener pid $listener, repo $(if ($owner) { $owner } else { 'unknown' })) on $BaseUrl"
+                break
+            }
+            if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
+            "$((Get-Date).ToString('o')) drift: listener pid $listener served from $owner, replacing with $Root" |
+                Add-Content -Path (Join-Path $RunDir 'drift.log')
+            "node DRIFT: listener pid $listener serves from $owner, not $Root; replacing it"
+            & $PSCommandPath stop
+            if ($LASTEXITCODE) { "node DRIFT: stop failed; leaving the foreign listener in place"; exit 1 }
+            $running = Get-NodePid
+        }
         if ($running) {
             # A launcher with no listener yet is usually still importing/warming
             # (~120s on blade). Killing it restarted the warm-up every time this
@@ -299,9 +318,12 @@ switch ($Action) {
     'status' {
         $running = Get-NodePid
         $listener = Get-ListenerPid
+        $owner = if ($listener) { Get-ProcessRepo -ProcessId $listener } else { $null }
+        $repoNote = if (-not $listener) { '' } elseif (-not $owner) { '  repo=unknown' } `
+            elseif (Test-SameRepo $owner $Root) { "  repo=$owner" } else { "  repo=$owner  DRIFT(expected $Root)" }
         try {
             $h = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 3
-            "UP    launcher=$running listener=$listener  $BaseUrl  shards=$($h.total_shards)  token=$($h.node_token_configured)  public_ready=$($h.public_ready)"
+            "UP    launcher=$running listener=$listener  $BaseUrl  shards=$($h.total_shards)  token=$($h.node_token_configured)  public_ready=$($h.public_ready)$repoNote"
         } catch {
             "DOWN  launcher=$running listener=$listener  $BaseUrl unreachable"
         }
