@@ -588,7 +588,7 @@ def test_lifetime_token_budget_survives_the_per_cycle_reset(env):
         dr.revive_failed(cfg, ports)
     assert dr.status()["tasks"] == {"blocked": 1}
     with dr._connect() as conn:
-        assert "lifetime token budget" in conn.execute("SELECT blocked_reason FROM tasks").fetchone()[0]
+        assert "token budget" in conn.execute("SELECT blocked_reason FROM tasks").fetchone()[0]  # lifetime cap or per-run cap
 
 
 def test_run_forever_survives_a_raising_pass_and_backs_off(env, tmp_path):
@@ -648,3 +648,22 @@ def test_old_database_without_revivals_column_is_migrated(env, tmp_path):
     conn.commit(); conn.close()
     with dr._connect(p) as c2:
         assert "revivals" in {r[1] for r in c2.execute("PRAGMA table_info(tasks)")}
+
+
+def test_revived_cycle_is_capped_by_remaining_lifetime_budget(env):
+    c = Clock()
+    seen = []
+
+    def ex(task, agent, route, ctx, strat):
+        seen.append(ctx["budget_tokens"])
+        return {"output": "x", "tokens": 10}
+
+    ports, _ = make_ports(c, destinies=[dest(1)], execute=ex,
+                          verify=lambda t, r: {"passed": False, "evidence": "red", "verifier": "judge"})
+    cfg = dr.Config(max_attempts=1, max_tasks_per_tick=1, revive_base_s=1.0, revive_max_s=1.0,
+                    task_token_budget=20, lifetime_token_budget=25)
+    dr.tick(cfg, ports)            # spends 10 of the 25 lifetime tokens
+    c.t += 5
+    dr.revive_failed(cfg, ports)
+    dr.tick(cfg, ports)            # revived cycle may use only the 15 left, not a fresh 20
+    assert seen == [20, 15]

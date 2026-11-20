@@ -642,10 +642,15 @@ def revive_failed(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> 
                 continue
             if now - r["updated"] < min(cfg.revive_max_s, cfg.revive_base_s * (2 ** r["revivals"])):
                 continue
+            # The per-cycle allowance is capped by what is left of the lifetime budget:
+            # _run_task derives "remaining" from tokens_spent, so seed it with the
+            # shortfall instead of 0 and a revived cycle cannot overshoot the lifetime cap.
+            life_left = cfg.lifetime_token_budget - r["life"]
+            seed_spent = max(0, cfg.task_token_budget - life_left)
             conn.execute(
-                "UPDATE tasks SET state=?, attempts=0, strategy_idx=0, tokens_spent=0, revivals=revivals+1, "
+                "UPDATE tasks SET state=?, attempts=0, strategy_idx=0, tokens_spent=?, revivals=revivals+1, "
                 "lease_owner=NULL, lease_expires=NULL, updated=? WHERE id=? AND state=?",
-                (QUEUED, now, r["id"], FAILED))
+                (QUEUED, seed_spent, now, r["id"], FAILED))
             conn.execute("INSERT INTO attempts (task_id,n,strategy,outcome,detail,ts) VALUES (?,?,?,?,?,?)",
                          (r["id"], r["attempts"], STRATEGIES[0], "revived",
                           f"revival {r['revivals'] + 1}/{cfg.max_revivals}", now))
