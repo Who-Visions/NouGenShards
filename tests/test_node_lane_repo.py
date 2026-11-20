@@ -58,5 +58,6 @@ def test_missing_repo_is_never_the_same():
 
 
 def test_unc_checkout_is_recognized():
-    cmd = r'"\server\share\NouGenShards\.venv\Scripts\python.exe" -m uvicorn app:app'
-    assert repo_of(cmd) == r"\server\share\NouGenShards"
+    unc = "\\\\server\\share\\NouGenShards"
+    cmd = '"' + unc + '\\.venv\\Scripts\\python.exe" -m uvicorn app:app'
+    assert repo_of(cmd) == unc
