@@ -31,17 +31,17 @@ def repo_of(cmdline: str) -> str:
 
 
 def test_launcher_venv_names_its_checkout():
-    cmd = r'"C:\Users\x\Watchtower\NouGen\NouGenShards-push-main\.venv\Scripts\python.exe" tools\ngs_node_serve.py'
-    assert repo_of(cmd) == r"C:\Users\x\Watchtower\NouGen\NouGenShards-push-main"
+    cmd = r'"C:\work\ngs-main\.venv\Scripts\python.exe" tools\ngs_node_serve.py'
+    assert repo_of(cmd) == r"C:\work\ngs-main"
 
 
 def test_unquoted_uvicorn_venv_path():
-    cmd = r"C:\Users\x\Watchtower\NouGenShards\.venv\Scripts\python.exe -m uvicorn app:app --port 4444"
-    assert repo_of(cmd) == r"C:\Users\x\Watchtower\NouGenShards"
+    cmd = r"C:\work\ngs-dev\.venv\Scripts\python.exe -m uvicorn app:app --port 4444"
+    assert repo_of(cmd) == r"C:\work\ngs-dev"
 
 
 def test_base_interpreter_has_no_repo():
-    cmd = r'"C:\Users\x\AppData\Local\Programs\Python\Python311\python.exe" -m uvicorn app:app'
+    cmd = r'"C:\Python311\python.exe" -m uvicorn app:app'
     assert repo_of(cmd) == "<none>"
 
 
