@@ -55,3 +55,8 @@ def test_dev_checkout_is_not_the_main_checkout():
 
 def test_missing_repo_is_never_the_same():
     assert ps(r"Test-SameRepo '' 'C:\A\NouGenShards'") == "False"
+
+
+def test_unc_checkout_is_recognized():
+    cmd = r'"\server\share\NouGenShards\.venv\Scripts\python.exe" -m uvicorn app:app'
+    assert repo_of(cmd) == r"\server\share\NouGenShards"

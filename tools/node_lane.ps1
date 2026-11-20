@@ -174,8 +174,11 @@ switch ($Action) {
             "$((Get-Date).ToString('o')) drift: listener pid $listener served from $owner, replacing with $Root" |
                 Add-Content -Path (Join-Path $RunDir 'drift.log')
             "node DRIFT: listener pid $listener serves from $owner, not $Root; replacing it"
+            # Judge the stop by the port, not $LASTEXITCODE: a successful stop never
+            # sets it, so a stale value from an earlier native call would lie.
             & $PSCommandPath stop
-            if ($LASTEXITCODE) { "node DRIFT: stop failed; leaving the foreign listener in place"; exit 1 }
+            $still = Get-ListenerPid
+            if ($still) { "node DRIFT: listener pid $still still holds :$Port after stop; not starting a second node"; exit 1 }
             $running = Get-NodePid
         }
         if ($running) {

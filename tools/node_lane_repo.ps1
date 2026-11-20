@@ -12,7 +12,8 @@ node from a foreign one.
 function Get-RepoFromCommandLine {
     param([string]$CommandLine)
     if (-not $CommandLine) { return $null }
-    $m = [regex]::Match($CommandLine, '(?i)"?([a-z]:\\[^"]*?)\\\.venv\\(?:Scripts|bin)\\python')
+    # Drive-letter (C:\...) or UNC (\\server\share\...) checkouts.
+    $m = [regex]::Match($CommandLine, '(?i)"?((?:[a-z]:|\\\\[^\\"\s]+\\[^\\"\s]+)\\[^"]*?)\\\.venv\\(?:Scripts|bin)\\python')
     if ($m.Success) { return $m.Groups[1].Value }
     return $null
 }
