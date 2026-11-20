@@ -196,7 +196,11 @@ export function setupCmd(raw) {
     // The file path reaches PowerShell through an env var, never as source text: a
     // folder like O'Connor (or a crafted name) must not be able to break out.
     `set "NG_SELF=%~f0"`,
-    `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(Get-Content -Raw -LiteralPath $env:NG_SELF) -split '(?m)^::PS\\s*$',2; iex $s[1]"`,
+    // No -ExecutionPolicy Bypass: that flag is the single most common reason a security
+    // product calls a setup file a dropper, and it does nothing here. The execution policy
+    // only governs script FILES; -Command text is never subject to it (checked on Windows
+    // with the policy forced to Restricted: the payload still runs).
+    `powershell -NoProfile -Command "$s=(Get-Content -Raw -LiteralPath $env:NG_SELF) -split '(?m)^::PS\\s*$',2; iex $s[1]"`,
     "exit /b", "::PS",
     "$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'",
     "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'",
