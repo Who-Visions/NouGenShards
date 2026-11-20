@@ -242,11 +242,28 @@ def probe_edge_dns(timeout: float = PROBE_TIMEOUT_S,
                  {"addrs": addrs, "srv": [f"{h}:{p}" for h, p in targets]})
 
 
-def _http_status(url: str, headers: dict, timeout: float) -> int:
+def _http_status(url: str, headers: dict, timeout: float,
+                 env: Optional[dict] = None,
+                 tunnel: Optional[Callable[..., socket.socket]] = None) -> int:
+    """GET url and return the status, dialling through the relay client's
+    proxy-aware tunnel (HTTPS_PROXY / ALL_PROXY / NO_PROXY, DoH fallback) so
+    discovery sees the same network path the relay client will use."""
     import http.client
+    from nougen_shards import relay_client
     p = urllib.parse.urlsplit(url)
-    cls = http.client.HTTPSConnection if p.scheme == "https" else http.client.HTTPConnection
-    c = cls(p.hostname, p.port, timeout=timeout)
+    https = p.scheme == "https"
+    port = p.port or (443 if https else 80)
+    sock = (tunnel or relay_client.open_tunnel)(p.hostname, port, timeout=timeout, env=env)
+    try:
+        sock.settimeout(timeout)
+        if https:
+            sock = relay_client.tls_context(env).wrap_socket(sock, server_hostname=p.hostname)
+    except Exception:
+        sock.close()
+        raise
+    cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
+    c = cls(p.hostname, port, timeout=timeout)
+    c.sock = sock  # pre-connected: http.client skips its own direct connect()
     try:
         c.request("GET", p.path + (f"?{p.query}" if p.query else ""), headers=headers)
         return c.getresponse().status
@@ -373,8 +390,20 @@ def run_probes(relay_url: str, node: dict, timeout: float = PROBE_TIMEOUT_S,
     dns = edge_dns(timeout=timeout)
     addrs = [a for a in dns.detail.get("addrs", [])
              if ipaddress.ip_address(a) not in FAKE_IP_NET]
-    target = addrs[0] if addrs else EDGE_FALLBACK_HOST
-    out["edge_tls_7844"] = edge_tls(target, EDGE_PORT, timeout).as_dict()
+    # Try every real address in deterministic order; one unreachable edge IP
+    # must not reject HTTP2 while another resolved address accepts TLS.
+    targets = addrs or [EDGE_FALLBACK_HOST]
+    tls = None
+    tried: list[str] = []
+    for target in targets:
+        tls = edge_tls(target, EDGE_PORT, timeout)
+        tried.append(target)
+        if tls.ok:
+            break
+    tls_d = tls.as_dict()
+    if len(targets) > 1:
+        tls_d["tried"] = tried
+    out["edge_tls_7844"] = tls_d
     out["edge_dns"] = dns.as_dict()
     node_id = ""
     if node:

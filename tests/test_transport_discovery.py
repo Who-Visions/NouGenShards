@@ -197,6 +197,75 @@ def test_relay_probe_against_fake_http_server():
     assert p.ok, p.reason
 
 
+def test_relay_probe_honors_https_proxy():
+    """The status probe goes through an HTTP CONNECT proxy, like relay_client."""
+    seen = {}
+
+    def proxy(c):
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += c.recv(4096)
+        seen["connect"] = head.split(b"\r\n", 1)[0]
+        c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        req = c.recv(4096)
+        seen["get"] = req.split(b"\r\n", 1)[0]
+        c.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    pport = _serve_once(proxy)
+    env = {"HTTPS_PROXY": f"http://127.0.0.1:{pport}"}
+    st = td._http_status("http://relay.invalid:8080/_relay/status?id=n1", {}, 3, env=env)
+    assert st == 401
+    assert seen["connect"] == b"CONNECT relay.invalid:8080 HTTP/1.1"
+    assert seen["get"].startswith(b"GET /_relay/status?id=n1")
+
+
+def test_http_status_dials_via_tunnel():
+    calls = []
+
+    def h(c):
+        c.recv(4096)
+        c.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    port = _serve_once(h)
+
+    def tunnel(host, p, timeout, env):
+        calls.append((host, p))
+        return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    assert td._http_status("http://relay.invalid/x", {}, 3, tunnel=tunnel) == 401
+    assert calls == [("relay.invalid", 80)]
+
+
+def test_run_probes_tries_every_edge_address():
+    tried = []
+
+    def dns(timeout):
+        return td.Probe(True, "ok", {"addrs": ["198.41.192.7", "198.41.200.13"]})
+
+    def tls(host, port, timeout):
+        tried.append(host)
+        return td.Probe(host == "198.41.200.13", f"tls {host}")
+
+    def relay(*a):
+        return td.Probe(False, "down")
+    out = td.run_probes(DEF, {}, timeout=1, edge_tls=tls, edge_dns=dns, relay=relay)
+    assert tried == ["198.41.192.7", "198.41.200.13"]
+    assert out["edge_tls_7844"]["ok"] is True
+    assert out["edge_tls_7844"]["tried"] == tried
+
+
+def test_run_probes_fails_tls_only_after_all_addresses():
+    tried = []
+
+    def dns(timeout):
+        return td.Probe(True, "ok", {"addrs": ["198.41.192.7", "198.41.200.13"]})
+
+    def tls(host, port, timeout):
+        tried.append(host)
+        return td.Probe(False, f"tcp connect {host} failed")
+    out = td.run_probes(DEF, {}, timeout=1, edge_tls=tls, edge_dns=dns,
+                        relay=lambda *a: td.Probe(False, "down"))
+    assert tried == ["198.41.192.7", "198.41.200.13"]
+    assert out["edge_tls_7844"]["ok"] is False
+
+
 # ------------------------------------------------------------------ cache
 def _muse(relay_url, node):
     return {
