@@ -176,3 +176,11 @@ def test_bad_tool_entries_never_crash_startup():
     assert scopes["a.test"] == {"name": None, "tools": frozenset({"ok_tool"})}
     assert "b.test" not in scopes and "c.test" not in scopes
     assert "nougenmsg" in scopes["msgs.example.test"]["tools"]
+
+
+def test_malformed_tool_call_names_are_refused_not_crashed():
+    app, inner = make()
+    for params in ({"name": None}, {"name": {"x": 1}}, {"name": ["nougenmsg"]}, {}, ["nougenmsg"], None):
+        res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params})
+        assert res["id"] == 9 and res["error"]["code"] == -32601, params
+    assert inner.seen == []

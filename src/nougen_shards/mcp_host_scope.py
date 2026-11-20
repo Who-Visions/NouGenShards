@@ -79,9 +79,13 @@ def _error(req_id: Any, message: str) -> dict:
 
 def _blocked(msg: Any, allowed: frozenset) -> Optional[dict]:
     if isinstance(msg, dict) and msg.get("method") == "tools/call":
-        name = (msg.get("params") or {}).get("name")
-        if name not in allowed:
-            return _error(msg.get("id"), f"tool '{name}' is not available on this connector")
+        params = msg.get("params")
+        name = params.get("name") if isinstance(params, dict) else None
+        # A missing, non-string or unhashable name is refused, not passed
+        # through: membership on a dict/list would raise and turn into a 500.
+        if not isinstance(name, str) or name not in allowed:
+            shown = name if isinstance(name, str) else type(name).__name__
+            return _error(msg.get("id"), f"tool '{shown}' is not available on this connector")
     return None
 
 
