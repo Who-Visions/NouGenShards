@@ -1056,7 +1056,8 @@ class NouGenMsgBus:
         return path[-1] not in local
 
     @classmethod
-    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None,
+                         forwarded: bool = False) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
         current = get_current_node()
@@ -1074,7 +1075,11 @@ class NouGenMsgBus:
         # origin box; only then is its machine/original_sender the truth.
         # Otherwise this process IS the origin, and a caller-typed node is a
         # claim: logged as a conflict, never used as the sender.
-        forwarded = cls._is_genuine_forward(supplied, ident["node"], current)
+        # Only the receiving end of a NouGenMsg hop (tools/nougenmsg.py decoding
+        # --origin-b64) passes forwarded=True. MCP tools, kaedra and other local
+        # callers hand in origin dicts directly and are always re-stamped,
+        # whatever relay_path they carry.
+        forwarded = bool(forwarded) and cls._is_genuine_forward(supplied, ident["node"], current)
         if forwarded:
             sender_machine = claimed_machine or current
             sender_id = supplied.get("machine_id") or "unknown"
@@ -1128,10 +1133,11 @@ class NouGenMsgBus:
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
                   origin: Optional[Dict[str, Any]] = None,
-                  models_async: bool = False) -> Dict[str, Any]:
+                  models_async: bool = False,
+                  forwarded: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
-        envelope = cls._origin_envelope(origin)
+        envelope = cls._origin_envelope(origin, forwarded=forwarded)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)

@@ -59,7 +59,7 @@ def test_forwarded_envelope_keeps_origin(monkeypatch):
     monkeypatch.setenv("NOUGEN_NODE", "relayhop")
     env = nougenmsg.NouGenMsgBus._origin_envelope({
         "machine": "nodeorigin", "machine_id": "bbbbbbbbbbbb",
-        "original_sender": "nodeorigin-claude", "relay_path": ["nodeorigin"]})
+        "original_sender": "nodeorigin-claude", "relay_path": ["nodeorigin"]}, forwarded=True)
     assert env["machine"] == "nodeorigin"
     assert env["original_sender"] == "nodeorigin-claude"
     assert env["conflicts"] == []
@@ -85,9 +85,24 @@ def test_local_send_cannot_spoof_via_relay_path(monkeypatch, supplied):
     monkeypatch.setattr(nougenmsg, "get_current_node", lambda: "nodea")
     if supplied.get("relay_path") == ["nodeb"] and supplied.get("machine") == "nodeb":
         # Legit single-hop forward from nodeb arriving at nodea: kept.
-        env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied))
+        env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied), forwarded=True)
         assert env["machine"] == "nodeb" and env["origin_trust"] == "forwarded-unverified"
         return
-    env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied))
+    env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied), forwarded=True)
     assert env["machine"] == "nodea"
     assert env["origin_trust"] == "stamped"
+
+
+def test_local_caller_with_plausible_relay_path_stays_local(monkeypatch):
+    """Reviewer's case: a local send that types a well-formed relay_path and
+    machine is still re-stamped, because it did not arrive over a hop."""
+    monkeypatch.setenv("NOUGEN_NODE", "nodea")
+    monkeypatch.setattr(nougenmsg, "get_current_node", lambda: "nodea")
+    for path in (["x"], ["nodeb"]):
+        env = nougenmsg.NouGenMsgBus._origin_envelope(
+            {"machine": "nodeb", "machine_id": "dddddddddddd", "relay_path": path})
+        assert env["machine"] == "nodea"
+        assert env["machine_id"] != "dddddddddddd"
+        assert env["origin_trust"] == "stamped"
+        assert env["conflicts"] == [{"field": "machine", "claimed": "nodeb",
+                                     "transport_observed": "nodea"}]
