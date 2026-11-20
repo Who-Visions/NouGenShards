@@ -5235,7 +5235,10 @@ NODE_PLUGINS = _load_node_plugins(app, node_mcp, ctx={
     "tenant_vault_context": tenant_vault_context,
     "tenants": tenants,
 })
-app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
+# Host scope inside the token gate: auth runs first, then a purpose-built
+# hostname (msgs.nougenai.com) sees only its own tools. See mcp_host_scope.py.
+from nougen_shards.mcp_host_scope import HostScopedMCP as _HostScopedMCP
+app.mount("/mcp", _TokenGatedMCP(_HostScopedMCP(_mcp_asgi)))
 # Added as middleware, not as a wrapper around `app`: the middleware stack runs
 # ahead of the router (which is what 404s the bare path) while `app` stays a
 # FastAPI instance for every route registered after this line.
