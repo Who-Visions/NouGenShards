@@ -471,7 +471,7 @@ class AgentPinger:
             out.append({
                 "session_id": sid,
                 "project": project or cwd,
-                "machine": str(entry.get("machine") or get_current_node()),
+                "machine": str(entry.get("machine") or current_machine_id()),
                 "agent": str(entry.get("agent") or "claude"),
                 "registered_utc": str(entry.get("registered_utc") or ""),
                 "live": _base(sock) in live,
@@ -501,7 +501,7 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        source = f"NouGenMsg-{get_current_node()}"
+        source = f"NouGenMsg-{current_machine_id()}"
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
         try:
@@ -645,8 +645,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -741,8 +741,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -1013,7 +1013,7 @@ class NouGenMsgBus:
     def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
-        current = get_current_node()
+        current = current_machine_id()
         lane = cls._sender_lane(supplied)
         if lane:
             # Bookkeeping only: record that this lane spoke, for reply routing.
@@ -1151,7 +1151,7 @@ class NouGenMsgBus:
                     """, (
                         msg_id,
                         envelope.get("timestamp") or time.time(),
-                        envelope.get("machine") or get_current_node(),
+                        envelope.get("machine") or current_machine_id(),
                         envelope.get("original_sender") or envelope.get("lane") or "agent",
                         node or get_current_node(),
                         target,
@@ -2160,9 +2160,89 @@ def _registry_node_names() -> set:
     return _full_registry_node_names()
 
 
-def _self_node_name() -> str:
+def _nodes_registry_path() -> Path:
+    override = os.environ.get("NOUGEN_NODES_CONFIG", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip():
+        return fleet_hosts_path().parent / "nodes.json"
+    return Path.home() / ".nougen" / "nodes.json"
+
+
+def _name_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def registry_node_for(*names: str) -> str:
+    """The transport node nodes.json files a hostname or alias under, or "".
+
+    A box whose hostname is only an alias of a fleet node (a Mac Mini reporting
+    "kushboygroups-mac-mini" that the registry files under "phoebus") must stamp
+    the registry's name, not the raw hostname. Names compare case-insensitively
+    and ignoring punctuation.
+
+    Two passes, so one entry can never steal another's identity:
+    1. the name IS a transport node (hostname "phoebus" is phoebus, even if some
+       earlier entry lists "phoebus" as an alias);
+    2. the name is an entry's machine, one of its aliases, or the first label of
+       its hostname-style ``ip`` or ``host``.
+    Coach names (``name``, ``coach``, the registry key) are deliberately not
+    machine identities: "Apollo" is a coach, and a box called apollo is not blade.
+    Malformed entries are skipped, never raised.
+    """
+    wanted = {_name_key(n) for n in names if n}
+    wanted.discard("")
+    if not wanted:
+        return ""
+    try:
+        configured = json.loads(_nodes_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    entries = []
+    for cfg in (configured.values() if isinstance(configured, dict) else ()):
+        if not isinstance(cfg, dict):
+            continue
+        transport = _name_key(cfg.get("transport_node"))
+        if transport:
+            entries.append((transport, cfg))
+    for transport, _cfg in entries:
+        if transport in wanted:
+            return transport
+    for transport, cfg in entries:
+        candidates = {_name_key(cfg.get("machine"))}
+        aliases = cfg.get("aliases")
+        if isinstance(aliases, (list, tuple)):
+            candidates.update(_name_key(a) for a in aliases if isinstance(a, str))
+        for field in ("ip", "host"):
+            value = cfg.get(field)
+            if isinstance(value, str) and value and not re.fullmatch(r"[0-9.:]+", value):
+                candidates.add(_name_key(value.split(".")[0]))
+        candidates.discard("")
+        if wanted & candidates:
+            return transport
+    return ""
+
+
+def current_machine_id() -> str:
+    """The name this box stamps on what it sends, on any computer or device.
+
+    A box listed in fleet_hosts.json keeps its fleet node name. Otherwise the
+    node registry (nodes.json) is asked whether this hostname is an alias of a
+    fleet node, so an aliased box keeps the fleet's name. Every other box (a new
+    laptop, a phone, a tenant's PC) is named at runtime from its own hostname or
+    a persisted device id, never the literal "standalone", so a reply always says
+    which machine it came from. Routing decisions still use get_current_node(),
+    whose "standalone" means "no fleet configured here".
+    """
     n = get_current_node()
-    return local_node() if not n or n == "standalone" else n
+    if n and n != "standalone":
+        return n
+    runtime = local_node()
+    return registry_node_for(runtime, resolve_origin_host()) or runtime
+
+
+def _self_node_name() -> str:
+    return current_machine_id()
 
 
 def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:
