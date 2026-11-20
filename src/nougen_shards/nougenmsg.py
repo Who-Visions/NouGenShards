@@ -241,44 +241,125 @@ def _ping_dedupe_ttl_s() -> float:
         return 600.0
 
 
-def _ping_seen_before(prompt: str, target_session: Optional[str]) -> bool:
-    """True when this exact prompt already went to the same audience recently.
+_MSG_ID_RE = re.compile(r"\[msg (m-[0-9a-f]{8,})\]")
 
-    A message can reach a box twice: once over the direct route and once over
-    the ssh hop (tools/nougenmsg.py --local --origin-b64). Each copy used to be
-    written into every live Claude session, so a 12-session box spent tokens on
-    every broadcast twice. Keyed on the prompt text plus the target session;
-    the ledger lives beside the Claude inbox and is pruned on every write.
-    Any I/O problem fails open (deliver), never silent loss.
+
+def _ping_key(prompt: str, target_session: Optional[str],
+              origin: Optional[Dict[str, Any]] = None) -> str:
+    """Identity of one delivery: the bus msg_id when the message carries one
+    (footer "[msg m-...]" or origin.message_id), else a hash of the text.
+
+    Keying on the id means two deliberate identical messages (two "ping"s,
+    two roll calls) are two messages; only the same message arriving over two
+    routes collapses. The target session is part of the key, so a targeted
+    copy and a broadcast copy are separate audiences.
+    """
+    mid = str((origin or {}).get("message_id") or "").strip()
+    if not mid:
+        m = _MSG_ID_RE.search(prompt or "")
+        mid = m.group(1) if m else ""
+    import hashlib
+    basis = f"id:{mid}" if mid else f"text:{prompt}"
+    return hashlib.sha256(f"{target_session or '*'}|{basis}".encode("utf-8", "replace")).hexdigest()[:32]
+
+
+class _PingLedger:
+    """Seen-message ledger beside the Claude inbox, serialized by a lock file.
+
+    Concurrent senders (direct route and hop route land within the same
+    second) would otherwise each read an empty ledger and both deliver. The
+    lock is held only for one read-modify-write, waits a bounded time, breaks
+    a stale lock, and on any failure the caller delivers (fail open).
+    """
+
+    def __init__(self) -> None:
+        state_dir = os.path.join(os.path.dirname(AgentPinger._claude_inbox_dir()), "state")
+        os.makedirs(state_dir, exist_ok=True)
+        self.path = os.path.join(state_dir, "claude_ping_seen.json")
+        self.lock = self.path + ".lock"
+
+    def _acquire(self) -> bool:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return True
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(self.lock) > 10:
+                        os.remove(self.lock)  # holder died mid-write
+                        continue
+                except OSError:
+                    pass
+                time.sleep(0.02)
+            except OSError:
+                return False
+        return False
+
+    def _release(self) -> None:
+        try:
+            os.remove(self.lock)
+        except OSError:
+            pass
+
+    def _load(self, ttl: float) -> Dict[str, float]:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        now = time.time()
+        if not isinstance(seen, dict):
+            return {}
+        return {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < ttl}
+
+    def update(self, key: str, ttl: float, mark: bool) -> bool:
+        """Return True if key is already recorded; when mark, record it."""
+        if not self._acquire():
+            return False
+        try:
+            seen = self._load(ttl)
+            if key in seen:
+                return True
+            if mark:
+                seen[key] = time.time()
+                tmp = self.path + f".{os.getpid()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(seen, f)
+                os.replace(tmp, self.path)
+            return False
+        finally:
+            self._release()
+
+
+def _ping_seen_before(prompt: str, target_session: Optional[str],
+                      origin: Optional[Dict[str, Any]] = None) -> bool:
+    """True when this message already reached this box's Claude sessions.
+
+    A message can reach a box twice: over the direct route and over the ssh
+    hop (tools/nougenmsg.py --local --origin-b64). Read-only check; the key is
+    recorded by _ping_mark_delivered only after a delivery succeeds, so a
+    failed first attempt never suppresses the retry. Fails open.
     """
     ttl = _ping_dedupe_ttl_s()
     if ttl <= 0:
         return False
-    import hashlib
-    key = hashlib.sha256(f"{target_session or '*'}|{prompt}".encode("utf-8", "replace")).hexdigest()[:32]
     try:
-        state_dir = os.path.join(os.path.dirname(AgentPinger._claude_inbox_dir()), "state")
-        os.makedirs(state_dir, exist_ok=True)
-        path = os.path.join(state_dir, "claude_ping_seen.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                seen = json.load(f)
-            if not isinstance(seen, dict):
-                seen = {}
-        except (OSError, ValueError):
-            seen = {}
-        now = time.time()
-        seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < ttl}
-        if key in seen:
-            return True
-        seen[key] = now
-        tmp = path + f".{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(seen, f)
-        os.replace(tmp, path)
+        return _PingLedger().update(_ping_key(prompt, target_session, origin), ttl, mark=False)
     except OSError:
         return False
-    return False
+
+
+def _ping_mark_delivered(prompt: str, target_session: Optional[str],
+                         origin: Optional[Dict[str, Any]] = None) -> None:
+    ttl = _ping_dedupe_ttl_s()
+    if ttl <= 0:
+        return
+    try:
+        _PingLedger().update(_ping_key(prompt, target_session, origin), ttl, mark=True)
+    except OSError:
+        pass
 
 
 def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
@@ -584,7 +665,7 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        if _ping_seen_before(prompt, target_session):
+        if _ping_seen_before(prompt, target_session, origin):
             return {"delivered": [], "pruned": [], "registered": 0, "inbox_file": None,
                     "delivery_verified": False, "errors": [], "target_session": target_session,
                     "duplicate": True,
@@ -703,6 +784,8 @@ class AgentPinger:
                                **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
             except OSError:
                 inbox_file = None
+        if delivered or inbox_file:
+            _ping_mark_delivered(prompt, target_session, origin)
         if not sessions and not delivered:
             note = ("no registered live Claude Code session (SessionStart hook (nougenmsg_register.py on blade, nougenmsg_wake.py on phoebus) has not run, "
                     "or every registered session is gone); inbox file dropped for the drain hook")
