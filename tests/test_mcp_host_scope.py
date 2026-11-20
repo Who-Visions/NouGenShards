@@ -115,3 +115,55 @@ def test_nothing_configured_scopes_nothing():
     res = call(HostScopedMCP(inner, load_scopes({})), "msgs.example.test",
                {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert [t["name"] for t in res["result"]["tools"]] == ALL_TOOLS
+
+
+def test_real_mcp_server_end_to_end():
+    """Same transport settings as app.py, driven through a real ASGI stack:
+    allowed calls run, blocked calls refused, list filtered, other hosts untouched."""
+    import contextlib
+
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+    from starlette.testclient import TestClient
+
+    srv = MCPServer("NouGenShards")
+
+    @srv.tool()
+    def nougenmsg(message: str) -> str:
+        return "sent:" + message
+
+    @srv.tool()
+    def shard_forget(shard_id: int) -> str:
+        return "forgot"
+
+    inner = srv.streamable_http_app(
+        stateless_http=True, json_response=True, streamable_http_path="/",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        async with srv.session_manager.run():
+            yield
+
+    app = Starlette(routes=[Mount("/mcp", HostScopedMCP(inner, load_scopes({"NOUGEN_MCP_MSG_HOSTS": "msgs.example.test"})))],
+                    lifespan=lifespan)
+    hdr = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+
+    def rpc(client, host, method, params=None):
+        r = client.post("/mcp/", headers={**hdr, "host": host},
+                        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    with TestClient(app) as c:
+        init = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}
+        assert rpc(c, "msgs.example.test", "initialize", init)["result"]["serverInfo"]["name"] == "NouGenMsg"
+        names = [t["name"] for t in rpc(c, "msgs.example.test", "tools/list")["result"]["tools"]]
+        assert names == ["nougenmsg"]
+        ok = rpc(c, "msgs.example.test", "tools/call", {"name": "nougenmsg", "arguments": {"message": "hi"}})
+        assert "sent:hi" in json.dumps(ok["result"])
+        blocked = rpc(c, "msgs.example.test", "tools/call", {"name": "shard_forget", "arguments": {"shard_id": 1}})
+        assert blocked["error"]["code"] == -32601
+        assert sorted(t["name"] for t in rpc(c, "shards.example.test", "tools/list")["result"]["tools"]) == ["nougenmsg", "shard_forget"]

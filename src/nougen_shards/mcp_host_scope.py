@@ -132,9 +132,12 @@ class HostScopedMCP:
         sent = False
 
         async def replay():
+            # First call: the buffered body. After that, defer to the real
+            # receive so a framework watching for disconnect waits for an actual
+            # client disconnect instead of seeing a synthetic one at once.
             nonlocal sent
             if sent:
-                return {"type": "http.disconnect"}
+                return await receive()
             sent = True
             return {"type": "http.request", "body": body, "more_body": False}
 
