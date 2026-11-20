@@ -50,24 +50,24 @@ def call(app, host, payload):
 
 def make():
     inner = FakeMCP()
-    return HostScopedMCP(inner, load_scopes({})), inner
+    return HostScopedMCP(inner, load_scopes({"NOUGEN_MCP_MSG_HOSTS": "msgs.example.test"})), inner
 
 
 def test_msgs_host_lists_only_messaging_tools():
     app, _ = make()
-    res = call(app, "msgs.nougenai.com", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
 
 
 def test_other_hosts_pass_through_untouched():
     app, _ = make()
-    res = call(app, "shards.nougenai.com", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    res = call(app, "shards.example.test", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert [t["name"] for t in res["result"]["tools"]] == ALL_TOOLS
 
 
 def test_blocked_tool_call_never_reaches_the_server():
     app, inner = make()
-    res = call(app, "msgs.nougenai.com",
+    res = call(app, "msgs.example.test",
                {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "shard_forget", "arguments": {}}})
     assert res["id"] == 7 and res["error"]["code"] == -32601
     assert inner.seen == []
@@ -75,7 +75,7 @@ def test_blocked_tool_call_never_reaches_the_server():
 
 def test_allowed_tool_call_passes():
     app, inner = make()
-    res = call(app, "msgs.nougenai.com",
+    res = call(app, "msgs.example.test",
                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "nougenmsg", "arguments": {}}})
     assert res["result"] == {"called": "nougenmsg"} and len(inner.seen) == 1
 
@@ -83,13 +83,13 @@ def test_allowed_tool_call_passes():
 def test_initialize_renames_server_on_scoped_host_only():
     app, _ = make()
     init = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}
-    assert call(app, "msgs.nougenai.com", init)["result"]["serverInfo"]["name"] == "NouGenMsg"
-    assert call(app, "mcp.nougenai.com", init)["result"]["serverInfo"]["name"] == "NouGenShards"
+    assert call(app, "msgs.example.test", init)["result"]["serverInfo"]["name"] == "NouGenMsg"
+    assert call(app, "mcp.example.test", init)["result"]["serverInfo"]["name"] == "NouGenShards"
 
 
 def test_forwarded_host_and_port_are_honoured():
     app, _ = make()
-    scope_host = "MSGS.nougenai.com:443"
+    scope_host = "MSGS.example.test:443"
     res = call(app, scope_host, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     assert all(t["name"] in ("nougenmsg", "nougenmsg_inbox", "node_status") for t in res["result"]["tools"])
 
@@ -98,12 +98,20 @@ def test_batch_with_one_blocked_call_is_refused_whole():
     app, inner = make()
     batch = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "nougenmsg"}},
              {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "vault_put"}}]
-    res = call(app, "msgs.nougenai.com", batch)
+    res = call(app, "msgs.example.test", batch)
     assert isinstance(res, list) and res[0]["id"] == 2 and inner.seen == []
 
 
-def test_malformed_override_falls_back_to_defaults():
-    scopes = load_scopes({"NOUGEN_MCP_HOST_SCOPES": "{not json"})
-    assert "shard_forget" not in scopes["msgs.nougenai.com"]["tools"]
-    scopes = load_scopes({"NOUGEN_MCP_HOST_SCOPES": json.dumps({"x.test": {"name": "X", "tools": ["a"]}})})
+def test_malformed_override_keeps_messaging_hosts_scoped():
+    scopes = load_scopes({"NOUGEN_MCP_MSG_HOSTS": "msgs.example.test", "NOUGEN_MCP_HOST_SCOPES": "{not json"})
+    assert "shard_forget" not in scopes["msgs.example.test"]["tools"]
+    scopes = load_scopes({"NOUGEN_MCP_HOST_SCOPES": json.dumps({"X.test": {"name": "X", "tools": ["a"]}})})
     assert set(scopes) == {"x.test"} and scopes["x.test"]["tools"] == frozenset({"a"})
+
+
+def test_nothing_configured_scopes_nothing():
+    assert load_scopes({}) == {}
+    inner = FakeMCP()
+    res = call(HostScopedMCP(inner, load_scopes({})), "msgs.example.test",
+               {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert [t["name"] for t in res["result"]["tools"]] == ALL_TOOLS

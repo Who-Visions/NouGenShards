@@ -2,7 +2,7 @@
 
 The node's full MCP server carries every tool (vault writes, shard deletion,
 remote exec). Some public hostnames front that same server for one purpose:
-``msgs.nougenai.com`` is the NouGenMsg connector, so a client that adds it
+a messages hostname is the NouGenMsg connector, so a client that adds it
 should see messaging tools, not the whole vault. This ASGI wrapper sits inside
 the token gate and, only for a scoped host:
 
@@ -14,8 +14,11 @@ the token gate and, only for a scoped host:
 
 Every other host passes through byte for byte. The MCP app runs in stateless
 JSON mode (one JSON body per request), which is what makes buffering safe here.
-Scopes come from ``NOUGEN_MCP_HOST_SCOPES`` (JSON ``{host: {"name":..,
-"tools": [..]}}``) and default to the msgs scope below.
+Which hosts are scoped is deployment config, never code (operator hostnames
+stay out of the public runtime): ``NOUGEN_MCP_MSG_HOSTS`` is a comma list of
+hosts that get the messaging profile below, and ``NOUGEN_MCP_HOST_SCOPES``
+(JSON ``{host: {"name":.., "tools": [..]}}``) adds or overrides any host.
+With neither set, no host is scoped and every request passes through.
 """
 from __future__ import annotations
 
@@ -36,27 +39,29 @@ MSGS_TOOLS = (
     "node_status",
 )
 
-DEFAULT_SCOPES: Dict[str, Dict[str, Any]] = {
-    "msgs.nougenai.com": {"name": "NouGenMsg", "tools": list(MSGS_TOOLS)},
-}
+MESSAGING_PROFILE: Dict[str, Any] = {"name": "NouGenMsg", "tools": list(MSGS_TOOLS)}
 
 
 def load_scopes(env: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any]]:
-    """Scopes keyed by lower-case host. A malformed override falls back to the
-    defaults rather than opening every host to every tool."""
+    """Scopes keyed by lower-case host, built from the environment only.
+    A malformed JSON override is ignored (the messaging hosts still apply), so a
+    typo never widens a scoped host back to every tool."""
     env = os.environ if env is None else env
+    scopes: Dict[str, Dict[str, Any]] = {}
+    for host in (env.get("NOUGEN_MCP_MSG_HOSTS") or "").split(","):
+        if host.strip():
+            scopes[host.strip().lower()] = MESSAGING_PROFILE
     raw = (env.get("NOUGEN_MCP_HOST_SCOPES") or "").strip()
-    scopes = DEFAULT_SCOPES
     if raw:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, dict) and all(
                 isinstance(v, dict) and isinstance(v.get("tools"), list) for v in parsed.values()
             ):
-                scopes = parsed
+                scopes.update({h.lower(): v for h, v in parsed.items()})
         except ValueError:
             pass
-    return {h.lower(): {"name": v.get("name"), "tools": frozenset(v["tools"])} for h, v in scopes.items()}
+    return {h: {"name": v.get("name"), "tools": frozenset(v["tools"])} for h, v in scopes.items()}
 
 
 def _host(scope: dict) -> str:
