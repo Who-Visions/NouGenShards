@@ -55,12 +55,15 @@ def load_scopes(env: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any
     if raw:
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, dict) and all(
-                isinstance(v, dict) and isinstance(v.get("tools"), list) for v in parsed.values()
-            ):
-                scopes.update({h.lower(): v for h, v in parsed.items()})
         except ValueError:
-            pass
+            parsed = None
+        # Entry by entry: a bad host entry is skipped, never fatal. Scopes load
+        # when app.py mounts /mcp, so raising here would keep the node from booting.
+        if isinstance(parsed, dict):
+            for host, v in parsed.items():
+                if isinstance(host, str) and isinstance(v, dict) and isinstance(v.get("tools"), list):
+                    name = v.get("name") if isinstance(v.get("name"), str) else None
+                    scopes[host.lower()] = {"name": name, "tools": [t for t in v["tools"] if isinstance(t, str)]}
     return {h: {"name": v.get("name"), "tools": frozenset(v["tools"])} for h, v in scopes.items()}
 
 

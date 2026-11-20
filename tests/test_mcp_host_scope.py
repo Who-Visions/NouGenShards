@@ -167,3 +167,12 @@ def test_real_mcp_server_end_to_end():
         blocked = rpc(c, "msgs.example.test", "tools/call", {"name": "shard_forget", "arguments": {"shard_id": 1}})
         assert blocked["error"]["code"] == -32601
         assert sorted(t["name"] for t in rpc(c, "shards.example.test", "tools/list")["result"]["tools"]) == ["nougenmsg", "shard_forget"]
+
+
+def test_bad_tool_entries_never_crash_startup():
+    bad = json.dumps({"a.test": {"name": 5, "tools": [{"x": 1}, ["y"], "ok_tool", 7]},
+                      "b.test": {"tools": "not-a-list"}, "c.test": "nope"})
+    scopes = load_scopes({"NOUGEN_MCP_MSG_HOSTS": "msgs.example.test", "NOUGEN_MCP_HOST_SCOPES": bad})
+    assert scopes["a.test"] == {"name": None, "tools": frozenset({"ok_tool"})}
+    assert "b.test" not in scopes and "c.test" not in scopes
+    assert "nougenmsg" in scopes["msgs.example.test"]["tools"]
