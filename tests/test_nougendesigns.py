@@ -39,7 +39,7 @@ class DesignTests(unittest.TestCase):
 
     def test_mono_violet_colorways_pass_contrast_and_match_outputs(self):
         spec = json.loads((ROOT / 'designs/mono-violet/design.json').read_text())
-        self.assertEqual(sorted(spec['themes']), ['arcade', 'dark', 'hardcade', 'light'])
+        self.assertEqual(sorted(spec['themes']), ['arcade', 'dark', 'hardcade', 'light', 'youtube'])
         self.assertTrue(design.lint(spec)['passed'])
         for name, body in design.render(spec).items():
             self.assertEqual(body, (ROOT / 'designs/mono-violet' / name).read_text())

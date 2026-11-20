@@ -220,6 +220,15 @@
   .ln{display:flex;gap:10px;padding:7px 10px;border-radius:8px;cursor:pointer;position:relative}
   .ln:hover{background:var(--card)}.ln.now{background:color-mix(in srgb,var(--ac) 16%,transparent)}
   .ln.hl{box-shadow:inset 3px 0 var(--ac2)}
+  /* YouTube red & gold (Figma: NouGenTube — YouTube Red & Gold) */
+  .p[data-theme=youtube] .lg{background:var(--ac);border-radius:8px}
+  .p[data-theme=youtube] .ti small{color:var(--ac2);font-weight:500}
+  .p[data-theme=youtube] #hs{background:var(--ac);border-color:var(--ac);color:var(--ink);font-weight:600}
+  .p[data-theme=youtube] .tabs button.on{border-bottom-color:transparent;border-image:linear-gradient(90deg,var(--ac),var(--ac2)) 1;font-weight:700}
+  .p[data-theme=youtube] .chip.on{border-color:var(--ac2);color:var(--ac2)}
+  .p[data-theme=youtube] .ts{font-weight:500}
+  .p[data-theme=youtube] .ln.now{background:var(--raised);box-shadow:inset 3px 0 var(--ac)}
+  .p[data-theme=youtube] .ln.hl{background:color-mix(in srgb,var(--ac2) 12%,transparent);box-shadow:inset 3px 0 var(--ac2)}
   .ts{color:var(--ac2);font-variant-numeric:tabular-nums;font-size:12px;min-width:42px;padding-top:2px;cursor:pointer;background:none;border:0;text-align:left}
   .st{position:absolute;right:6px;top:6px;opacity:0}.ln:hover .st{opacity:1}
   mark{background:var(--warn);color:var(--ink);border-radius:2px}
@@ -310,8 +319,8 @@
   }
   const $ = id => root.getElementById(id);
   // Mono Violet colorways. Auto follows YouTube's own light or dark setting.
-  const THEMES = ["auto", "dark", "light", "arcade", "hardcade"];
-  const THEME_NAMES = { auto: "Auto (matches YouTube)", dark: "Mono Violet dark", light: "Mono Violet light", arcade: "Arcade", hardcade: "Hardcade" };
+  const THEMES = ["auto", "dark", "light", "arcade", "hardcade", "youtube"];
+  const THEME_NAMES = { auto: "Auto (matches YouTube)", dark: "Mono Violet dark", light: "Mono Violet light", arcade: "Arcade", hardcade: "Hardcade", youtube: "YouTube red & gold" };
   function applyTheme() { const p = root && root.querySelector(".p"); if (!p) return; const t = S.theme || "auto";
     p.dataset.theme = t === "auto" ? NGT_THEME.resolveAuto({ ytBackground: getComputedStyle(document.documentElement).getPropertyValue("--yt-spec-base-background"), ytDarkAttr: document.documentElement.hasAttribute("dark"), osDark: matchMedia("(prefers-color-scheme: dark)").matches }) : t;
     const b = root.getElementById("th"); if (b) b.title = "Theme: " + THEME_NAMES[t] + " (click to change)"; }
