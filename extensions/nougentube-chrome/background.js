@@ -5,7 +5,22 @@
 importScripts("providers.js", "power-core.js");
 
 const DEF = { host: "http://localhost:11434", model: "auto", localModel: "gemma4:e2b-qat", autoOrder: "free" };
-const NGO = "http://127.0.0.1:8765";   // nougen-open serve
+// nougen-open serve. 8765 is the default; a machine where 8765 is taken (Phoebus runs
+// mesh_registry there) serves the bridge on 8767. Find the one that is really the bridge
+// (its /health lists "lanes"), remember it, and look again whenever a call fails.
+let NGO = "http://127.0.0.1:8765";
+const NGO_CANDIDATES = ["http://127.0.0.1:8765", "http://127.0.0.1:8767"];
+async function findBridge() {
+  for (const c of NGO_CANDIDATES) {
+    try {
+      const r = await fetch(c + "/health", { signal: AbortSignal.timeout(1500) });
+      const j = await r.json();
+      if (r.ok && j && Array.isArray(j.lanes)) { NGO = c; chrome.storage.local.set({ ngo: c }); return c; }
+    } catch {}
+  }
+  return null;
+}
+chrome.storage.local.get("ngo").then(v => { if (v && NGO_CANDIDATES.includes(v.ngo)) NGO = v.ngo; }).catch(() => {});
 const IDLE_MS = globalThis.NG_IDLE_MS ?? 90000;   // max silence between chunks once text has started
 // Long jobs in the panel (a batch, a Morph, a translation, audio transcription) keep the computer awake, never the screen.
 const blocker = createPowerBlocker(chrome.power);
@@ -208,6 +223,7 @@ chrome.runtime.onConnect.addListener(port => {
         else send(bridge.ok(j));
       } catch (e) {
         if (closed) return;
+        if (!timedOut) findBridge();
         send({ ok: false, error: timedOut ? "the bridge took too long" : "the NouGenOpen bridge is not running (nougen-open serve)" });
       } finally { clearTimeout(timer); }
     });
