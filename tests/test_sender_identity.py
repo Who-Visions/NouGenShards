@@ -6,12 +6,12 @@ from nougen_shards import machine, nougenmsg
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
-    for fn in (machine.hostname, machine.host_label, machine.machine_id, machine.sender_identity):
+    for fn in (machine.hostname, machine.host_label, machine.machine_id):
         fn.cache_clear()
     for var in ("NOUGEN_NODE", "NOUGEN_MACHINE", "NOUGEN_MACHINE_ID", "NOUGEN_FLEET_NODE"):
         monkeypatch.delenv(var, raising=False)
     yield
-    for fn in (machine.hostname, machine.host_label, machine.machine_id, machine.sender_identity):
+    for fn in (machine.hostname, machine.host_label, machine.machine_id):
         fn.cache_clear()
 
 
@@ -32,7 +32,6 @@ def test_env_beats_config_beats_probe(monkeypatch):
     monkeypatch.setattr(machine.socket, "gethostname", lambda: "probehost")
     monkeypatch.setattr(machine, "_fleet_node", lambda: "nodecfg")
     assert machine.sender_identity()["node_source"] == "config:fleet_hosts"
-    machine.sender_identity.cache_clear()
     monkeypatch.setenv("NOUGEN_NODE", "NodeEnv")
     ident = machine.sender_identity()
     assert (ident["node"], ident["node_source"]) == ("nodeenv", "env:NOUGEN_NODE")
@@ -45,7 +44,15 @@ def test_stamp_wins_over_wrong_asserted_node(monkeypatch):
     assert env["machine"] == "nodea"
     assert env["machine_id"] == "aaaaaaaaaaaa"
     assert env["original_sender"].startswith("nodea-")
-    assert any(c.get("claimed") == "nodeb" for c in env["conflicts"])
+    assert env["conflicts"] == [{"field": "machine", "claimed": "nodeb",
+                                 "transport_observed": "nodea"}]
+
+
+def test_caller_label_kept_but_display_shows_real_machine(monkeypatch):
+    monkeypatch.setenv("NOUGEN_NODE", "nodea")
+    env = nougenmsg.NouGenMsgBus._origin_envelope({"original_sender": "nodeb-codex"})
+    assert env["machine"] == "nodea"
+    assert nougenmsg.display_sender(env).startswith("nodea/nodeb-codex")
 
 
 def test_forwarded_envelope_keeps_origin(monkeypatch):

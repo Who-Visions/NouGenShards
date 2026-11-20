@@ -1055,9 +1055,11 @@ class NouGenMsgBus:
         else:
             sender_machine = ident["node"]
             sender_id = ident["machine_id"]
-            conflict = check_asserted_node(claimed_machine)
-            if conflict:
-                conflicts.append(conflict)
+            if check_asserted_node(claimed_machine):
+                # Same record shape consumers already read; the resolved
+                # sender is what goes in "machine", never the claim.
+                conflicts.append({"field": "machine", "claimed": claimed_machine,
+                                  "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
         return {
             "id": supplied.get("id"),
@@ -1077,8 +1079,10 @@ class NouGenMsgBus:
             # traffic reaching phoebus read as nougen-phoebus, origin.machine
             # phoebus. The content carried the origin; the envelope did not,
             # so cross-machine provenance was unrecoverable after one hop.
-            "original_sender": (supplied.get("original_sender") if forwarded else None)
-                               or cls.sender_label(sender_machine, lane),
+            # A caller-chosen label (e.g. "codex-mac-mini") is kept as a label,
+            # but "machine"/"machine_id" above are always the stamp, and
+            # display_sender() shows both when they disagree.
+            "original_sender": supplied.get("original_sender") or cls.sender_label(sender_machine, lane),
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
             "correlation_id": supplied.get("correlation_id"),

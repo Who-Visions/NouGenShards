@@ -225,9 +225,11 @@ def _fleet_node() -> str | None:
     return node if node and node != "standalone" else None
 
 
-@lru_cache(maxsize=1)
 def sender_identity() -> dict[str, str]:
     """Who is sending, resolved env -> config -> probe.
+
+    Not cached: the fleet alias is a live config lookup, and the hostname and
+    machine id underneath are already cached.
 
     node:       NOUGEN_NODE, then the fleet_hosts.json alias, then host_label().
     host:       host_label() (NOUGEN_MACHINE or the probed hostname).
