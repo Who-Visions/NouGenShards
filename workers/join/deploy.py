@@ -106,6 +106,17 @@ def relay_bindings(env) -> list:
     ]
 
 
+def _google(btype: str, name: str, secret: str) -> dict:
+    """Google sign-in client for join. When the keymaker has no value, keep the one the
+    live worker already holds (Cloudflare "inherit" binding) instead of failing or
+    swapping in a different OAuth client, which would break sign-in."""
+    val = keymaker.get_secret(secret)
+    if val:
+        return {"type": btype, "name": name, "text": val}
+    print(f"{secret} not in keymaker: inheriting the live worker's {name}")
+    return {"type": "inherit", "name": name}
+
+
 def main():
     c = client()
     acct = c.account_id
@@ -117,8 +128,8 @@ def main():
         {"type": "durable_object_namespace", "name": "COORD", "class_name": "JoinCoordinator"},
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
         {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
-        {"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")},
-        {"type": "plain_text", "name": "GOOGLE_CLIENT_ID", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_ID")},
+        _google("secret_text", "GOOGLE_CLIENT_SECRET", "NOUGEN_JOIN_GOOGLE_CLIENT_SECRET"),
+        _google("plain_text", "GOOGLE_CLIENT_ID", "NOUGEN_JOIN_GOOGLE_CLIENT_ID"),
         {"type": "plain_text", "name": "CF_ACCOUNT_ID", "text": acct},
         {"type": "plain_text", "name": "CF_ZONE_ID", "text": zone},
         {"type": "plain_text", "name": "ZONE_NAME", "text": ZONE},
