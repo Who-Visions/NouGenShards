@@ -2176,11 +2176,19 @@ def _name_key(value: Any) -> str:
 def registry_node_for(*names: str) -> str:
     """The transport node nodes.json files a hostname or alias under, or "".
 
-    A box whose hostname is only an alias in the node registry (a Mac Mini that
-    reports "kushboygroups-mac-mini" but is the fleet's "phoebus") must stamp the
-    registry's name, not the raw hostname. Matches, case-insensitively and
-    ignoring punctuation, an entry's key, name, machine or aliases, or the first
-    label of a hostname-style ``ip`` field.
+    A box whose hostname is only an alias of a fleet node (a Mac Mini reporting
+    "kushboygroups-mac-mini" that the registry files under "phoebus") must stamp
+    the registry's name, not the raw hostname. Names compare case-insensitively
+    and ignoring punctuation.
+
+    Two passes, so one entry can never steal another's identity:
+    1. the name IS a transport node (hostname "phoebus" is phoebus, even if some
+       earlier entry lists "phoebus" as an alias);
+    2. the name is an entry's machine, one of its aliases, or the first label of
+       its hostname-style ``ip`` or ``host``.
+    Coach names (``name``, ``coach``, the registry key) are deliberately not
+    machine identities: "Apollo" is a coach, and a box called apollo is not blade.
+    Malformed entries are skipped, never raised.
     """
     wanted = {_name_key(n) for n in names if n}
     wanted.discard("")
@@ -2190,17 +2198,25 @@ def registry_node_for(*names: str) -> str:
         configured = json.loads(_nodes_registry_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    for key, cfg in configured.items() if isinstance(configured, dict) else ():
+    entries = []
+    for cfg in (configured.values() if isinstance(configured, dict) else ()):
         if not isinstance(cfg, dict):
             continue
         transport = _name_key(cfg.get("transport_node"))
-        if not transport:
-            continue
-        candidates = {_name_key(key), _name_key(cfg.get("name")), _name_key(cfg.get("machine"))}
-        candidates.update(_name_key(a) for a in (cfg.get("aliases") or ()) if isinstance(a, str))
-        ip = str(cfg.get("ip") or "")
-        if ip and not re.fullmatch(r"[0-9.:]+", ip):
-            candidates.add(_name_key(ip.split(".")[0]))
+        if transport:
+            entries.append((transport, cfg))
+    for transport, _cfg in entries:
+        if transport in wanted:
+            return transport
+    for transport, cfg in entries:
+        candidates = {_name_key(cfg.get("machine"))}
+        aliases = cfg.get("aliases")
+        if isinstance(aliases, (list, tuple)):
+            candidates.update(_name_key(a) for a in aliases if isinstance(a, str))
+        for field in ("ip", "host"):
+            value = cfg.get(field)
+            if isinstance(value, str) and value and not re.fullmatch(r"[0-9.:]+", value):
+                candidates.add(_name_key(value.split(".")[0]))
         candidates.discard("")
         if wanted & candidates:
             return transport

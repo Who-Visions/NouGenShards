@@ -263,4 +263,49 @@ def test_registry_node_for_ignores_empty_and_malformed_entries(registry, monkeyp
     registry.write_text(json.dumps({"x": "not a dict", "y": {"aliases": ["z"]}, "w": {"transport_node": "n1"}}))
     assert m.registry_node_for("", None) == ""
     assert m.registry_node_for("z") == ""                    # no transport_node: nothing to return
-    assert m.registry_node_for("w") == "n1"
+    assert m.registry_node_for("w") == ""                    # a registry key is a coach label, not a machine
+    assert m.registry_node_for("n1") == "n1"                 # the transport node itself resolves
+
+
+# ---- registry matching cannot steal another node's identity -------------------
+
+def test_a_real_transport_node_beats_an_earlier_entrys_alias(box, monkeypatch):
+    import json
+    path = box / "nodes.json"
+    path.write_text(json.dumps({
+        "a": {"transport_node": "blade", "machine": "Heavy Box", "aliases": ["phoebus"]},
+        "b": {"transport_node": "phoebus", "machine": "Backbone Mini"},
+    }), encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_NODES_CONFIG", str(path))
+    assert m.registry_node_for("phoebus") == "phoebus"
+    assert m.registry_node_for("heavy-box") == "blade"       # a machine name still resolves
+
+
+def test_coach_names_are_not_machine_identities(registry, monkeypatch):
+    _host(monkeypatch, "Apollo")
+    assert m.registry_node_for("Apollo") == ""               # a coach, not a box
+    assert m.current_machine_id() == "apollo"
+
+
+def test_malformed_aliases_never_raise_or_match_characters(box, monkeypatch):
+    import json
+    path = box / "nodes.json"
+    path.write_text(json.dumps({
+        "n1": {"transport_node": "n1", "aliases": 42},
+        "n2": {"transport_node": "n2", "aliases": "other"},
+        "n3": {"transport_node": "n3", "aliases": [7, None, "good-alias"]},
+    }), encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_NODES_CONFIG", str(path))
+    assert m.registry_node_for("o") == ""                    # a string alias is not iterated as characters
+    assert m.registry_node_for("other") == ""
+    assert m.registry_node_for("good-alias") == "n3"
+
+
+def test_host_only_mapping_matches_the_first_hostname_label(box, monkeypatch):
+    import json
+    path = box / "nodes.json"
+    path.write_text(json.dumps({"x": {"transport_node": "phoebus", "host": "mac-mini.example.test"}}),
+                    encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_NODES_CONFIG", str(path))
+    _host(monkeypatch, "Mac-Mini.local")
+    assert m.current_machine_id() == "phoebus"
