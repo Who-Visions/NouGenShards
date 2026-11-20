@@ -28,16 +28,31 @@ func newSession(id string, conn *websocket.Conn) *session {
 	return &session{id: id, conn: conn, since: time.Now().UnixMilli(), pending: map[string]chan *resFrame{}}
 }
 
+// writeWait bounds every socket write. A node that stops reading must not hold
+// writeMu forever: the write fails, the session is closed, and waiting
+// requests fail fast instead of outliving the request timeout.
+var writeWait = 10 * time.Second
+
 func (s *session) writeJSON(v any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.conn.WriteJSON(v)
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	err := s.conn.WriteJSON(v)
+	if err != nil {
+		_ = s.conn.Close() // a timed-out gorilla writer is unusable; the read loop cleans up
+	}
+	return err
 }
 
 func (s *session) writeText(msg string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	err := s.conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	if err != nil {
+		_ = s.conn.Close()
+	}
+	return err
 }
 
 // addPending registers a request and returns its channel; nil if the session is already gone.

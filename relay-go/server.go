@@ -137,13 +137,18 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request, id string) {
 	// Room for a base64 body plus headers; anything bigger is a protocol abuse.
 	conn.SetReadLimit((s.cfg.MaxBody/3+1)*4 + 256<<10)
 	sess := newSession(id, conn)
+	// The first frame must be ready (the Python client rejects anything else),
+	// so write it before the session becomes visible to forward().
+	if err := sess.writeJSON(readyFrame{T: "ready", V: Protocol, Since: sess.since}); err != nil {
+		_ = conn.Close()
+		return
+	}
 	if old := s.hub.register(sess); old != nil {
 		old.failAll()
 		_ = old.conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(CloseReplaced, "replaced"), time.Now().Add(time.Second))
 		_ = old.conn.Close()
 	}
-	_ = sess.writeJSON(readyFrame{T: "ready", V: Protocol, Since: sess.since})
 	s.readLoop(sess)
 }
 
