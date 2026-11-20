@@ -3162,7 +3162,8 @@ def _connector_origin(origin: Optional[dict]) -> Optional[dict]:
     if not isinstance(origin, dict) or not origin:
         return None
     out = {k: str(origin[k])[:64] for k in _CONNECTOR_ORIGIN_KEYS
-           if isinstance(origin.get(k), (str, int)) and str(origin[k]).strip()}
+           if isinstance(origin.get(k), (str, int)) and not isinstance(origin.get(k), bool)
+           and str(origin[k]).strip()}
     out.setdefault("machine", "remote")
     out.setdefault("lane", "agent")
     out.setdefault("original_sender", f"{out['machine']}-{out['lane']}")
