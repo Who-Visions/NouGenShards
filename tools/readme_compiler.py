@@ -377,10 +377,53 @@ def _slug(title: str) -> str:
 # ---------------------------------------------------------------------------
 
 _INCLUDE_RE = re.compile(r"""^#include\s+"([^"]+)"\s*$""", re.MULTILINE)
+_INCLUDE_LINE_RE = re.compile(r"""^#include\s+"([^"]+)"\s*$""")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _include_lines(body: str) -> list[tuple[str, str | None]]:
+    """Split body into lines, tagging `#include` directives outside code fences.
+
+    Lines inside a Markdown fenced code block (``` or ~~~) are never
+    treated as directives, so C/C++ examples pass through unchanged.
+    """
+    tagged: list[tuple[str, str | None]] = []
+    fence: str | None = None
+    for line in body.split("\n"):
+        marker = _FENCE_RE.match(line)
+        if fence is None:
+            if marker:
+                fence = marker.group(1)
+                tagged.append((line, None))
+                continue
+            directive = _INCLUDE_LINE_RE.match(line)
+            tagged.append((line, directive.group(1) if directive else None))
+        else:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) and not line.strip()[len(marker.group(1)):].strip():
+                fence = None
+            tagged.append((line, None))
+    return tagged
+
+
+def _has_include(body: str) -> bool:
+    return any(target is not None for _, target in _include_lines(body))
+
+
+def _read_include(root: Path, relative: str, where: str, seen: frozenset[str]) -> tuple[Path, str]:
+    path = _inside(root, relative, f"{where} include")
+    if str(path) in seen:
+        raise ReadmeError(f"{where}: include cycle at {relative}")
+    if not path.is_file():
+        raise ReadmeError(f"{where}: include file is not a regular file: {relative}")
+    try:
+        included = _read_bounded(path, MAX_SECTION_FILE_BYTES, f"{where} include").decode("utf-8")
+    except UnicodeError as exc:
+        raise ReadmeError(f"{where}: include file is not valid UTF-8: {relative}") from exc
+    return path, included.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _resolve_includes(body: str, root: Path, where: str, *, depth: int = 0, seen: frozenset[str] | None = None) -> str:
-    """Resolve `#include "path"` directives.
+    """Resolve `#include "path"` directives outside fenced code blocks.
 
     Includes are project-relative, confined to the project root, and
     resolved recursively up to MAX_INCLUDE_DEPTH. A cycle or a missing
@@ -389,23 +432,29 @@ def _resolve_includes(body: str, root: Path, where: str, *, depth: int = 0, seen
     if depth > MAX_INCLUDE_DEPTH:
         raise ReadmeError(f"{where}: include depth exceeds {MAX_INCLUDE_DEPTH}")
     seen = seen or frozenset()
+    out: list[str] = []
+    for line, target in _include_lines(body):
+        if target is None:
+            out.append(line)
+            continue
+        path, included = _read_include(root, target, where, seen)
+        out.append(_resolve_includes(included, root, where, depth=depth + 1, seen=seen | {str(path)}))
+    return "\n".join(out)
 
-    def _replace(match: re.Match[str]) -> str:
-        relative = match.group(1)
-        path = _inside(root, relative, f"{where} include")
-        key = str(path)
-        if key in seen:
-            raise ReadmeError(f"{where}: include cycle at {relative}")
-        if not path.is_file():
-            raise ReadmeError(f"{where}: include file is not a regular file: {relative}")
-        try:
-            included = _read_bounded(path, MAX_SECTION_FILE_BYTES, f"{where} include").decode("utf-8")
-        except UnicodeError as exc:
-            raise ReadmeError(f"{where}: include file is not valid UTF-8: {relative}") from exc
-        included = included.replace("\r\n", "\n").replace("\r", "\n")
-        return _resolve_includes(included, root, where, depth=depth + 1, seen=seen | {key})
 
-    return _INCLUDE_RE.sub(_replace, body)
+def _include_paths(body: str, root: Path, where: str, *, depth: int = 0, seen: frozenset[str] | None = None) -> list[Path]:
+    """Every file transitively pulled in by `#include` directives in body."""
+    if depth > MAX_INCLUDE_DEPTH:
+        raise ReadmeError(f"{where}: include depth exceeds {MAX_INCLUDE_DEPTH}")
+    seen = seen or frozenset()
+    found: list[Path] = []
+    for _, target in _include_lines(body):
+        if target is None:
+            continue
+        path, included = _read_include(root, target, where, seen)
+        found.append(path)
+        found.extend(_include_paths(included, root, where, depth=depth + 1, seen=seen | {str(path)}))
+    return found
 
 
 def _merge_files(paths: list[str], root: Path, where: str) -> str:
@@ -618,7 +667,7 @@ def _used_extensions(manifest: dict[str, Any]) -> list[str]:
     for section in manifest.get("sections", []) or []:
         if isinstance(section, dict):
             body = section.get("content", "")
-            if isinstance(body, str) and _INCLUDE_RE.search(body):
+            if isinstance(body, str) and _has_include(body):
                 found.append("includes")
                 break
     return sorted(set(found))
@@ -1418,20 +1467,42 @@ def draft_manifest(root: Path, sources: list[dict[str, str]], model: str, host: 
 # ---------------------------------------------------------------------------
 
 def _section_source_paths(manifest: dict[str, Any], root: Path) -> list[Path]:
-    """Every on-disk file a manifest depends on, in manifest order."""
-    paths: list[Path] = []
+    """Every on-disk file a manifest depends on, in manifest order.
+
+    Includes section files, merge files, the footer file, and every file
+    transitively pulled in by `#include` (from inline content too).
+    """
+    direct: list[tuple[Path | None, str | None]] = []
     for section in manifest.get("sections", []) or []:
         if not isinstance(section, dict):
             continue
         if isinstance(section.get("file"), str):
-            paths.append(_inside(root, section["file"], "section file"))
+            direct.append((_inside(root, section["file"], "section file"), None))
         for relative in section.get("merge", []) or []:
             if isinstance(relative, str):
-                paths.append(_inside(root, relative, "section merge"))
+                direct.append((_inside(root, relative.strip(), "section merge"), None))
+        if isinstance(section.get("content"), str):
+            direct.append((None, section["content"]))
     footer = manifest.get("footer")
     if isinstance(footer, dict) and isinstance(footer.get("file"), str):
-        paths.append(_inside(root, footer["file"], "footer file"))
-    return paths
+        direct.append((_inside(root, footer["file"], "footer file"), None))
+    paths: list[Path] = []
+    for path, inline in direct:
+        if path is not None:
+            paths.append(path)
+            if not path.is_file():
+                continue
+            try:
+                inline = _read_bounded(path, MAX_SECTION_FILE_BYTES, "source file").decode("utf-8")
+            except UnicodeError:
+                continue
+            inline = inline.replace("\r\n", "\n").replace("\r", "\n")
+        paths.extend(_include_paths(inline or "", root, "dependency"))
+    unique: list[Path] = []
+    for path in paths:
+        if path not in unique:
+            unique.append(path)
+    return unique
 
 
 def _sha256_file(path: Path) -> str:
@@ -1496,8 +1567,12 @@ def _find_child_manifests(root: Path, manifest_name: str, *, depth: int) -> list
     if depth < 1:
         return found
     for child in sorted(root.iterdir(), key=lambda item: item.name):
-        if not child.is_dir() or child.name.startswith("."):
+        if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
             continue
+        try:
+            child.resolve().relative_to(root.resolve())
+        except ValueError:
+            continue  # junction/reparse point escaping the project root
         if (child / manifest_name).is_file():
             found.append(child)
         if depth > 1:
@@ -1538,13 +1613,11 @@ def _assert_paths_separate(root: Path, manifest: Path, output: Path, archive: Pa
         raise ReadmeError("archive directory must be a dedicated subdirectory, separate from the output")
     if archive == manifest or archive in manifest.parents:
         raise ReadmeError("archive directory cannot contain the manifest")
-    for index, section in enumerate(document.get("sections", [])):
-        if isinstance(section, dict) and isinstance(section.get("file"), str):
-            source = _inside(root, section["file"], f"sections[{index}].file")
-            if source == output:
-                raise ReadmeError(f"output path cannot overwrite its own section source: {source}")
-            if archive == source or archive in source.parents:
-                raise ReadmeError(f"archive directory cannot contain section source: {source}")
+    for source in _section_source_paths(document, root):
+        if source == output:
+            raise ReadmeError(f"output path cannot overwrite its own source: {source}")
+        if archive == source or archive in source.parents:
+            raise ReadmeError(f"archive directory cannot contain source: {source}")
 
 
 def _add_output_options(parser: argparse.ArgumentParser) -> None:

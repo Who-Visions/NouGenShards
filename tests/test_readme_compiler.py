@@ -430,6 +430,81 @@ def test_dropped_empty_sections_reported(tmp_path: Path) -> None:
 # Standalone runner (no pytest needed): python3 tests/test_readme_compiler.py
 # ---------------------------------------------------------------------------
 
+def _mini(project: Path, sections: list, footer=None) -> dict:
+    manifest = _fresh_v1()
+    manifest["badges"] = []
+    manifest["links"] = []
+    manifest["sections"] = sections
+    if footer is not None:
+        manifest["footer"] = footer
+    _write_json(project / "README.nougen.json", manifest)
+    return manifest
+
+
+def test_include_inside_fence_untouched(tmp_path: Path) -> None:
+    """`#include` inside a fenced code block is example code, not a directive."""
+    body = "```c\n#include \"example.h\"\nint main(void) { return 0; }\n```"
+    tilde = "~~~cpp\n#include \"other.h\"\n~~~"
+    out = RC.compile_readme(_mini(tmp_path, [{"title": "C", "content": body + "\n\n" + tilde}]), tmp_path)
+    assert '#include "example.h"' in out and '#include "other.h"' in out
+    (tmp_path / "real.md").write_text("Real include.\n", encoding="utf-8")
+    mixed = body + '\n\n#include "real.md"'
+    out = RC.compile_readme(_mini(tmp_path, [{"title": "C", "content": mixed}]), tmp_path)
+    assert "Real include." in out and '#include "example.h"' in out
+
+
+def test_output_cannot_overwrite_merge_include_footer(tmp_path: Path) -> None:
+    """Output may not be any resolved source: merge, include, or footer."""
+    cases = [
+        [{"title": "M", "merge": ["README.md"]}],
+        [{"title": "I", "content": '#include "README.md"'}],
+    ]
+    for sections in cases:
+        (tmp_path / "README.md").write_text("<!-- nougen-readme-compiler: v1 -->\nold\n", encoding="utf-8")
+        _mini(tmp_path, sections)
+        assert RC.main(["compile", "--force", str(tmp_path)]) != 0
+    (tmp_path / "README.md").write_text("<!-- nougen-readme-compiler: v1 -->\nold\n", encoding="utf-8")
+    _mini(tmp_path, [{"title": "A", "content": "x"}], footer={"file": "README.md"})
+    assert RC.main(["compile", "--force", str(tmp_path)]) != 0
+
+
+def test_recurse_skips_symlink_outside_root(tmp_path: Path) -> None:
+    """Recursive discovery never follows a directory link out of the project."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _mini(outside, [{"title": "O", "content": "outside"}])
+    project = tmp_path / "project"
+    project.mkdir()
+    _mini(project, [{"title": "P", "content": "inside"}])
+    try:
+        (project / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        if pytest is not None:
+            pytest.skip("symlinks unavailable")
+        return
+    assert RC._find_child_manifests(project, "README.nougen.json", depth=3) == []
+    assert RC.main(["compile", "--recurse", str(project)]) == 0
+    assert not (outside / "README.md").exists()
+
+
+def test_baseline_tracks_transitive_includes(tmp_path: Path) -> None:
+    """Baseline hashes nested include files, so a byte-only edit is caught."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "sec.md").write_text('Section.\n\n#include "docs/a.md"\n', encoding="utf-8")
+    (tmp_path / "docs" / "a.md").write_text('A.\n\n#include "docs/b.md"\n', encoding="utf-8")
+    (tmp_path / "docs" / "b.md").write_text("B.\n", encoding="utf-8")
+    (tmp_path / "docs" / "foot.md").write_text('#include "docs/c.md"\n', encoding="utf-8")
+    (tmp_path / "docs" / "c.md").write_text("C.\n", encoding="utf-8")
+    _mini(tmp_path, [{"title": "S", "file": "docs/sec.md"}], footer={"file": "docs/foot.md"})
+    assert RC.main(["compile", "--write-baseline", str(tmp_path)]) == 0
+    recorded = json.loads((tmp_path / ".readme-baseline.json").read_text(encoding="utf-8"))["sections"]
+    names = {Path(key).as_posix() for key in recorded}
+    assert {"docs/sec.md", "docs/a.md", "docs/b.md", "docs/foot.md", "docs/c.md"} <= names
+    assert RC.main(["check", "--baseline", str(tmp_path)]) == 0
+    (tmp_path / "docs" / "b.md").write_text("B.\n\n", encoding="utf-8")
+    assert RC.main(["check", "--baseline", str(tmp_path)]) == 1
+
+
 _STANDALONE_TESTS = [
     test_v1_byte_compatible,
     test_sample,
@@ -451,6 +526,10 @@ _STANDALONE_TESTS = [
     test_verbatim_content,
     test_badge_anchor_links,
     test_dropped_empty_sections_reported,
+    test_include_inside_fence_untouched,
+    test_output_cannot_overwrite_merge_include_footer,
+    test_recurse_skips_symlink_outside_root,
+    test_baseline_tracks_transitive_includes,
 ]
 
 
