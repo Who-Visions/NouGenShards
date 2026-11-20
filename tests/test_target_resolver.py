@@ -218,11 +218,14 @@ def _post(port, target, **extra):
 
 class FakeBus:
     calls = []
+    forwarded = []
     @staticmethod
-    def emit_node(node, target, text, origin=None):
+    def emit_node(node, target, text, origin=None, forwarded=False):
+        FakeBus.forwarded.append(forwarded)
         FakeBus.calls.append(("node", node, target)); return {node: "DELIVERED"}
     @staticmethod
-    def emit_fleet(text, target="all", origin=None, background=False, nodes=None):
+    def emit_fleet(text, target="all", origin=None, background=False, nodes=None, forwarded=False):
+        FakeBus.forwarded.append(forwarded)
         FakeBus.calls.append(("fleet", target, tuple(nodes or ()))); return {"phoebus": "ok"}
 
 class TestHTTPHandler:
@@ -230,6 +233,7 @@ class TestHTTPHandler:
     def _reset_bus(self, monkeypatch, server):
         node, _ = server
         FakeBus.calls = []
+        FakeBus.forwarded = []
         monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
 
     def test_unknown_target_no_presence(self, server):
@@ -247,6 +251,8 @@ class TestHTTPHandler:
         status, body = _post(port, "@chatgpt-app")
         assert status == 200 and body["routed"] is True
         assert FakeBus.calls == [("node", "whoart", "chatgpt-app")]
+        # A message arriving over HTTP is never this node's own (PR #1155).
+        assert FakeBus.forwarded == [True]
 
     def test_lane_two_nodes(self, server):
         node, port = server

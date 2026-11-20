@@ -1222,10 +1222,20 @@ class NouGenMsgBus:
         # --origin-b64) passes forwarded=True. MCP tools, kaedra and other local
         # callers hand in origin dicts directly and are always re-stamped,
         # whatever relay_path they carry.
-        forwarded = bool(forwarded) and cls._is_genuine_forward(supplied, ident["node"], current)
+        # forwarded=True only comes from a receiver that got this envelope from
+        # another box (the ssh hop CLI, or the node's authenticated HTTP
+        # receiver). Such a message is never this box's own: keep the sender's
+        # claim, marked unverified, and never stamp the receiver onto it.
+        # Before this, a peer message reaching blade via HTTP was labelled
+        # "blade-claude", hiding every sender behind the receiving box.
+        forwarded = bool(forwarded)
         if forwarded:
-            sender_machine = claimed_machine or current
+            path = [str(x).strip().lower() for x in (supplied.get("relay_path") or []) if str(x).strip()]
+            sender_machine = claimed_machine or (path[0] if path else "") or "unknown"
             sender_id = supplied.get("machine_id") or "unknown"
+            if path and claimed_machine and not cls._is_genuine_forward(supplied, ident["node"], current):
+                conflicts.append({"field": "relay_path", "claimed": claimed_machine,
+                                  "relay_path": path})
         else:
             sender_machine = ident["node"]
             sender_id = ident["machine_id"]
@@ -1531,8 +1541,10 @@ class NouGenMsgBus:
     @classmethod
     def emit_node(cls, node: str, target: str, text: str,
                   origin: Optional[Dict[str, Any]] = None,
-                  audience: Optional[str] = None) -> Dict[str, Any]:
+                  audience: Optional[str] = None,
+                  forwarded: bool = False) -> Dict[str, Any]:
         """Dispatches message specifically to a target node.
+        forwarded: True only when this box received the message from another box.
         audience: persona scope; when resolvable, a one-line contract header prefixes the body."""
         header = cls.persona_header(audience)
         if header and not text.startswith("[persona "):
@@ -1545,9 +1557,10 @@ class NouGenMsgBus:
         if node in ["local", curr]:
             # No shell is involved locally, so the body needs no encoding or
             # shipping — deliver it verbatim.
-            return {curr: cls.live_ping(target=target, text=text, origin=origin)}
+            return {curr: cls.live_ping(target=target, text=text, origin=origin,
+                                        forwarded=forwarded)}
 
-        envelope = cls._origin_envelope(origin)
+        envelope = cls._origin_envelope(origin, forwarded=forwarded)
         origin_b64 = base64.urlsafe_b64encode(
             json.dumps(envelope, separators=(",", ":")).encode("utf-8")
         ).decode("ascii").rstrip("=")
@@ -1593,7 +1606,8 @@ class NouGenMsgBus:
                    origin: Optional[Dict[str, Any]] = None,
                    audience: Optional[str] = None,
                    background: bool = False,
-                   nodes: Optional[List[str]] = None) -> Dict[str, Any]:
+                   nodes: Optional[List[str]] = None,
+                   forwarded: bool = False) -> Dict[str, Any]:
         """Dispatches message across all nodes in the fleet (persona header applied once, here).
 
         nodes: the peers to reach, when the caller resolved the group from the live
@@ -1610,7 +1624,7 @@ class NouGenMsgBus:
             text = header + "\n" + text
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin,
-                                       models_async=background)}
+                                       models_async=background, forwarded=forwarded)}
         fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
@@ -1622,7 +1636,7 @@ class NouGenMsgBus:
             def _fan_out(peers=tuple(nodes)):
                 for n in peers:
                     try:
-                        res = cls.emit_node(n, target, text, origin=origin)
+                        res = cls.emit_node(n, target, text, origin=origin, forwarded=forwarded)
                         bad = {k: v for k, v in (res or {}).items() if isinstance(v, str) and v.startswith("Error")}
                         if bad:
                             print(f"[nougenmsg] background fan-out to {n} failed: {bad}", file=sys.stderr, flush=True)
@@ -1637,7 +1651,7 @@ class NouGenMsgBus:
         if len(nodes) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=len(nodes)) as pool:
-                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin): n for n in nodes}
+                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin, forwarded=forwarded): n for n in nodes}
                 for fut in as_completed(futures):
                     n = futures[fut]
                     try:
@@ -1648,7 +1662,7 @@ class NouGenMsgBus:
         else:
             for n in nodes:
                 try:
-                    res = cls.emit_node(n, target, text, origin=origin)
+                    res = cls.emit_node(n, target, text, origin=origin, forwarded=forwarded)
                     results.update(res)
                 except Exception as e:
                     results[n] = f"Error: {e}"

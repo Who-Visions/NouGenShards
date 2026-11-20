@@ -34,17 +34,17 @@ def cli(monkeypatch):
 
     class StubBus:
         @staticmethod
-        def emit_fleet(text, target="all", origin=None):
+        def emit_fleet(text, target="all", origin=None, **_kw):
             sent.update(kind="fleet", node=None, target=target, text=text)
             return {}
 
         @staticmethod
-        def live_ping(target="all", text="", origin=None):
+        def live_ping(target="all", text="", origin=None, **_kw):
             sent.update(kind="local", node="whoart", target=target, text=text)
             return {}
 
         @staticmethod
-        def emit_node(node, target, text, origin=None):
+        def emit_node(node, target, text, origin=None, **_kw):
             sent.update(kind="node", node=node, target=target, text=text)
             return {}
 

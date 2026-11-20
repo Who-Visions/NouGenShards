@@ -50,7 +50,7 @@ def test_default_waits_for_models(monkeypatch):
 def test_emit_fleet_background_makes_models_async(monkeypatch):
     _stub(monkeypatch)
     monkeypatch.setattr(m, "get_current_node", lambda: "phoebus")
-    monkeypatch.setattr(m.NouGenMsgBus, "emit_node", classmethod(lambda cls, node, target, text, origin=None: {node: "ok"}))
+    monkeypatch.setattr(m.NouGenMsgBus, "emit_node", classmethod(lambda cls, node, target, text, origin=None, **_kw: {node: "ok"}))
     t0 = time.monotonic()
     res = m.NouGenMsgBus.emit_fleet("hi", target="all", background=True)
     assert time.monotonic() - t0 < 0.3

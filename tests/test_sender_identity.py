@@ -74,23 +74,22 @@ def test_display_uses_sender_not_bridge():
     assert "unstamped" in nougenmsg.display_sender({})
 
 
-@pytest.mark.parametrize("supplied", [
-    {"machine": "nodeb", "relay_path": ["nodeb"]},            # last hop claims to be elsewhere but path ends... at origin
-    {"machine": "nodeb", "relay_path": ["nodec"]},            # origin not first in path
-    {"machine": "nodeb", "relay_path": ["nodeb", "nodea"]},   # last hop is this machine
-    {"relay_path": ["nodeb"]},                                # no claimed machine
+@pytest.mark.parametrize("supplied,expect", [
+    ({"machine": "nodeb", "relay_path": ["nodeb"]}, "nodeb"),
+    ({"machine": "nodeb", "relay_path": ["nodec"]}, "nodeb"),
+    ({"machine": "nodeb", "relay_path": ["nodeb", "nodea"]}, "nodeb"),
+    ({"relay_path": ["nodeb"]}, "nodeb"),
+    ({}, "unknown"),
 ])
-def test_local_send_cannot_spoof_via_relay_path(monkeypatch, supplied):
+def test_received_message_is_never_labelled_as_this_box(monkeypatch, supplied, expect):
+    """A forwarded envelope keeps the sender's claim, marked unverified, and
+    never takes the receiver's name (the "blade-claude" on WhoArt's message)."""
     monkeypatch.setenv("NOUGEN_NODE", "nodea")
     monkeypatch.setattr(nougenmsg, "get_current_node", lambda: "nodea")
-    if supplied.get("relay_path") == ["nodeb"] and supplied.get("machine") == "nodeb":
-        # Legit single-hop forward from nodeb arriving at nodea: kept.
-        env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied), forwarded=True)
-        assert env["machine"] == "nodeb" and env["origin_trust"] == "forwarded-unverified"
-        return
     env = nougenmsg.NouGenMsgBus._origin_envelope(dict(supplied), forwarded=True)
-    assert env["machine"] == "nodea"
-    assert env["origin_trust"] == "stamped"
+    assert env["machine"] == expect
+    assert env["origin_trust"] == "forwarded-unverified"
+    assert nougenmsg.display_sender(env).endswith("(asserted)")
 
 
 def test_local_caller_with_plausible_relay_path_stays_local(monkeypatch):
@@ -106,3 +105,8 @@ def test_local_caller_with_plausible_relay_path_stays_local(monkeypatch):
         assert env["origin_trust"] == "stamped"
         assert env["conflicts"] == [{"field": "machine", "claimed": "nodeb",
                                      "transport_observed": "nodea"}]
+
+
+def test_node_receiver_marks_peer_traffic_forwarded():
+    src = (__import__("pathlib").Path(__file__).resolve().parents[1] / "tools" / "nougenmsg_node.py").read_text(encoding="utf-8")
+    assert src.count("forwarded=True") >= 2
