@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
@@ -177,5 +178,20 @@ func TestFrontPageNeverBecomesANodeRoute(t *testing.T) {
 	resp, _ = fetchPage(t, ts, "GET", "/_relay/status?id=n1", "")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status without a token: %d, want 401", resp.StatusCode)
+	}
+}
+
+// A CRLF checkout must not change the pinned hash: the served bytes and the hash are both LF.
+func TestFrontPageCRLFBuildKeepsTheCSPValid(t *testing.T) {
+	if strings.Contains(string(indexHTML), "\r") {
+		t.Fatal("served page still contains a carriage return")
+	}
+	crlf := bytes.ReplaceAll(indexHTML, []byte("\n"), []byte("\r\n"))
+	normalised := bytes.ReplaceAll(crlf, []byte("\r\n"), []byte("\n"))
+	if buildFrontPageCSP(normalised) != frontPageCSP {
+		t.Fatal("CRLF input, once normalised, must hash the same as the LF page")
+	}
+	if buildFrontPageCSP(crlf) == frontPageCSP {
+		t.Fatal("test is not exercising the difference: raw CRLF should hash differently")
 	}
 }

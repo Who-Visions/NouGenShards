@@ -101,7 +101,7 @@ td code { font-family: var(--mono); color: var(--brand-light); font-size: .9375r
 .pill { font-family: var(--mono); font-size: .75rem; border: 1px solid var(--line); border-radius: var(--r-full); padding: 2px var(--s3); white-space: nowrap; display: inline-block; }
 .pill.open { color: var(--pass); }
 .pill.token { color: var(--brand); }
-.limits { display: grid; gap: var(--s4); grid-template-columns: repeat(4, minmax(0, 1fr)); margin: var(--s8) 0 0; padding: 0; list-style: none; }
+.limits { display: grid; gap: var(--s4); grid-template-columns: repeat(4, minmax(0, 1fr)); margin: var(--s3) 0 0; padding: 0; list-style: none; }
 .limits li { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: var(--s4); }
 .limits b { display: block; font-family: var(--mono); font-size: 1.25rem; color: var(--ink); }
 .limits span { color: var(--muted); font-size: .875rem; }
@@ -170,6 +170,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: var(--s4); fl
         <li class="card fact"><span class="fact-n">03</span><h3>Capped sizes</h3><p>Request and response size are capped.</p></li>
         <li class="card fact"><span class="fact-n">04</span><h3>No roll call</h3><p>A node must prove its token even to ask its own status, so nobody can list who is online.</p></li>
       </ul>
+      <p class="note">By default:</p>
       <ul class="limits" aria-label="Default limits">
         <li><b>8 MiB</b><span>body cap, request and response</span></li>
         <li><b>30 s</b><span>wait for a node&rsquo;s answer</span></li>

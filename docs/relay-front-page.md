@@ -13,8 +13,8 @@ Static and public. It names no node, count, liveness or version, so it leaks not
 - **Contrast, measured:** dark: ink/night 16.3, muted/night 8.05, brand/night 5.09, white on fill 7.1. Light: ink 16.4, muted 6.7, brand/page 6.5, pass 5.5, fail 5.8. Every pair is at least 4.5:1.
 - **Focus:** a double ring on every interactive element, through a zero-specificity `:where()` selector.
 - **Motion:** none, so there is nothing to gate.
-- **Layout source:** a Google Stitch screen generated from the same tokens (Stitch project `5178155505278564860`, design system `assets/6259407386829180652`). Its structure and spacing were kept. Its copy was not: it added claims the relay does not back ("network ingress: nominal", a version badge, an RFC number, a latency figure, "ed25519-sha256", "zero persistence"), and none of them are on the page.
-- **Figma:** a design file exists (`RUlpKJiYXO8fs8mHRAKapF`) but is empty. The Figma MCP call limit on the Starter plan was reached on the first edit. The page does not depend on it.
+- **Layout source:** a Google Stitch screen generated from the same tokens. Its structure and spacing were kept. Its copy was not: it added claims the relay does not back ("network ingress: nominal", a version badge, an RFC number, a latency figure, "ed25519-sha256", "zero persistence"), and none of them are on the page.
+- **Figma:** the design file is empty. The Figma MCP call limit on the Starter plan was reached on the first edit. The page does not depend on it.
 
 ## Security posture
 
@@ -29,3 +29,10 @@ One existing assertion changed on purpose: `TestRoutingMisses` listed `/` as a m
 ## Visibility
 
 Until the hostname cutover (spec section 6, stage 4), `relay.nougenai.com` belongs to the Cloudflare Worker relay, so this page is only visible on the canary host. A page on the live Worker is a change to `workers/relay/worker.js` and the go-live path, which is a separate PR.
+
+## Notes for reviewers
+
+- The page links to `docs/relay-go-spec.md` and `relay-go/` on `main`. Those exist there only after #1150 merges, so merge #1150 before the page is shown anywhere.
+- `cache-control: public, max-age=300`: a proxy in front can serve the previous page for up to five minutes after a redeploy.
+- The numbers on the page (8 MiB, 30 s, 20 s, 90 s) are the defaults and are labelled that way; operators can change the body cap and timeout with flags.
+- Line endings are normalised to LF before hashing and serving, so the CSP hash holds on a CRLF checkout.

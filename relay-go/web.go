@@ -13,7 +13,12 @@ import (
 // leaks nothing that /_relay/status deliberately withholds without the node's token.
 //
 //go:embed web/index.html
-var indexHTML []byte
+var embeddedIndex []byte
+
+// indexHTML is the page with CRLF folded to LF. A browser hashes the style text after the HTML
+// parser has normalised line endings, so a binary built from a CRLF checkout would otherwise
+// serve a CSP hash that does not match and the CSS would be blocked.
+var indexHTML = bytes.ReplaceAll(embeddedIndex, []byte("\r\n"), []byte("\n"))
 
 // frontPageCSP pins the page's single inline <style> block by hash and allows nothing else: no
 // script, no webfonts, no remote images, no framing, no forms. If the style block cannot be found
