@@ -20,6 +20,16 @@ async function findBridge() {
   }
   return null;
 }
+// One bridge call that survives a wrong port: if the request fails outright, or the port
+// answers 404/405 (another service holds it, e.g. mesh_registry on Phoebus 8765), look for
+// the real bridge and retry once there.
+async function bridgeFetch(path, init) {
+  let r;
+  try { r = await fetch(NGO + path, init); if (r.status !== 404 && r.status !== 405) return r; } catch (e) { if (init && init.signal && init.signal.aborted) throw e; }
+  const before = NGO;
+  if (!(await findBridge()) || (NGO === before && r)) { if (r) return r; throw new Error("bridge not found"); }
+  return fetch(NGO + path, init);
+}
 chrome.storage.local.get("ngo").then(v => { if (v && NGO_CANDIDATES.includes(v.ngo)) NGO = v.ngo; }).catch(() => {});
 const IDLE_MS = globalThis.NG_IDLE_MS ?? 90000;   // max silence between chunks once text has started
 // Long jobs in the panel (a batch, a Morph, a translation, audio transcription) keep the computer awake, never the screen.
@@ -94,7 +104,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.type === "provModels") { listModels(msg.id, msg.key, msg.base).then(models => reply({ ok: true, models }), e => reply({ ok: false, error: String(e.message || e) })); return true; }
   if (msg.type === "openOptions") { chrome.runtime.openOptionsPage(); reply({ ok: true }); return; }
   if (msg.type === "shard") {
-    fetch(NGO + "/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
+    bridgeFetch("/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
       .then(async r => { const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
         if (!r.ok) reply({ ok: false, error: j?.error?.message || ("bridge said " + r.status) });
         else if (!j || typeof j !== "object") reply({ ok: false, error: "the bridge answered " + r.status + " but not with JSON" });
@@ -214,7 +224,7 @@ chrome.runtime.onConnect.addListener(port => {
       let timedOut = false;
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
       try {
-        const r = await fetch(NGO + "/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
+        const r = await bridgeFetch("/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
         // Read text and parse safely: a reachable bridge that answers with HTML or an empty body is reported as
         // what it is, never as "not running" (that message is only for fetch itself failing).
         const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
