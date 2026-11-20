@@ -3149,10 +3149,31 @@ def _msg_fanout_async() -> bool:
     """Node tools fan out to peers in the background (see NouGenMsgBus.emit_fleet). Env-first."""
     return os.environ.get("NOUGEN_MSG_FANOUT_ASYNC", "1").strip().lower() not in ("0", "false", "no", "off")
 
+_CONNECTOR_ORIGIN_KEYS = ("machine", "lane", "original_sender", "transport",
+                          "session_id", "correlation_id", "reply_to")
+
+
+def _connector_origin(origin: Optional[dict]) -> Optional[dict]:
+    """Normalise an origin handed in by a remote caller (the fleet connector).
+
+    Only short string fields survive; a missing machine becomes ``remote`` so the
+    receiving box never labels the message with its own name. Returns None when
+    no origin was supplied (a local caller: the box stamps itself as usual)."""
+    if not isinstance(origin, dict) or not origin:
+        return None
+    out = {k: str(origin[k])[:64] for k in _CONNECTOR_ORIGIN_KEYS
+           if isinstance(origin.get(k), (str, int)) and not isinstance(origin.get(k), bool)
+           and str(origin[k]).strip()}
+    out.setdefault("machine", "remote")
+    out.setdefault("lane", "agent")
+    out.setdefault("original_sender", f"{out['machine']}-{out['lane']}")
+    return out
+
 
 @node_mcp.tool()
 @_offloaded
-def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
+def nougenmsg(message: str, target: str = "all", priority: str = "normal",
+              origin: Optional[dict] = None) -> dict:
     """Send a live NouGenMsg IPC notification or baton to another fleet agent or node
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
     # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
@@ -3162,7 +3183,12 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     refusal = target_unknown(clean_target)
     if refusal:
         return {"status": "refused", "target": target, "priority": priority, **refusal}
-    res = NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async())
+    # A caller-supplied origin (the fleet connector passes the remote lane's
+    # node/lane) means this box is a relay hop, not the sender: keep the claim,
+    # mark it forwarded-unverified, and never stamp this box's name on it.
+    fwd = _connector_origin(origin)
+    res = NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async(),
+                                     origin=fwd, forwarded=fwd is not None)
     return {
         "status": "delivered",
         "target": target,

@@ -1673,7 +1673,8 @@ class NouGenMsgBus:
     def send_resolved(cls, target: str, text: str,
                       origin: Optional[Dict[str, Any]] = None,
                       audience: Optional[str] = None,
-                      background: bool = False) -> Dict[str, Any]:
+                      background: bool = False,
+                      forwarded: bool = False) -> Dict[str, Any]:
         """Resolve ``target`` against the live table and send to exactly what it names.
 
         The one dispatch for the CLI, the MCP tools and app.py. An unknown or
@@ -1681,6 +1682,8 @@ class NouGenMsgBus:
         only fan-out; every other delivery goes to its own (node, lane) once, so a
         lane resolved to another node is never re-read as "everyone here".
         """
+        # Only pass the flag when set, so callers/fakes predating it keep working.
+        fwd = {"forwarded": True} if forwarded else {}
         res = resolve_target(target)
         if not res.ok:
             return {"delivered": False, "status": "not_resolvable", "reason": res.reason,
@@ -1691,7 +1694,7 @@ class NouGenMsgBus:
         if res.kind == "group":
             peers = sorted({d.node for d in res.deliveries} - here)
             results = cls.emit_fleet(text=text, target="all", origin=origin, audience=audience,
-                                     background=background, nodes=peers)
+                                     background=background, nodes=peers, **fwd)
             return {"resolution": res.as_dict(), "results": results}
         routes, seen = [], set()
         for d in res.deliveries:
@@ -1706,14 +1709,14 @@ class NouGenMsgBus:
         remote = [r for r in routes if r[0] != curr]
         for node, agent in routes:
             if node == curr:
-                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd))
         if background and remote:
             def _fan_out(todo=tuple(remote)):
                 # Same contract as emit_fleet's background fan-out: a failed or raising
                 # send is reported on stderr (the node's err log), never swallowed.
                 for node, agent in todo:
                     try:
-                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd)
                         bad = {k: v for k, v in (res or {}).items()
                                if isinstance(v, str) and v.startswith("Error")}
                         if bad:
@@ -1730,7 +1733,7 @@ class NouGenMsgBus:
                                  "failure_report": "stderr of the sending process"}
         else:
             for node, agent in remote:
-                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd))
         return {"resolution": res.as_dict(), "results": results}
 
     @classmethod
