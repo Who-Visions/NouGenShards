@@ -91,6 +91,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id, path, ok := route(r.Host, r.URL, s.cfg.HostSuffix)
 	if !ok {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			serveFrontPage(w, r)
+			return
+		}
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
