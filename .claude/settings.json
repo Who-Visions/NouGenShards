@@ -1,0 +1,89 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.p12)",
+      "Read(**/*.pfx)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_dsa*)",
+      "Read(**/id_ecdsa*)",
+      "Read(**/id_ed25519*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.nougen/secrets/**)",
+      "Read(**/agent_secrets.db)",
+      "Read(**/agent_secrets.csv)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(**/agent_secrets.db)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --mirror:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin master:*)",
+      "Bash(git push origin HEAD:main:*)",
+      "Bash(git push origin HEAD:master:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"tools/handoff_guard.py\" --mode sessionstart",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"tools/guardrails/bash_guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"tools/handoff_guard.py\" --mode stop",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python \"tools/guardrails/verify.py\" --hook",
+            "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "python \"tools/guardrails/stop_receipt.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"tools/handoff_guard.py\" --mode sessionend",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
