@@ -205,7 +205,8 @@ func TestRoundTripViaPathAndHostSuffix(t *testing.T) {
 func TestRoutingMisses(t *testing.T) {
 	ts, _, _ := newRelay(t, Config{HostSuffix: ".relay.test"})
 	for _, c := range []struct{ path, host string }{
-		{"/", ""}, {"/n/BAD_ID/x", ""}, {"/n/", ""}, {"/other", "evil.example"}, {"/x", "-bad.relay.test"},
+		// "/" is no longer a miss: it serves the public front page (see web_test.go).
+		{"/n/BAD_ID/x", ""}, {"/n/", ""}, {"/other", "evil.example"}, {"/x", "-bad.relay.test"},
 	} {
 		resp, _ := get(t, ts, "GET", c.path, c.host, nil)
 		if resp.StatusCode != 404 {
