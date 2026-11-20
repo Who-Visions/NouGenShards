@@ -5,7 +5,32 @@
 importScripts("providers.js", "power-core.js");
 
 const DEF = { host: "http://localhost:11434", model: "auto", localModel: "gemma4:e2b-qat", autoOrder: "free" };
-const NGO = "http://127.0.0.1:8765";   // nougen-open serve
+// nougen-open serve. 8765 is the default; a machine where 8765 is taken (Phoebus runs
+// mesh_registry there) serves the bridge on 8767. Find the one that is really the bridge
+// (its /health lists "lanes"), remember it, and look again whenever a call fails.
+let NGO = "http://127.0.0.1:8765";
+const NGO_CANDIDATES = ["http://127.0.0.1:8765", "http://127.0.0.1:8767"];
+async function findBridge() {
+  for (const c of NGO_CANDIDATES) {
+    try {
+      const r = await fetch(c + "/health", { signal: AbortSignal.timeout(1500) });
+      const j = await r.json();
+      if (r.ok && j && Array.isArray(j.lanes)) { NGO = c; chrome.storage.local.set({ ngo: c }); return c; }
+    } catch {}
+  }
+  return null;
+}
+// One bridge call that survives a wrong port: if the request fails outright, or the port
+// answers 404/405 (another service holds it, e.g. mesh_registry on Phoebus 8765), look for
+// the real bridge and retry once there.
+async function bridgeFetch(path, init) {
+  let r;
+  try { r = await fetch(NGO + path, init); if (r.status !== 404 && r.status !== 405) return r; } catch (e) { if (init && init.signal && init.signal.aborted) throw e; }
+  const before = NGO;
+  if (!(await findBridge()) || (NGO === before && r)) { if (r) return r; throw new Error("bridge not found"); }
+  return fetch(NGO + path, init);
+}
+chrome.storage.local.get("ngo").then(v => { if (v && NGO_CANDIDATES.includes(v.ngo)) NGO = v.ngo; }).catch(() => {});
 const IDLE_MS = globalThis.NG_IDLE_MS ?? 90000;   // max silence between chunks once text has started
 // Long jobs in the panel (a batch, a Morph, a translation, audio transcription) keep the computer awake, never the screen.
 const blocker = createPowerBlocker(chrome.power);
@@ -79,7 +104,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.type === "provModels") { listModels(msg.id, msg.key, msg.base).then(models => reply({ ok: true, models }), e => reply({ ok: false, error: String(e.message || e) })); return true; }
   if (msg.type === "openOptions") { chrome.runtime.openOptionsPage(); reply({ ok: true }); return; }
   if (msg.type === "shard") {
-    fetch(NGO + "/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
+    bridgeFetch("/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
       .then(async r => { const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
         if (!r.ok) reply({ ok: false, error: j?.error?.message || ("bridge said " + r.status) });
         else if (!j || typeof j !== "object") reply({ ok: false, error: "the bridge answered " + r.status + " but not with JSON" });
@@ -199,7 +224,7 @@ chrome.runtime.onConnect.addListener(port => {
       let timedOut = false;
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
       try {
-        const r = await fetch(NGO + "/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
+        const r = await bridgeFetch("/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
         // Read text and parse safely: a reachable bridge that answers with HTML or an empty body is reported as
         // what it is, never as "not running" (that message is only for fetch itself failing).
         const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
@@ -208,6 +233,7 @@ chrome.runtime.onConnect.addListener(port => {
         else send(bridge.ok(j));
       } catch (e) {
         if (closed) return;
+        if (!timedOut) findBridge();
         send({ ok: false, error: timedOut ? "the bridge took too long" : "the NouGenOpen bridge is not running (nougen-open serve)" });
       } finally { clearTimeout(timer); }
     });

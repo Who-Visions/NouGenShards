@@ -595,7 +595,10 @@
     const once = () => new Promise(res => { const p = chrome.runtime.connect({ name: "shard" }); const ka = setInterval(() => { try { p.postMessage({ ping: 1 }); } catch {} }, 15000);
       const fin = v => { clearInterval(ka); res(v); try { p.disconnect(); } catch {} };
       p.onMessage.addListener(fin); p.onDisconnect.addListener(() => fin(null)); p.postMessage({ doc }); });
-    let r = await once(); if (!r) r = await once();
+    // The bridge or its node can blip for a few seconds (a restart, a sleeping service worker):
+    // retry with short pauses before calling it down. Repeats are safe; the vault dedupes by content.
+    let r = null;
+    for (const wait of [0, 1500, 4000, 8000]) { if (wait) await new Promise(res => setTimeout(res, wait)); r = await once(); if (r) break; }
     if (b.isConnected) { delete b.dataset.busy; b.textContent = label; }
     if (S.vid !== v0) return;   // navigated away while saving: do not overwrite the new video's state
     S.shardMsg = r?.ok ? `Saved to NouGenShards: ${r.parts.length} shard${r.parts.length === 1 ? "" : "s"} (${r.parts.map(p => p.shard_id != null ? `${p.shard_id}@db${p.db_index}` : (p.captured ? "new" : "already stored")).join(", ")}).`
@@ -978,7 +981,7 @@
 
   // ---------- persistence / export ----------
   const key = () => "v:" + S.vid;
-  function save() { chrome.storage.local.set({ [key()]: { summary: S.summary, chat: S.chat, hl: S.hl, shardMsg: S.shardMsg || "", morph: S.morph && !S.morph.busy ? S.morph : null, tr: S.tr && !S.tr.busy && !S.tr.err ? { lang: S.tr.lang, out: S.tr.out, done: S.tr.out.length } : null } }); }
+  function save() { chrome.storage.local.set({ [key()]: { summary: S.summary, chat: S.chat, hl: S.hl, shardMsg: /^(Could not|Nothing)/.test(S.shardMsg || "") ? "" : (S.shardMsg || ""), morph: S.morph && !S.morph.busy ? S.morph : null, tr: S.tr && !S.tr.busy && !S.tr.err ? { lang: S.tr.lang, out: S.tr.out, done: S.tr.out.length } : null } }); }
   const saveHl = save;
   // Copy format: "<title> - YouTube\n<url>\n\nTranscript:\n(mm:ss) paragraph"
   const pad = t => { t = Math.floor(t); const h = t / 3600 | 0, m = String((t % 3600) / 60 | 0).padStart(2, "0"), x = String(t % 60).padStart(2, "0"); return h ? `${h}:${m}:${x}` : `${m}:${x}`; };
