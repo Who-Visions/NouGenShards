@@ -3,30 +3,80 @@
   "$id": "https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json",
   "title": "NouGen Structured README Manifest",
   "type": "object",
-  "required": ["project", "sections"],
+  "required": [
+    "project",
+    "sections"
+  ],
   "properties": {
-    "$schema": {"type": "string"},
-    "schema_version": {"type": "integer", "const": 1, "default": 1},
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1
+    },
     "project": {
       "type": "object",
-      "required": ["title"],
+      "required": [
+        "title"
+      ],
       "properties": {
-        "title": {"type": "string", "minLength": 1},
-        "description": {"type": "string"},
-        "emoji": {"type": "string", "maxLength": 32}
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "emoji": {
+          "type": "string",
+          "maxLength": 32
+        }
       },
       "additionalProperties": false
     },
-    "table_of_contents": {"type": "boolean", "default": true},
+    "table_of_contents": {
+      "type": "boolean",
+      "default": true
+    },
+    "banner": {
+      "type": "string",
+      "description": "Optional verbatim block (e.g. ASCII art) rendered after the title."
+    },
+    "status": {
+      "type": "string",
+      "description": "Optional one-line status rendered under the title as 'Status: ...'."
+    },
+    "subtitle": {
+      "type": "string",
+      "description": "Optional one-line subtitle rendered under the title."
+    },
+    "source_readme_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Optional provenance: SHA-256 of the README.md that init --from-readme prefilled from. Compile ignores it for output."
+    },
     "badges": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["label", "image"],
+        "required": [
+          "label",
+          "image"
+        ],
         "properties": {
-          "label": {"type": "string", "minLength": 1},
-          "image": {"type": "string", "minLength": 1},
-          "url": {"type": "string"}
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "image": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
@@ -35,22 +85,82 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["title"],
+        "required": [
+          "title"
+        ],
         "properties": {
-          "title": {"type": "string", "minLength": 1},
-          "content": {"type": "string"},
-          "file": {"type": "string", "minLength": 1},
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          },
           "emoji": {
             "anyOf": [
-              {"enum": ["auto", "none"]},
-              {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "\\S"}
+              {
+                "enum": [
+                  "auto",
+                  "none"
+                ]
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32,
+                "pattern": "\\S"
+              }
             ]
           },
-          "keywords": {"type": "array", "items": {"type": "string"}}
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "merge": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         },
         "oneOf": [
-          {"required": ["content"], "not": {"required": ["file"]}},
-          {"required": ["file"], "not": {"required": ["content"]}}
+          {
+            "not": {
+              "required": [
+                "merge"
+              ]
+            },
+            "required": [
+              "content"
+            ]
+          },
+          {
+            "not": {
+              "required": [
+                "merge"
+              ]
+            },
+            "required": [
+              "file"
+            ]
+          },
+          {
+            "not": {
+              "required": [
+                "file"
+              ]
+            },
+            "required": [
+              "merge"
+            ]
+          }
         ],
         "additionalProperties": false
       }
@@ -59,10 +169,19 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["label", "url"],
+        "required": [
+          "label",
+          "url"
+        ],
         "properties": {
-          "label": {"type": "string", "minLength": 1},
-          "url": {"type": "string", "minLength": 1}
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       }
@@ -70,13 +189,150 @@
     "persona": {
       "type": "object",
       "properties": {
-        "market": {"type": "string"},
-        "audience": {"type": "string"},
-        "register": {"type": "string"},
-        "fingerprint": {"type": "string"}
+        "market": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "register": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
+    },
+    "kind": {
+      "default": "project",
+      "description": "project (default) or profile.",
+      "enum": [
+        "project",
+        "profile"
+      ]
+    },
+    "identity": {
+      "additionalProperties": false,
+      "description": "Required when kind is 'profile'.",
+      "properties": {
+        "headline": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tagline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "layers": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "flagships": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "repo": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "theme": {
+      "additionalProperties": false,
+      "description": "Profile theme. Presets are small deterministic layout variants; SVG artwork is out of scope.",
+      "properties": {
+        "preset": {
+          "default": "control-plane",
+          "enum": [
+            "control-plane",
+            "editorial",
+            "terminal",
+            "minimal"
+          ]
+        },
+        "primary": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "secondary": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "footer": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      ],
+      "description": "Optional footer block appended after Links."
+    },
+    "recurse": {
+      "default": false,
+      "description": "When true, compile also compiles child dirs with their own manifest.",
+      "type": "boolean"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "description": "NouGen manifest schema v1, extended with optional fields only. A plain v1 manifest is valid here."
 }
