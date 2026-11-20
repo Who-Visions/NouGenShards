@@ -9,6 +9,7 @@ operator's full token only to upload the script and bind the custom domain.
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import sys
 import urllib.error
@@ -76,6 +77,35 @@ def client():
     return cls(token=t._resolve_cf_token())
 
 
+RELAY_URL_RE = re.compile(r"^(wss|https)://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$")
+KV_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def relay_bindings(env) -> list:
+    """Bindings that let the join worker provision accounts on the relay.
+
+    Off unless the person deploying sets BOTH NOUGEN_JOIN_RELAY_URL (the
+    relay's wss:// or https:// address) and NOUGEN_JOIN_RELAY_AUTH_KV_ID (the
+    id of the relay's RELAY_AUTH namespace). Setting only one, or a value that
+    is not well formed, stops the deploy: a half-configured relay would hand
+    out an address the relay then refuses.
+    """
+    url = (env.get("NOUGEN_JOIN_RELAY_URL") or "").strip()
+    kv_id = (env.get("NOUGEN_JOIN_RELAY_AUTH_KV_ID") or "").strip()
+    if not url and not kv_id:
+        return []
+    if not url or not kv_id:
+        raise SystemExit("relay: set both NOUGEN_JOIN_RELAY_URL and NOUGEN_JOIN_RELAY_AUTH_KV_ID, or neither; nothing deployed")
+    if not RELAY_URL_RE.match(url):
+        raise SystemExit("relay: NOUGEN_JOIN_RELAY_URL must be a plain wss:// or https:// address; nothing deployed")
+    if not KV_ID_RE.match(kv_id):
+        raise SystemExit("relay: NOUGEN_JOIN_RELAY_AUTH_KV_ID is not a KV namespace id; nothing deployed")
+    return [
+        {"type": "kv_namespace", "name": "RELAY_AUTH", "namespace_id": kv_id},
+        {"type": "plain_text", "name": "RELAY_URL", "text": url},
+    ]
+
+
 def main():
     c = client()
     acct = c.account_id
@@ -96,6 +126,7 @@ def main():
         {"type": "plain_text", "name": "JOIN_MAX_PER_IP_DAY", "text": "5"},
         {"type": "plain_text", "name": "LINK_TTL_DAYS", "text": "14"},
     ]
+    bindings += relay_bindings(os.environ)
     if any(b.get("text") in (None, "") for b in bindings if b["type"] in ("secret_text", "plain_text")):
         raise SystemExit("a keymaker value is missing; nothing deployed")
     meta = {"main_module": "worker.js", "compatibility_date": "2026-11-11", "bindings": bindings,

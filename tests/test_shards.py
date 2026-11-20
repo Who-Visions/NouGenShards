@@ -434,9 +434,9 @@ def test_mark_verified_moves_window(setup_test_env):
     assert c.mark_verified(999999, res["db_index"]) is False
 
 
-def test_capture_stamps_machine_hostname(setup_test_env):
-    """Verify capture() stamps the local machine hostname on the shard row."""
-    import socket
+def test_capture_stamps_machine_hostname(setup_test_env, monkeypatch):
+    """capture() stamps the resolved node name (machine.sender_identity), not a raw hostname."""
+    monkeypatch.setenv("NOUGEN_NODE", "testnode")
     res = shards.capture("note", "Machine Test", "Testing machine provenance")
     assert res.captured is True
     
@@ -444,7 +444,7 @@ def test_capture_stamps_machine_hostname(setup_test_env):
     try:
         row = conn.execute("SELECT machine FROM shards WHERE id = ?", (res.shard_id,)).fetchone()
         assert row is not None
-        assert row[0] == socket.gethostname()
+        assert row[0] == "testnode"
     finally:
         conn.close()
 

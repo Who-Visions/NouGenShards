@@ -31,7 +31,7 @@ def test_probe_path_per_os(monkeypatch, system, host):
 def test_env_beats_config_beats_probe(monkeypatch):
     monkeypatch.setattr(machine.socket, "gethostname", lambda: "probehost")
     monkeypatch.setattr(machine, "_fleet_node", lambda: "nodecfg")
-    assert machine.sender_identity()["node_source"] == "config:fleet_hosts"
+    assert machine.sender_identity()["node_source"] == "runtime:current_machine_id"
     monkeypatch.setenv("NOUGEN_NODE", "NodeEnv")
     ident = machine.sender_identity()
     assert (ident["node"], ident["node_source"]) == ("nodeenv", "env:NOUGEN_NODE")

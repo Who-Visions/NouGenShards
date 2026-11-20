@@ -217,8 +217,10 @@ def _fleet_node() -> str | None:
     "standalone" means no config matched, which is not a node name.
     """
     try:
-        from .nougenmsg import get_current_node
-        node = (get_current_node() or "").strip().lower()
+        # current_machine_id() (PR 1142) is the wire name: the fleet node when
+        # this box is listed, else the slugged hostname or a persisted device id.
+        from .nougenmsg import current_machine_id
+        node = (current_machine_id() or "").strip().lower()
     except Exception as exc:  # config unreadable: fall through to the probe
         _log.debug("fleet node lookup failed: %s", exc)
         return None
@@ -240,7 +242,7 @@ def sender_identity() -> dict[str, str]:
     if node:
         node = node.lower()
     else:
-        node, source = _fleet_node(), "config:fleet_hosts"
+        node, source = _fleet_node(), "runtime:current_machine_id"
     if not node:
         node, source = host_label().lower(), "probe:hostname"
         if node == "unknown-host":
