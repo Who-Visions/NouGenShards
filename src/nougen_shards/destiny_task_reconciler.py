@@ -104,6 +104,7 @@ def _connect(path: Optional[Path] = None):
               lease_owner TEXT,
               lease_expires REAL,
               tokens_spent INTEGER NOT NULL DEFAULT 0,
+              revivals INTEGER NOT NULL DEFAULT 0,
               last_agent TEXT,
               blocked_reason TEXT,
               created REAL NOT NULL,
@@ -124,6 +125,8 @@ def _connect(path: Optional[Path] = None):
               route TEXT PRIMARY KEY, cooldown_until REAL NOT NULL, last_error TEXT
             );
             """)
+        if "revivals" not in {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}:
+            conn.execute("ALTER TABLE tasks ADD COLUMN revivals INTEGER NOT NULL DEFAULT 0")
         yield conn
         conn.commit()
     except Exception:
@@ -160,6 +163,14 @@ class Config:
     routes: Sequence[str] = ("blade", "phoebus")
     auto_fulfill: bool = False
     session_prefix: str = "destiny"
+    # Relentless mode (run_forever only; tick() keeps the hard per-cycle bound).
+    # A FAILED task is revived with exponential backoff instead of being dropped,
+    # until it has used up its revivals or its lifetime token budget; then it is
+    # BLOCKED with a reason, never left silently failed.
+    revive_base_s: float = 300.0
+    revive_max_s: float = 6 * 3600.0
+    max_revivals: int = 8
+    lifetime_token_budget: int = 200000
 
 
 @dataclass
@@ -605,6 +616,100 @@ def tick(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> dict:
     return out
 
 
+def revive_failed(cfg: Config, ports: Ports, *, path: Optional[Path] = None) -> Dict[str, int]:
+    """Give FAILED tasks another cycle after an exponential backoff.
+
+    Each revival resets the per-cycle attempts, strategy ladder and token spend,
+    but is bounded twice over: ``max_revivals`` and ``lifetime_token_budget``
+    (summed from the attempts log, so it survives the per-cycle reset). A task
+    that exhausts either is moved to BLOCKED with a reason so a human sees it.
+    """
+    now = ports.clock()
+    out = {"revived": 0, "escalated": 0}
+    with _connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")  # one reviver at a time, like resume_expired
+        rows = conn.execute(
+            "SELECT t.*, COALESCE((SELECT SUM(tokens) FROM attempts a WHERE a.task_id=t.id),0) AS life "
+            "FROM tasks t WHERE t.state=?", (FAILED,)).fetchall()
+        for r in rows:
+            if r["revivals"] >= cfg.max_revivals or r["life"] >= cfg.lifetime_token_budget:
+                why = (f"gave up after {r['revivals']} revivals"
+                       if r["revivals"] >= cfg.max_revivals
+                       else f"lifetime token budget spent ({r['life']}>={cfg.lifetime_token_budget})")
+                conn.execute("UPDATE tasks SET state=?, blocked_reason=?, updated=? WHERE id=?",
+                             (BLOCKED, why, now, r["id"]))
+                out["escalated"] += 1
+                continue
+            if now - r["updated"] < min(cfg.revive_max_s, cfg.revive_base_s * (2 ** r["revivals"])):
+                continue
+            # The per-cycle allowance is capped by what is left of the lifetime budget:
+            # _run_task derives "remaining" from tokens_spent, so seed it with the
+            # shortfall instead of 0 and a revived cycle cannot overshoot the lifetime cap.
+            life_left = cfg.lifetime_token_budget - r["life"]
+            seed_spent = max(0, cfg.task_token_budget - life_left)
+            conn.execute(
+                "UPDATE tasks SET state=?, attempts=0, strategy_idx=0, tokens_spent=?, revivals=revivals+1, "
+                "lease_owner=NULL, lease_expires=NULL, updated=? WHERE id=? AND state=?",
+                (QUEUED, seed_spent, now, r["id"], FAILED))
+            conn.execute("INSERT INTO attempts (task_id,n,strategy,outcome,detail,ts) VALUES (?,?,?,?,?,?)",
+                         (r["id"], r["attempts"], STRATEGIES[0], "revived",
+                          f"revival {r['revivals'] + 1}/{cfg.max_revivals}", now))
+            out["revived"] += 1
+    return out
+
+
+def run_forever(cfg: Config, ports: Ports, *, path: Optional[Path] = None,
+                busy_sleep_s: float = 2.0, idle_sleep_s: float = 15.0, max_sleep_s: float = 300.0,
+                max_ticks: Optional[int] = None, sleep: Callable[[float], None] = time.sleep,
+                keepalive: Optional[Callable[[], None]] = None,
+                heartbeat_path: Optional[Path] = None,
+                jitter: Callable[[], float] = lambda: 0.0) -> Dict[str, Any]:
+    """Relentless loop: tick + revive until stopped (Ctrl-C) or ``max_ticks``.
+
+    - A pass that raises is logged and retried after a capped exponential
+      backoff; one bad pass never ends the loop.
+    - Sleep is short while work is flowing and backs off while idle.
+    - ``keepalive`` runs every pass (refreshes the single-instance lock so a
+      long-lived loop is not mistaken for a stale one).
+    - ``heartbeat_path`` gets an atomic JSON status each pass for watchdogs.
+    """
+    ticks = errors = consecutive_errors = idle_passes = 0
+    last: Dict[str, Any] = {}
+    try:
+        while max_ticks is None or ticks < max_ticks:
+            ticks += 1
+            try:
+                out = tick(cfg, ports, path=path)
+                out.update(revive_failed(cfg, ports, path=path))
+                consecutive_errors = 0
+                worked = bool(out["results"] or out["resumed"] or out["revived"])
+                idle_passes = 0 if worked else idle_passes + 1
+                delay = busy_sleep_s if worked else min(max_sleep_s, idle_sleep_s * (2 ** min(idle_passes - 1, 8)))
+                last = {"ok": True, "resumed": out["resumed"], "revived": out["revived"],
+                        "escalated": out["escalated"], "ran": len(out["results"])}
+            except Exception as exc:  # the loop outlives any single failing pass
+                errors += 1
+                consecutive_errors += 1
+                delay = min(max_sleep_s, busy_sleep_s * (2 ** min(consecutive_errors, 8)))
+                last = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+            if keepalive:
+                with contextlib.suppress(Exception):
+                    keepalive()
+            if heartbeat_path:
+                with contextlib.suppress(Exception):
+                    hp = Path(heartbeat_path)
+                    tmp = hp.with_name(hp.name + ".tmp")
+                    tmp.write_text(json.dumps({"ts": ports.clock(), "ticks": ticks, "errors": errors, **last}),
+                                   encoding="utf-8")
+                    os.replace(tmp, hp)
+            if max_ticks is not None and ticks >= max_ticks:
+                break
+            sleep(max(0.0, delay + jitter()))
+    except KeyboardInterrupt:
+        pass
+    return {"ticks": ticks, "errors": errors, **last}
+
+
 def status(*, path: Optional[Path] = None) -> dict:
     with _connect(path) as conn:
         counts = {r["state"]: r["n"] for r in conn.execute("SELECT state, COUNT(*) n FROM tasks GROUP BY state")}
@@ -647,8 +752,10 @@ def store_ports(**overrides: Any) -> Ports:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="destiny_task_reconciler")
-    ap.add_argument("cmd", choices=["status", "discover", "tick"])
-    ap.add_argument("--ports", help="module:factory returning a Ports (required for tick)")
+    ap.add_argument("cmd", choices=["status", "discover", "tick", "loop"])
+    ap.add_argument("--ports", help="module:factory returning a Ports (required for tick/loop)")
+    ap.add_argument("--max-ticks", type=int, default=None, help="loop: stop after N passes (default: run until stopped)")
+    ap.add_argument("--heartbeat", help="loop: write a JSON heartbeat here every pass")
     a = ap.parse_args(argv)
     if a.cmd == "status":
         print(json.dumps(status(), indent=2))
@@ -664,7 +771,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ports = getattr(importlib.import_module(mod), fn)()
     lock = db_path().with_suffix(".lock")
     with single_instance(lock):
-        print(json.dumps(tick(Config(), ports), indent=2, default=str))
+        if a.cmd == "loop":
+            import random
+            res = run_forever(Config(), ports, max_ticks=a.max_ticks,
+                              keepalive=lambda: os.utime(lock, None),
+                              heartbeat_path=Path(a.heartbeat) if a.heartbeat else None,
+                              jitter=lambda: random.uniform(0, 1.0))
+            print(json.dumps(res, indent=2, default=str))
+        else:
+            print(json.dumps(tick(Config(), ports), indent=2, default=str))
     return 0
 
 

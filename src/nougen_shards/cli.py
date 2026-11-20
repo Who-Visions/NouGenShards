@@ -1429,6 +1429,20 @@ def cmd_recall_hook(args):
     else:
         print(recall_hook.format_block(result))
 
+def cmd_transport(args):
+    """nougen transport discover: exit 0 when a transport is chosen, 2 when none."""
+    from . import transport_discovery as td  # pylint: disable=import-outside-toplevel
+    argv = []
+    if args.account_dir:
+        argv += ["--account-dir", args.account_dir]
+    for flag in ("refresh", "failing", "json"):
+        if getattr(args, flag, False):
+            argv.append(f"--{flag}")
+    for o in args.observed or []:
+        argv += ["--observed", o]
+    sys.exit(td.main(argv))
+
+
 def cmd_embed(args):
     """Embedding provider: status, fetch the onnx model, backfill, self-test."""
     from . import embed_providers as ep  # pylint: disable=import-outside-toplevel
@@ -2543,6 +2557,15 @@ def get_parser():
     p_eb.add_argument("--batch", type=int, default=64)
     p_eb.add_argument("--reembed", action="store_true",
                       help="Also re-embed rows whose stored dimension differs from the provider's (after a provider switch)")
+
+    p_transport = subparsers.add_parser("transport", help="Discover how this node reaches the internet (quic|http2|relay|none)")
+    transport_sub = p_transport.add_subparsers(dest="transport_cmd", required=True)
+    p_td = transport_sub.add_parser("discover", help="Probe edge + relay, decide, cache in <account dir>/transport.json")
+    p_td.add_argument("--account-dir", default=None)
+    p_td.add_argument("--refresh", action="store_true", help="Ignore the cache and re-probe")
+    p_td.add_argument("--failing", action="store_true", help="Current transport is failing: re-probe")
+    p_td.add_argument("--observed", action="append", default=[], help="Protocol cloudflared reported, e.g. quic")
+    p_td.add_argument("--json", action="store_true")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
@@ -4807,7 +4830,7 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "transport": cmd_transport, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,

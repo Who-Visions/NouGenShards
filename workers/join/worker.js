@@ -26,20 +26,60 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 // The supervisor keeps every account on a computer online (tools/nougen-supervisor).
 // Each file is pinned by SHA-256: setup refuses a download that does not match.
 export const SUPERVISOR = {
-  version: "1.3.2",
-  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.2/",
+  version: "1.3.3",
+  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.3/",
   sha256: {
-    "windows-amd64.exe": "845f0e1c360c216f36f8bed8eb94ede020ab221a7dc4755552eb364a1e3a2876",
-    "windows-arm64.exe": "f13fa2c9b2bdbd2ffc470c42fc220de43932e1a768c7262aaf6269c1e4c9ebe2",
-    "darwin-arm64": "d7ef2cb46d7b90638aba1a7df1d645e51fd150a06666bc8823080a6631950fc6",
-    "darwin-amd64": "576d5466aa23f6b693af9ff6bd78b33849beaf83403fba9375dc92fe509f5e05",
-    "linux-amd64": "cd07ddd9956adb2f1ed8bd73e648bf175873920e374552f328ed76a2ad32848d",
-    "linux-arm64": "35b228480fd6d74bd741ba1055745fa442af93b82e5ead1bdafad43632198d96",
+    "windows-amd64.exe": "db30fb67cd6b2c97c6d5d52d0d75d56353e1b970ae7d3a8ee8a22bec36cfc128",
+    "windows-arm64.exe": "3443f6649736997477c96fe241a517e9439d822261bcf9380d21495cb1c6d924",
+    "darwin-arm64": "70d80dd59199e2ad397b7157b583c572816adb02c2c579d2b6f925429a2c8221",
+    "darwin-amd64": "bff84a465a47e5a4ee20b7985fe14621edad1c6db03b6486a15a675cabc85da7",
+    "linux-amd64": "4cea9946baceb2a46f8a99d3eb5e7226b39527d200c358aceb51c3b9809cb1e5",
+    "linux-arm64": "77c9bca9e51fcfdbcad15d5f3cfbee24f36c2991bc5036feb57c554e988af071",
   },
 };
 // What the supervisor reads for one account. One line of JSON, so it can sit
 // inside a literal here-string or heredoc without any escaping rules applying.
-export const nodeJson = (t) => JSON.stringify({ id: String(t.id), port: Number(t.port), token: String(t.token), tunnel: String(t.tunnel || ""), url: String(t.url || "") });
+export const nodeJson = (t) => JSON.stringify({ id: String(t.id), port: Number(t.port), token: String(t.token), tunnel: String(t.tunnel || ""), url: String(t.url || ""),
+  // Present only when this account was provisioned on the relay (see relayProvision).
+  ...(t.relay_url ? { relay_url: String(t.relay_url) } : {}) });
+
+// The id the relay routes on: the first label of the node's public hostname,
+// else the tenant id. Same rule as relay_id() in src/nougen_shards/relay_client.py,
+// so the record written here is the one the node's client is looked up by.
+export function relayId(t) {
+  try {
+    const host = new URL(String(t.url || "")).hostname;
+    if (host.includes(".")) return host.split(".")[0].toLowerCase();
+  } catch { /* no usable url: fall through to the id */ }
+  return String(t.id).toLowerCase();
+}
+
+// What the relay expects for this account: key "relay:<id>", value sha256(token).
+// Same shape as relayAuthRecord() in workers/relay/worker.js (a test compares them).
+// The token itself is never written.
+export async function relayAuthRecordFor(t) {
+  return { key: "relay:" + relayId(t), value: await sha256Hex(t.token) };
+}
+
+// relayProvision makes the relay usable for an account and returns the address
+// to put in its node.json, or "" when the relay is not available.
+//
+// It does nothing unless this deployment is given both the relay's address
+// (RELAY_URL) and its auth store (RELAY_AUTH). The address must be TLS: the
+// node sends its token to it. If the record cannot be written, no address is
+// returned, so setup never points a node at a relay that would refuse it.
+export async function relayProvision(env, t) {
+  const url = String(env.RELAY_URL || "").trim();
+  if (!url || !env.RELAY_AUTH) return "";
+  if (!SAFE_RELAY_URL.test(url)) return "";
+  try {
+    const rec = await relayAuthRecordFor(t);
+    if ((await env.RELAY_AUTH.get(rec.key)) !== rec.value) await env.RELAY_AUTH.put(rec.key, rec.value);
+    return url;
+  } catch {
+    return "";
+  }
+}
 const psq = (s) => String(s).replace(/'/g, "''");
 const shq = (s) => String(s).replace(/'/g, "'\\''");
 const rand = (n) => { const b = crypto.getRandomValues(new Uint8Array(n)); return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
@@ -127,6 +167,7 @@ document.getElementById('hint').innerHTML='On Mac or Linux: open Terminal and ru
 // ever placed inside single-quoted literals, and the two that also name a
 // folder or a port are checked first, so nothing here can turn into code.
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const SAFE_RELAY_URL = /^(wss|https):\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/;
 export function setupArgs(t) {
   const id = String((t && t.id) || "");
   const port = Number(t && t.port);
@@ -136,7 +177,10 @@ export function setupArgs(t) {
   // without them just does not report.
   const code = /^[A-Za-z0-9_-]{24,}$/.test(String((t && t.code) || "")) ? String(t.code) : "";
   const origin = /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(String((t && t.origin) || "")) ? String(t.origin) : "";
-  return { ...t, id, port, code: origin ? code : "", origin: code ? origin : "" };
+  // The relay address is written into node.json inside the script. Only a
+  // plain TLS address made of URL-safe characters is let through.
+  const relay_url = SAFE_RELAY_URL.test(String((t && t.relay_url) || "")) ? String(t.relay_url) : "";
+  return { ...t, id, port, code: origin ? code : "", origin: code ? origin : "", relay_url };
 }
 // Where a running supervisor answers. A build that reports "holds" leaves an
 // account alone while its folder carries an "updating" file, so setup can
@@ -364,6 +408,7 @@ fi
 if [ $FRESH = 1 ]; then
   pkill -f "$H/NouGenShards" 2>/dev/null || true
   pkill -f "$H/cloudflared" 2>/dev/null || true
+  pkill -f "nougen_shards.relay_client run --node-json $H/node.json" 2>/dev/null || true
   rm -rf NouGenShards; mv incoming/NouGenShards-main NouGenShards; rm -rf incoming
   [ -n "$SHA" ] && echo "$SHA" > .src-sha
 fi
@@ -385,6 +430,20 @@ start_sup() {
     MODE=foreground; export NOUGEN_AUTOSTART=none; start_sup
   fi
 }
+# restart_sup: stop the helper and this account's tunnel, wait until the helper
+# has really exited, then start it again. start_sup returns at once while a
+# helper still answers, so starting after a fixed pause could leave the old
+# helper, with its old settings, as the one that keeps running.
+restart_sup() {
+  pkill -f "$B/nougen-supervisor" 2>/dev/null || true
+  pkill -f "$H/cloudflared" 2>/dev/null || true
+  # This account's relay client too: stopping the helper does not stop it, and
+  # a client left over from an earlier run would keep holding the relay
+  # session (or keep an old address) beside the one the new helper starts.
+  pkill -f "nougen_shards.relay_client run --node-json $H/node.json" 2>/dev/null || true
+  i=0; while pgrep -f "$B/nougen-supervisor" >/dev/null 2>&1 && [ $i -lt \${NOUGEN_SUP_EXIT_WAIT:-5} ]; do sleep 1; i=$((i+1)); done
+  start_sup
+}
 start_sup
 
 # ---- 3. Check it. The port is the one node.json gives the supervisor.
@@ -403,7 +462,46 @@ tunnel_up() {
   while [ $j -lt "$w" ]; do curl --noproxy '*' -fs -m 3 "http://$MA/ready" >/dev/null 2>&1 && return 0; sleep 3; j=$((j+3)); done
   return 1
 }
-if ! tunnel_up; then
+TR=connected
+# relay_live: this account has a relay address and the relay accepts its token.
+relay_live() {
+  if [ -z "\${NOUGEN_RELAY_URL:-}" ] && ! grep -q '"relay_url"' node.json 2>/dev/null; then
+    note "relay: no relay address for this account, not tried"; return 1
+  fi
+  # The node sends its token to this address, so it must be TLS. The client
+  # refuses anything else as well; saying so here keeps the reason in the log.
+  case "\${NOUGEN_RELAY_URL:-}" in
+    ""|wss://*|https://*) ;;
+    *) note "relay: NOUGEN_RELAY_URL is not wss:// or https://, not used"; return 1 ;;
+  esac
+  ( cd "$H/NouGenShards" && PYTHONPATH="$H/NouGenShards/src" "$B/uv" run --python 3.11 python -m nougen_shards.relay_client probe --node-json "$H/node.json" ) >> "$LOG" 2>&1 || { note "relay: probe failed"; return 1; }
+  note "relay: probe live"
+}
+# relay_running: the helper really started the relay client. An older helper
+# does not know the relay; it would leave this computer with no public address
+# while setup said PASS, so that case is checked and reported as a failure.
+relay_running() {
+  # Match this account's client by its own node.json path: on a computer with
+  # several accounts, another account's relay client must not count.
+  w=\${NOUGEN_TUNNEL_WAIT:-60}; j=0
+  while [ $j -lt "$w" ]; do pgrep -f "nougen_shards.relay_client run --node-json $H/node.json" >/dev/null 2>&1 && return 0; sleep 3; j=$((j+3)); done
+  note "relay: the helper did not start the relay client (helper too old?)"; return 1
+}
+# An account already on the relay has no tunnel to wait for: its helper runs
+# the relay client, not cloudflared. Check that first, so a second run of setup
+# does not spend two tunnel waits before reaching the same answer.
+if [ "$(cat transport 2>/dev/null)" = relay ]; then
+  if relay_running; then
+    TR=relay; note "transport: relay (already set up)"
+  else
+    # Marked as relay but nothing is serving it. While that mark stands the
+    # helper never starts cloudflared, so the tunnel could not pass the checks
+    # below either. Clear it and start over from the tunnel.
+    note "transport: relay was set but its client is not running; checking the tunnel again"
+    rm -f transport relay_url; restart_sup
+  fi
+fi
+if [ "$TR" != relay ] && ! tunnel_up; then
   # QUIC (UDP) is often blocked where TCP still gets out. http2 runs over TCP;
   # it is the only supported switch here (TUNNEL_EDGE works only inside Cloudflare).
   say "The tunnel did not connect. Trying again over http2..."
@@ -411,26 +509,43 @@ if ! tunnel_up; then
   echo "TUNNEL_TRANSPORT_PROTOCOL=http2" > tunnel.env; note "tunnel fallback: http2"
   # Newer supervisors read tunnel.env; older ones pass on what they inherit from here.
   export TUNNEL_TRANSPORT_PROTOCOL=http2
-  pkill -f "$B/nougen-supervisor" 2>/dev/null || true
-  pkill -f "$H/cloudflared" 2>/dev/null || true
-  sleep 2; start_sup
+  restart_sup
   if ! tunnel_up; then
     tail -n 20 tunnel.log >> "$LOG" 2>/dev/null
-    echo; echo "this box can't host a public node: no direct egress for the tunnel"
-    echo "NouGen itself is running here at http://127.0.0.1:$P (log: $LOG)"
-    echo "NOUGEN SETUP: FAIL (no_tunnel_egress) node=127.0.0.1:$P"
-    report no_tunnel_egress; exit 3
+    # Third and last way out (docs/nougen-relay.md): the relay, one outbound
+    # connection on port 443. It needs no SRV lookup and no port 7844, so it
+    # works on networks that refuse both. Used only when this account has a
+    # relay address and the relay answers for it.
+    if relay_live; then
+      say "The tunnel is blocked on this network. Switching to the NouGen relay (port 443)..."
+      # Autostart does not carry this shell's environment over a restart, so an
+      # address that came from NOUGEN_RELAY_URL is saved for the helper to pass on.
+      rm -f relay_url
+      if [ -n "\${NOUGEN_RELAY_URL:-}" ]; then printf '%s\\n' "$NOUGEN_RELAY_URL" > relay_url; chmod 600 relay_url; fi
+      echo relay > transport; note "transport: relay"
+      restart_sup
+      # A relay that did not start leaves no trace: the next run, or a newer
+      # helper, must find a plain tunnel account, not one stuck on a dead relay.
+      if relay_running; then TR=relay; else rm -f transport relay_url; fi
+    fi
+    if [ "$TR" != relay ]; then
+      echo; echo "this box can't host a public node: no direct egress for the tunnel"
+      echo "NouGen itself is running here at http://127.0.0.1:$P (log: $LOG)"
+      echo "NOUGEN SETUP: FAIL (no_tunnel_egress) node=127.0.0.1:$P"
+      report no_tunnel_egress; exit 3
+    fi
   fi
 fi
 report ok
-(command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
+# NOUGEN_NO_BROWSER=1 skips opening the node page (headless boxes, test runs).
+[ -n "\${NOUGEN_NO_BROWSER:-}" ] || (command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
 if [ "$MODE" = foreground ]; then
   echo "NouGen is on. It will not start by itself after a restart here; to start it again run:"
   echo "  $S run"
 else
   echo "Done. NouGen is on and will start by itself whenever this computer starts."
 fi
-echo "NOUGEN SETUP: PASS node=127.0.0.1:$P tunnel=connected mode=$MODE"
+echo "NOUGEN SETUP: PASS node=127.0.0.1:$P tunnel=$TR mode=$MODE"
 `;
 }
 
@@ -734,6 +849,9 @@ export default {
         if (!t) return shell("Link expired", `<h1>This link has expired</h1><p><a class="join-action" href="/">Start again</a></p>`);
         if (!m[2]) return linkPage(t.name, m[1], String(t.url || "").replace(/^https:\/\//, ""));
         const sh = !!m[3];
+        // Linux and macOS setup can fall back to the relay; the Windows setup
+        // has no relay step, so it is not given an address it would not use.
+        if (sh) t.relay_url = await relayProvision(env, t);
         return new Response(sh ? setupSh({ ...t, code: m[1], origin: url.origin }) : setupCmd(t), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${sh ? "setup-nougen.sh" : "Set up NouGen.cmd"}"` } });
       }
