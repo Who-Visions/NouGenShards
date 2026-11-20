@@ -25,7 +25,17 @@ const STUBS = {
   "xdg-open": `echo "$*" >> "$T/browser.log"`,
   nohup: `exec "$@"`,
   pkill: `echo "pkill $*" >> "$T/killed"; exit 0`,
-  pgrep: `exit 1`,
+  // RELAY_RUNNING=1 stands for a helper that started the relay client.
+  // Only this account's own relay client counts: the pattern must carry its node.json path.
+  // SUP_LINGERS=n makes the old helper look alive for the first n checks after a stop.
+  pgrep: `echo "pgrep $*" >> "$T/pgrep.log"
+case "$*" in
+  *"relay_client run --node-json "*"/.nougen-node/$ACCT_ID/node.json") [ "$RELAY_RUNNING" = 1 ] && exit 0 ;;
+  *nougen-supervisor*) n=$(cat "$T/linger" 2>/dev/null || echo "\${SUP_LINGERS:-0}"); [ "$n" -gt 0 ] && { echo $((n-1)) > "$T/linger"; exit 0; } ;;
+esac
+exit 1`,
+  // uv stands in for Python too: the relay probe exits with RELAY_PROBE (default: the relay refuses).
+  uvStub: `echo "uv $*" >> "$T/uv.log"; case "$*" in *relay_client*probe*) exit \${RELAY_PROBE:-2};; esac; exit 0`,
   systemctl: `exit 1`,
   curl: `
 url=""; out=""; data=""
@@ -49,35 +59,44 @@ exit 0`,
   supervisor: `echo "$*" >> "$T/supervisor.log"; [ "$1" = install ] && { echo "autostart: crontab exec error" >&2; exit \${INSTALL_EXIT:-0}; }; exit 0`,
 };
 
-function box({ port = 4999, id = "sample-acct" } = {}) {
+function box({ port = 4999, id = "sample-acct", relay_url = "" } = {}) {
   const T = mkdtempSync(join(tmpdir(), "nglinux-"));
   const bin = join(T, "bin"), home = join(T, "home"), B = join(home, ".nougen-node"), acct = join(B, id);
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(acct, "NouGenShards"), { recursive: true });
   for (const [name, body] of Object.entries(STUBS)) {
-    if (name === "supervisor") continue;
+    if (name === "supervisor" || name === "uvStub") continue;
     writeFileSync(join(bin, name), "#!/bin/sh\n" + body + "\n", { mode: 0o755 });
   }
   // Already installed: supervisor (fingerprint matches via the sha256sum stand-in), uv, cloudflared, current source.
   writeFileSync(join(B, "nougen-supervisor"), "#!/bin/sh\n" + STUBS.supervisor + "\n", { mode: 0o755 });
-  writeFileSync(join(B, "uv"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(join(B, "uv"), "#!/bin/sh\n" + STUBS.uvStub + "\n", { mode: 0o755 });
   writeFileSync(join(acct, "cloudflared"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   writeFileSync(join(acct, "NouGenShards", "app.py"), "keep\n");
   writeFileSync(join(acct, ".src-sha"), SRC_SHA + "\n");
   const script = join(T, "setup-nougen.sh");
-  writeFileSync(script, setupSh({ id, port, token: "tok", tunnel: "tun", url: `https://${id}.example.test`, code: CODE, origin: "https://join.example.test" }));
+  writeFileSync(script, setupSh({ id, port, token: "tok", tunnel: "tun", url: `https://${id}.example.test`, code: CODE, origin: "https://join.example.test", relay_url }));
   // PATH without any real uv, so the download path is what gets tested.
   const sysPath = process.env.PATH.split(delimiter).filter((d) => !["uv", "uv.exe"].some((u) => existsSync(join(d, u)))).join(delimiter);
   const run = (env = {}) => spawnSync("sh", [script], {
     encoding: "utf8",
     env: {
-      ...process.env, HOME: home, T: posix(T), ACCT: posix(acct), EXPECT_SHA: SUPERVISOR.sha256["linux-amd64"], SRC_SHA,
+      ...process.env, HOME: home, T: posix(T), ACCT: posix(acct), ACCT_ID: id, EXPECT_SHA: SUPERVISOR.sha256["linux-amd64"], SRC_SHA,
       PATH: bin + delimiter + sysPath,
       NOUGEN_MODE: "foreground", NOUGEN_TUNNEL_WAIT: "3", NOUGEN_HEALTH_TRIES: "3", HTTPS_PROXY: "", https_proxy: "", ...env,
     },
   });
   const read = (f) => (existsSync(join(T, f)) ? readFileSync(join(T, f), "utf8") : "");
-  return { T, B, acct, run, read, healthy: () => writeFileSync(join(T, "healthy"), "") };
+  // In foreground mode setup starts the helper with `nohup ... &` and exits at once, so the
+  // stand-in can write its log a moment after the script returns (seen on a loaded macOS box).
+  // Poll for the expected line instead of reading once; give up after `ms`.
+  const readUntil = (f, re, ms = 5000) => {
+    const end = Date.now() + ms;
+    let s = read(f);
+    while (!re.test(s) && Date.now() < end) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); s = read(f); }
+    return s;
+  };
+  return { T, B, acct, run, read, readUntil, healthy: () => writeFileSync(join(T, "healthy"), "") };
 }
 
 const reports = (b) => [...b.read("curl.log").matchAll(/\/report \{"state":"([a-z_]+)"\}/g)].map((m) => m[1]);
@@ -94,7 +113,7 @@ test("sandbox: runs without autostart, checks the discovered port, prints PASS a
   assert.match(r.stdout, /NOUGEN SETUP: PASS node=127\.0\.0\.1:4999 tunnel=connected mode=foreground/);
   assert.match(r.stdout, /nougen-supervisor run/);
   assert.match(b.read("curl.log"), /127\.0\.0\.1:4999\/health/);
-  assert.match(b.read("supervisor.log"), /^run/m);
+  assert.match(b.readUntil("supervisor.log", /^run/m), /^run/m);
   assert.ok(!/install/.test(b.read("supervisor.log")), "sandbox mode must not try to install autostart");
   assert.deepEqual(reports(b), ["started", "node_ok", "ok"]);
   assert.ok(existsSync(join(b.B, "setup.log")));
@@ -106,7 +125,7 @@ test("autostart unavailable (crontab exec error) is a WARN, not exit 1", { skip:
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /WARN: this computer has no way to start NouGen by itself/);
   assert.match(r.stdout, /NOUGEN SETUP: PASS .* mode=foreground/);
-  assert.match(b.read("supervisor.log"), /^install[\s\S]*^run/m);
+  assert.match(b.readUntil("supervisor.log", /^install[\s\S]*^run/m), /^install[\s\S]*^run/m);
 });
 
 test("a rerun skips every finished step and downloads nothing", { skip: !hasSh }, () => {
@@ -228,4 +247,152 @@ test("join: the generated script reports to the page that served it, and only a 
   const bad = setupSh({ ...base, code: "x'; rm -rf ~; '", origin: "https://join.example.test" });
   assert.ok(bad.includes("JOIN=''; CODE=''"));
   assert.ok(setupSh({ ...base, code: CODE, origin: "http://evil.example" }).includes("JOIN=''; CODE=''"));
+});
+
+// The relay address is given through the environment: setup rewrites node.json from its own template.
+const RELAY = { NOUGEN_RELAY_URL: "https://relay.example.test" };
+
+test("relay: when both tunnel protocols fail and the relay answers, setup switches to it and passes", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", ...RELAY });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Switching to the NouGen relay \(port 443\)/);
+  assert.match(r.stdout, /NOUGEN SETUP: PASS .* tunnel=relay /);
+  assert.equal(readFileSync(join(b.acct, "transport"), "utf8"), "relay\n");
+  assert.match(b.read("uv.log"), /-m nougen_shards\.relay_client probe --node-json /);
+  assert.deepEqual(reports(b), ["started", "node_ok", "ok"]);
+  // http2 was still tried first: the relay is the third step, not a shortcut.
+  assert.equal(readFileSync(join(b.acct, "tunnel.env"), "utf8"), "TUNNEL_TRANSPORT_PROTOCOL=http2\n");
+});
+
+test("relay: no relay address for the account means it is not tried and the plain failure stands", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1" });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /NOUGEN SETUP: FAIL \(no_tunnel_egress\)/);
+  assert.ok(!existsSync(join(b.acct, "transport")));
+  assert.ok(!/relay_client/.test(b.read("uv.log")), "the relay was probed without an address");
+});
+
+test("relay: the relay refusing the token is a failure, with no transport file left behind", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "2", RELAY_RUNNING: "1", ...RELAY });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!existsSync(join(b.acct, "transport")));
+  assert.deepEqual(reports(b), ["started", "node_ok", "no_tunnel_egress"]);
+});
+
+test("relay: a helper too old to run the relay client is a failure, never a PASS", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "0", ...RELAY });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!/NOUGEN SETUP: PASS/.test(r.stdout));
+  assert.ok(!existsSync(join(b.acct, "transport")), "a stale transport file would keep a newer helper off the tunnel");
+});
+
+test("relay: a working tunnel never touches the relay", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "always", RELAY_PROBE: "0", RELAY_RUNNING: "1", ...RELAY });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /tunnel=connected /);
+  assert.ok(!existsSync(join(b.acct, "transport")));
+  assert.ok(!/relay_client/.test(b.read("uv.log")));
+});
+
+test("relay: an address that came from the environment is saved for the helper, so it survives a restart", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", ...RELAY });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(b.acct, "relay_url"), "utf8"), "https://relay.example.test\n");
+});
+
+test("relay: the started check names this account's node.json, not any relay client", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", ...RELAY });
+  const calls = b.read("pgrep.log").split("\n").filter((l) => l.includes("relay_client"));
+  assert.ok(calls.length > 0, "the started check never ran");
+  for (const c of calls) assert.match(c, /relay_client run --node-json .*sample-acct\/node\.json/);
+});
+
+test("relay: a failed switch removes the saved address along with the transport file", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "0", ...RELAY });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!existsSync(join(b.acct, "relay_url")) && !existsSync(join(b.acct, "transport")));
+});
+
+test("relay: an address provisioned into node.json is used with nothing in the environment", { skip: !hasSh }, () => {
+  const b = box({ relay_url: "wss://relay.example.test/_relay/connect" }); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /NOUGEN SETUP: PASS .* tunnel=relay /);
+  assert.equal(JSON.parse(readFileSync(join(b.acct, "node.json"), "utf8")).relay_url, "wss://relay.example.test/_relay/connect");
+  // The address is already in node.json, so no separate copy is saved for the helper.
+  assert.ok(!existsSync(join(b.acct, "relay_url")));
+});
+
+for (const bad of ["ws://relay.example.test/_relay/connect", "http://relay.example.test/_relay/connect"]) {
+  test(`relay: ${bad.split(":")[0]}:// from the environment is refused before any probe, even if a probe would pass`, { skip: !hasSh }, () => {
+    const b = box(); b.healthy();
+    const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", NOUGEN_RELAY_URL: bad });
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.ok(!/relay_client/.test(b.read("uv.log")), "an insecure address reached the probe");
+    assert.ok(!existsSync(join(b.acct, "relay_url")) && !existsSync(join(b.acct, "transport")));
+    assert.match(readFileSync(join(b.B, "setup.log"), "utf8"), /not wss:\/\/ or https:\/\/, not used/);
+  });
+
+  test(`relay: ${bad.split(":")[0]}:// handed to the script builder never reaches node.json`, { skip: !hasSh }, () => {
+    const b = box({ relay_url: bad }); b.healthy();
+    const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1" });
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.ok(!("relay_url" in JSON.parse(readFileSync(join(b.acct, "node.json"), "utf8"))));
+    assert.ok(!/relay_client/.test(b.read("uv.log")));
+  });
+}
+
+test("restart: setup waits for the old helper to exit before starting it again, at both restarts", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", SUP_LINGERS: "2", ...RELAY });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const checks = b.read("pgrep.log").split("\n").filter((l) => l.includes("nougen-supervisor")).length;
+  // Two restarts (http2, then relay). The first sees the helper linger twice and checks a third time.
+  assert.ok(checks >= 4, `only ${checks} exit checks for two restarts`);
+  assert.ok(b.read("killed").split("\n").filter((l) => l.includes("nougen-supervisor")).length >= 2);
+});
+
+test("control: the started check ignores a relay client that belongs to another account", { skip: !hasSh }, () => {
+  // The stand-in for pgrep answers only for this account's node.json path, so a
+  // check that asked for any relay client would find nothing and fail here.
+  const b = box({ id: "other-acct" }); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", ACCT_ID: "sample-acct", ...RELAY });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!/NOUGEN SETUP: PASS/.test(r.stdout));
+});
+
+test("restart: this account's running relay client is stopped along with the helper", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1", ...RELAY });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const stops = b.read("killed").split("\n").filter((l) => l.includes("relay_client run --node-json"));
+  assert.ok(stops.length >= 2, "a restart left the relay client running");
+  for (const s of stops) assert.match(s, /\/\.nougen-node\/sample-acct\/node\.json$/, "the stop must name this account only");
+});
+
+test("rerun: an account already on the relay passes at once, without waiting for a tunnel or retrying http2", { skip: !hasSh }, () => {
+  const b = box({ relay_url: "wss://relay.example.test/_relay/connect" }); b.healthy();
+  writeFileSync(join(b.acct, "transport"), "relay\n");
+  const r = b.run({ READY: "never", RELAY_PROBE: "0", RELAY_RUNNING: "1" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /NOUGEN SETUP: PASS .* tunnel=relay /);
+  assert.ok(!existsSync(join(b.acct, "tunnel.env")), "the http2 fallback ran for an account that has no tunnel");
+  assert.ok(!b.read("curl.log").split("\n").some((l) => l.includes("/ready")), "setup waited on the tunnel's readiness port");
+});
+
+test("rerun control: a relay account whose client is not running still goes through the full check", { skip: !hasSh }, () => {
+  const b = box({ relay_url: "wss://relay.example.test/_relay/connect" }); b.healthy();
+  writeFileSync(join(b.acct, "transport"), "relay\n");
+  const r = b.run({ READY: "never", RELAY_PROBE: "2", RELAY_RUNNING: "0" });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.ok(!/NOUGEN SETUP: PASS/.test(r.stdout));
+  assert.ok(!existsSync(join(b.acct, "transport")), "a dead relay must not leave the account marked as relay");
 });
