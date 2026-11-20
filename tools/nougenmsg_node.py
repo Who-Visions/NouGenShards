@@ -221,13 +221,17 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "node": NODE,
             "target": msg["target"],
         }
+    # Everything this receiver handles arrived from another box or connector,
+    # so it is forwarded: the bus keeps the sender's claim (marked unverified)
+    # and never labels it with this node's own name.
     raw_env = msg.get("origin_envelope")
     origin = dict(raw_env) if isinstance(raw_env, dict) else {}
     origin.setdefault("original_sender", msg.get("sender", "unknown"))
     if dest_node == "fleet":
         # The peers come from the live table when the resolver supplied them.
         peers = {"nodes": list(dest[2])} if len(dest) > 2 else {}
-        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True, **peers)
+        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True,
+                             forwarded=True, **peers)
         return 200, {
             "delivered": True,
             "routed": True,
@@ -239,7 +243,8 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "build": build_id(),
             "results": res,
         }
-    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin)
+    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin,
+                        forwarded=True)
     node_res = res.get(dest_node) if isinstance(res, dict) else res
     if not res or (isinstance(node_res, str) and node_res.startswith("Error")):
         return 502, {
