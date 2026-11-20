@@ -226,6 +226,34 @@ def coach_for_machine(value: str) -> str:
     return fleet_identity_maps()[1].get(normalized, normalized)
 
 
+def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
+    """The label a receiving session shows for a message.
+
+    It names the machine and lane that WROTE the message (stamped at the
+    origin), not the bridge that delivered it. Before this, every message a
+    Blade session received read "NouGenMsg-blade" even when WhoArt sent it.
+    Falls back to the local bridge only when the envelope carries no origin.
+    """
+    origin = origin or {}
+    sender = str(origin.get("original_sender") or "").strip()
+    machine = str(origin.get("machine") or "").strip()
+    if sender and machine and machine not in sender:
+        sender = f"{machine}/{sender}"
+    label = sender or machine
+    if label:
+        mid = str(origin.get("machine_id") or "").strip()
+        if mid and mid != "unknown":
+            label = f"{label} [{mid}]"
+        # Envelopes are unsigned: only a sender this process stamped itself is
+        # shown as fact. Everything else is a claim and says so, until a
+        # signature check can mark it verified.
+        trust = origin.get("origin_trust")
+        if trust not in ("stamped", "verified"):
+            label = f"{label} (asserted)"
+        return label
+    return f"NouGenMsg-{current_machine_id()} (origin unstamped)"
+
+
 def get_current_node() -> str:
     """Which fleet node this box is, or "standalone".
 
@@ -501,7 +529,7 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        source = f"NouGenMsg-{current_machine_id()}"
+        source = display_sender(origin)
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
         try:
@@ -1009,8 +1037,27 @@ class NouGenMsgBus:
         """'<node>-<lane>' when the lane is known, else the legacy 'nougen-<node>'."""
         return f"{machine}-{lane}" if lane else f"nougen-{machine}"
 
+    @staticmethod
+    def _is_genuine_forward(supplied: Dict[str, Any], local_node: str, current: str) -> bool:
+        """True only when the envelope plausibly arrived from another machine.
+
+        A bare non-empty relay_path is not enough: any local caller can type
+        one and claim to be any machine. A real hop shows the claimed origin as
+        the first entry and a previous hop that is not this machine as the
+        last. Anything else is re-stamped here and the claim kept as a
+        conflict. Envelopes are unsigned, so this blocks casual and accidental
+        spoofing, not a deliberate forger.
+        """
+        path = [str(p).strip().lower() for p in (supplied.get("relay_path") or []) if str(p).strip()]
+        claimed = str(supplied.get("machine") or supplied.get("node") or "").strip().lower()
+        if not path or not claimed or path[0] != claimed:
+            return False
+        local = {local_node.lower(), str(current or "").lower()}
+        return path[-1] not in local
+
     @classmethod
-    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None,
+                         forwarded: bool = False) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
         current = current_machine_id()
@@ -1020,18 +1067,43 @@ class NouGenMsgBus:
             # Nothing here changes where a message is delivered.
             from .lane_presence import default_presence
             default_presence().heartbeat(lane, time.time())
-        claimed_machine = supplied.get("machine")
+        from .machine import check_asserted_node, sender_identity
+        ident = sender_identity()
+        claimed_machine = supplied.get("machine") or supplied.get("node")
         conflicts = list(supplied.get("conflicts") or [])
-        if claimed_machine and claimed_machine != current:
-            conflicts.append({"field": "machine", "claimed": claimed_machine,
-                              "transport_observed": current})
+        # A forwarded envelope already carries a relay_path stamped by the
+        # origin box; only then is its machine/original_sender the truth.
+        # Otherwise this process IS the origin, and a caller-typed node is a
+        # claim: logged as a conflict, never used as the sender.
+        # Only the receiving end of a NouGenMsg hop (tools/nougenmsg.py decoding
+        # --origin-b64) passes forwarded=True. MCP tools, kaedra and other local
+        # callers hand in origin dicts directly and are always re-stamped,
+        # whatever relay_path they carry.
+        forwarded = bool(forwarded) and cls._is_genuine_forward(supplied, ident["node"], current)
+        if forwarded:
+            sender_machine = claimed_machine or current
+            sender_id = supplied.get("machine_id") or "unknown"
+        else:
+            sender_machine = ident["node"]
+            sender_id = ident["machine_id"]
+            if check_asserted_node(claimed_machine):
+                # Same record shape consumers already read; the resolved
+                # sender is what goes in "machine", never the claim.
+                conflicts.append({"field": "machine", "claimed": claimed_machine,
+                                  "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
-            "machine": claimed_machine or current,
-            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
+            "machine": sender_machine,
+            "machine_id": sender_id,
+            "node_source": None if forwarded else ident["node_source"],
+            # "stamped": this process resolved the sender itself.
+            # "forwarded-unverified": kept from an upstream hop; envelopes are
+            # not signed, so a forward is plausible, never proven.
+            "origin_trust": "forwarded-unverified" if forwarded else "stamped",
+            "coach": supplied.get("coach") or coach_for_machine(sender_machine),
             "transport_machine": current,
             "lane": lane,
             "transport": supplied.get("transport") or "nougenmsg",
@@ -1042,7 +1114,10 @@ class NouGenMsgBus:
             # traffic reaching phoebus read as nougen-phoebus, origin.machine
             # phoebus. The content carried the origin; the envelope did not,
             # so cross-machine provenance was unrecoverable after one hop.
-            "original_sender": supplied.get("original_sender") or cls.sender_label(current, lane),
+            # A caller-chosen label (e.g. "codex-mac-mini") is kept as a label,
+            # but "machine"/"machine_id" above are always the stamp, and
+            # display_sender() shows both when they disagree.
+            "original_sender": supplied.get("original_sender") or cls.sender_label(sender_machine, lane),
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
             "correlation_id": supplied.get("correlation_id"),
@@ -1058,10 +1133,11 @@ class NouGenMsgBus:
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
                   origin: Optional[Dict[str, Any]] = None,
-                  models_async: bool = False) -> Dict[str, Any]:
+                  models_async: bool = False,
+                  forwarded: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
-        envelope = cls._origin_envelope(origin)
+        envelope = cls._origin_envelope(origin, forwarded=forwarded)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)
