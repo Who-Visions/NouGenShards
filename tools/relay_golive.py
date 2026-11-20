@@ -187,6 +187,14 @@ def step_merged(ctx: Ctx) -> str:
     if data.get("baseRefName") not in (None, "", "main"):
         raise GateError(f"PR {pr_number()} merged into {data['baseRefName']}, not main")
     ctx.merge_sha = ((data.get("mergeCommit") or {}).get("oid") or "")
+    if not ctx.merge_sha:
+        raise GateError(f"PR {pr_number()} has no merge commit to check against this checkout")
+    # The deploy uses this checkout's files, so the merge must be in it, not just on GitHub.
+    a = ctx.run(["git", "merge-base", "--is-ancestor", ctx.merge_sha, "HEAD"])
+    if a.returncode == 1:
+        raise GateError(f"this checkout does not contain merge {ctx.merge_sha[:10]}; pull main first")
+    if a.returncode != 0:
+        raise GateError(f"merge {ctx.merge_sha[:10]} not found locally; git fetch origin main first")
     return f"PR {pr_number()} merged {data.get('mergedAt')} as {ctx.merge_sha[:10] or '?'}"
 
 
@@ -205,14 +213,14 @@ def step_relay(ctx: Ctx) -> str:
         env = {**os.environ, "CLOUDFLARE_ACCOUNT_ID": ctx.account_id}
         d = ctx.run(keyfor_argv(deploy), env=env)
         if d.returncode != 0:
-            raise GateError(f"wrangler deploy failed: {(d.stderr or d.stdout).strip()[-300:]}")
+            raise GateError(f"DEPLOY FAILED (wrangler exit {d.returncode}): {(d.stderr or d.stdout).strip()[-300:]}")
         did = "deployed"
     else:
         did = "dry run, would run: " + " ".join(shlex.quote(a) for a in deploy)
     status, body = ctx.fetch(f"https://{host}{health}", health_timeout())
     healthy = status == 200 and body.strip() == "ok"
     if ctx.apply and not healthy:
-        raise GateError(f"relay deployed but https://{host}{health} answered {status} {body[:80]!r}")
+        raise GateError(f"HEALTH FAILED after a successful deploy: https://{host}{health} answered {status} {body[:80]!r}")
     return f"account {ctx.account_id[:6]}... owns RELAY_AUTH {ctx.kv_id[:6]}...; {did}; health {status}{' ok' if healthy else ' (not live yet)'}"
 
 

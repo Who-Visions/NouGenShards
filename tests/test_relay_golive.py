@@ -20,7 +20,8 @@ def cp(rc=0, out="", err=""):
 
 
 class FakeRun:
-    def __init__(self, pr_state="MERGED", ancestor_rc=0, deploy_rc=0, acct_rc=0, releases=None):
+    def __init__(self, pr_state="MERGED", ancestor_rc=0, deploy_rc=0, acct_rc=0, releases=None, local_rc=0):
+        self.local_rc = local_rc
         self.calls = []
         self.pr_state, self.ancestor_rc = pr_state, ancestor_rc
         self.deploy_rc, self.acct_rc = deploy_rc, acct_rc
@@ -38,7 +39,7 @@ class FakeRun:
         if argv[:3] == ["gh", "release", "list"]:
             return cp(out=json.dumps(self.releases))
         if argv[:2] == ["git", "merge-base"]:
-            return cp(self.ancestor_rc)
+            return cp(self.local_rc if argv[-1] == "HEAD" else self.ancestor_rc)
         raise AssertionError(argv)
 
 
@@ -143,3 +144,21 @@ def test_relay_paths_missing_routes(tmp_path):
     f.write_text("export default {}", encoding="utf-8")
     with pytest.raises(rg.GateError):
         rg.relay_paths(f)
+
+
+def test_checkout_missing_merge_stops_before_deploy():
+    fake = FakeRun(local_rc=1)
+    rc, lines = run(fake, apply=True)
+    assert rc == 1 and lines[-1].startswith("[STOP] merged") and "pull main" in lines[-1]
+    assert not any("wrangler" in c for c in fake.calls)
+
+
+def test_merge_unknown_locally_stops():
+    rc, lines = run(FakeRun(local_rc=128), apply=True)
+    assert rc == 1 and "fetch" in lines[-1]
+
+
+def test_deploy_and_health_failures_are_labelled_apart():
+    _, dep = run(FakeRun(deploy_rc=1), apply=True)
+    _, hea = run(FakeRun(), apply=True, health=(522, ""))
+    assert "DEPLOY FAILED" in dep[-1] and "HEALTH FAILED" in hea[-1]
