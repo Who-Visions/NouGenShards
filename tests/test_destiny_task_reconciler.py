@@ -535,3 +535,116 @@ def test_negative_token_report_cannot_refund_budget(env):
     ports, _ = make_ports(c, destinies=[dest(1)], execute=lambda *a: {"output": "o", "tokens": -500})
     out = dr.tick(dr.Config(tick_token_budget=1000), ports)
     assert out["results"][0]["tokens"] == 0 and out["tokens_left"] == 1000
+
+
+# ---- relentless mode: revive_failed + run_forever ---------------------------
+def _fail_ports(c, **kw):
+    return make_ports(c, destinies=[dest(1)],
+                      verify=lambda t, r: {"passed": False, "evidence": "red", "verifier": "judge"}, **kw)
+
+
+def test_failed_task_is_revived_after_backoff_not_before(env):
+    c = Clock()
+    ports, _ = _fail_ports(c)
+    cfg = dr.Config(max_attempts=1, max_tasks_per_tick=1, revive_base_s=100.0)
+    dr.tick(cfg, ports)
+    assert dr.status()["tasks"] == {"failed": 1}
+    c.t += 99
+    assert dr.revive_failed(cfg, ports) == {"revived": 0, "escalated": 0}
+    c.t += 2
+    assert dr.revive_failed(cfg, ports) == {"revived": 1, "escalated": 0}
+    assert dr.status()["tasks"] == {"queued": 1}
+    # backoff doubles per revival
+    dr.tick(cfg, ports)
+    c.t += 150
+    assert dr.revive_failed(cfg, ports)["revived"] == 0
+    c.t += 60
+    assert dr.revive_failed(cfg, ports)["revived"] == 1
+
+
+def test_revivals_are_bounded_then_escalated_to_blocked(env):
+    c = Clock()
+    ports, _ = _fail_ports(c)
+    cfg = dr.Config(max_attempts=1, max_tasks_per_tick=1, revive_base_s=1.0, revive_max_s=1.0, max_revivals=2)
+    for _ in range(10):
+        dr.tick(cfg, ports)
+        c.t += 5
+        dr.revive_failed(cfg, ports)
+    st = dr.status()["tasks"]
+    assert st == {"blocked": 1}
+    with dr._connect() as conn:
+        row = conn.execute("SELECT revivals, blocked_reason FROM tasks").fetchone()
+    assert row["revivals"] == 2 and "gave up after 2 revivals" in row["blocked_reason"]
+
+
+def test_lifetime_token_budget_survives_the_per_cycle_reset(env):
+    c = Clock()
+    ports, _ = _fail_ports(c)
+    cfg = dr.Config(max_attempts=1, max_tasks_per_tick=1, revive_base_s=1.0, revive_max_s=1.0,
+                    max_revivals=50, lifetime_token_budget=25)  # each failed attempt spends 10 tokens
+    for _ in range(10):
+        dr.tick(cfg, ports)
+        c.t += 5
+        dr.revive_failed(cfg, ports)
+    assert dr.status()["tasks"] == {"blocked": 1}
+    with dr._connect() as conn:
+        assert "lifetime token budget" in conn.execute("SELECT blocked_reason FROM tasks").fetchone()[0]
+
+
+def test_run_forever_survives_a_raising_pass_and_backs_off(env, tmp_path):
+    c = Clock()
+    ports, _ = make_ports(c, destinies=[dest(1)])
+    calls = {"n": 0}
+    real_discover = ports.list_destinies
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("store down")
+        return real_discover()
+
+    ports.list_destinies = flaky
+    sleeps = []
+    hb = tmp_path / "hb.json"
+    res = dr.run_forever(dr.Config(), ports, max_ticks=5, sleep=sleeps.append, heartbeat_path=hb,
+                         busy_sleep_s=1.0, idle_sleep_s=10.0, max_sleep_s=60.0)
+    assert res["ticks"] == 5 and res["errors"] == 2
+    assert sleeps[0] == 2.0 and sleeps[1] == 4.0          # capped exponential error backoff
+    assert dr.status()["tasks"] == {"done": 1}            # work still finished after the faults
+    import json
+    beat = json.loads(hb.read_text())
+    assert beat["ticks"] == 5 and beat["ok"] is True
+
+
+def test_run_forever_idle_backoff_is_capped_and_keepalive_runs(env):
+    c = Clock()
+    ports, _ = make_ports(c)  # nothing to do
+    sleeps, alive = [], []
+    dr.run_forever(dr.Config(), ports, max_ticks=8, sleep=sleeps.append, keepalive=lambda: alive.append(1),
+                   idle_sleep_s=10.0, max_sleep_s=60.0)
+    assert sleeps == [10.0, 20.0, 40.0, 60.0, 60.0, 60.0, 60.0]
+    assert len(alive) == 8
+
+
+def test_run_forever_stops_cleanly_on_keyboard_interrupt(env):
+    c = Clock()
+    ports, _ = make_ports(c)
+
+    def boom(_):
+        raise KeyboardInterrupt
+
+    res = dr.run_forever(dr.Config(), ports, sleep=boom)
+    assert res["ticks"] == 1
+
+
+def test_old_database_without_revivals_column_is_migrated(env, tmp_path):
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)
+    conn.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, destiny_id INTEGER, "
+                 "intent_ref TEXT, goal TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, "
+                 "strategy_idx INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires REAL, "
+                 "tokens_spent INTEGER NOT NULL DEFAULT 0, last_agent TEXT, blocked_reason TEXT, "
+                 "created REAL NOT NULL, updated REAL NOT NULL)")
+    conn.commit(); conn.close()
+    with dr._connect(p) as c2:
+        assert "revivals" in {r[1] for r in c2.execute("PRAGMA table_info(tasks)")}
