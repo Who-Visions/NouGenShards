@@ -15,16 +15,18 @@ param(
     [switch]$Install,
     [switch]$DryRun
 )
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'
 $Home_ = $env:USERPROFILE
 $State = Join-Path $Home_ '.nougen\state'
 $LogDir = Join-Path $Home_ '.nougen\logs'
 New-Item -ItemType Directory -Force -Path $State, $LogDir | Out-Null
 $Log = Join-Path $LogDir 'disk_guard.log'
+# Keep the log bounded: roll it once it passes 5 MB (one previous copy kept).
+if ((Test-Path $Log) -and (Get-Item $Log).Length -gt 5MB) { Move-Item $Log "$Log.1" -Force }
 
 if ($Install) {
     $exe = (Get-Command powershell.exe).Source
-    $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$PSCommandPath`""
+    $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$PSCommandPath`" -ThresholdGB $ThresholdGB"
     $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless `"$exe`" $arg"
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
@@ -33,7 +35,8 @@ if ($Install) {
     exit 0
 }
 
-function Get-FreeGB { [math]::Round((Get-PSDrive ($env:SystemDrive.TrimEnd(':'))).Free / 1GB, 2) }
+# Windows\Temp is left out on purpose: the task runs as the installing user, who cannot clear it.
+function Get-FreeGB { [math]::Round((Get-PSDrive ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop).Free / 1GB, 2) }
 function Get-SizeGB($p) {
     if (-not (Test-Path $p)) { return 0 }
     [math]::Round(((Get-ChildItem $p -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum) / 1GB, 2)
@@ -50,8 +53,7 @@ $Caches = @(
     "$Home_\.gradle\daemon",
     "$Home_\.cache\codex-runtimes",
     "$Home_\AppData\Local\CrashDumps",
-    "$Home_\AppData\Local\Microsoft\Windows\INetCache",
-    "$env:SystemRoot\Temp"
+    "$Home_\AppData\Local\Microsoft\Windows\INetCache"
 )
 
 $free = Get-FreeGB
@@ -67,11 +69,19 @@ $holders = foreach ($c in $Caches) { [pscustomobject]@{ path = $c; gb = (Get-Siz
 $holders | Sort-Object gb -Descending | Where-Object gb -gt 0 | ForEach-Object { Add-Content $Log ("   {0,7:N2} GB  {1}" -f $_.gb, $_.path) }
 
 if (-not $DryRun) {
+    $failed = 0
     foreach ($c in $Caches) {
-        if (Test-Path $c) { Get-ChildItem $c -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path $c) {
+            Get-ChildItem $c -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                try { Remove-Item $_.FullName -Recurse -Force -ErrorAction Stop } catch { $failed++ }   # locked files are expected
+            }
+        }
     }
     # User temp: only files untouched for 2+ days, so running jobs keep their scratch.
-    Get-ChildItem $env:TEMP -Recurse -Force -File | Where-Object LastWriteTime -lt (Get-Date).AddDays(-2) | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $env:TEMP -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object LastWriteTime -lt (Get-Date).AddDays(-2) | ForEach-Object {
+        try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch { $failed++ }
+    }
+    if ($failed) { Add-Content $Log "   $failed item(s) could not be removed (locked or access denied)" }
 }
 
 $after = Get-FreeGB
