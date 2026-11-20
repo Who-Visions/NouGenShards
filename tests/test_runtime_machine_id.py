@@ -196,3 +196,71 @@ def test_origin_envelope_carries_the_runtime_name_not_standalone(box, monkeypatc
     assert env["transport_machine"] == "family-laptop"
     assert "standalone" not in env["original_sender"]
     assert "family-laptop" in env["original_sender"]
+
+
+# ---- nodes.json: an aliased hostname keeps the fleet's name -------------------
+
+NODES = {
+    "phoebus": {"name": "Phoebus", "machine": "Backbone Mini", "transport_node": "phoebus",
+                "aliases": ["Backbone Mini", "backbone-mini"], "ip": "backbone-mini.local"},
+    "apollo": {"name": "Apollo", "machine": "Heavy Box", "transport_node": "blade",
+               "aliases": ["Heavy Box", "heavy1tb"], "ip": "10.0.0.5"},
+}
+
+
+@pytest.fixture()
+def registry(box, monkeypatch):
+    import json
+    path = box / "nodes.json"
+    path.write_text(json.dumps(NODES), encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_NODES_CONFIG", str(path))
+    return path
+
+
+def test_aliased_hostname_resolves_to_the_registry_node(registry, monkeypatch):
+    _host(monkeypatch, "Backbone-Mini.local")
+    assert m.get_current_node() == "standalone"
+    assert m.current_machine_id() == "phoebus"
+    assert fleet_nodes.local_node() == "backbone-mini"       # the raw hostname is unchanged
+
+
+@pytest.mark.parametrize("host,node", [("heavy1tb", "blade"), ("HEAVY-BOX", "blade"),
+                                       ("Backbone Mini", "phoebus"), ("phoebus", "phoebus")])
+def test_registry_matches_alias_name_machine_and_key_ignoring_punctuation(registry, monkeypatch, host, node):
+    _host(monkeypatch, host)
+    assert m.current_machine_id() == node
+
+
+def test_hostname_not_in_the_registry_keeps_its_own_name(registry, monkeypatch):
+    _host(monkeypatch, "Family-Laptop.local")
+    assert m.current_machine_id() == "family-laptop"
+
+
+def test_numeric_ip_in_the_registry_is_not_treated_as_a_hostname(registry, monkeypatch):
+    _host(monkeypatch, "10")
+    assert m.current_machine_id() == "10"
+
+
+def test_missing_or_corrupt_registry_falls_back_to_the_hostname(box, monkeypatch):
+    _host(monkeypatch, "Backbone-Mini.local")
+    assert m.current_machine_id() == "backbone-mini"          # no nodes.json at all
+    bad = box / "nodes.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_NODES_CONFIG", str(bad))
+    assert m.current_machine_id() == "backbone-mini"
+
+
+def test_fleet_hosts_match_still_wins_over_the_registry(registry, monkeypatch, tmp_path):
+    cfg = tmp_path / "fleet_hosts.json"
+    cfg.write_text('{"nodes": {"alpha": {"host_patterns": ["backbone"]}}}')
+    monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(cfg))
+    _host(monkeypatch, "Backbone-Mini.local")
+    assert m.current_machine_id() == "alpha"
+
+
+def test_registry_node_for_ignores_empty_and_malformed_entries(registry, monkeypatch):
+    import json
+    registry.write_text(json.dumps({"x": "not a dict", "y": {"aliases": ["z"]}, "w": {"transport_node": "n1"}}))
+    assert m.registry_node_for("", None) == ""
+    assert m.registry_node_for("z") == ""                    # no transport_node: nothing to return
+    assert m.registry_node_for("w") == "n1"

@@ -2160,17 +2160,69 @@ def _registry_node_names() -> set:
     return _full_registry_node_names()
 
 
+def _nodes_registry_path() -> Path:
+    override = os.environ.get("NOUGEN_NODES_CONFIG", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip():
+        return fleet_hosts_path().parent / "nodes.json"
+    return Path.home() / ".nougen" / "nodes.json"
+
+
+def _name_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def registry_node_for(*names: str) -> str:
+    """The transport node nodes.json files a hostname or alias under, or "".
+
+    A box whose hostname is only an alias in the node registry (a Mac Mini that
+    reports "kushboygroups-mac-mini" but is the fleet's "phoebus") must stamp the
+    registry's name, not the raw hostname. Matches, case-insensitively and
+    ignoring punctuation, an entry's key, name, machine or aliases, or the first
+    label of a hostname-style ``ip`` field.
+    """
+    wanted = {_name_key(n) for n in names if n}
+    wanted.discard("")
+    if not wanted:
+        return ""
+    try:
+        configured = json.loads(_nodes_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    for key, cfg in configured.items() if isinstance(configured, dict) else ():
+        if not isinstance(cfg, dict):
+            continue
+        transport = _name_key(cfg.get("transport_node"))
+        if not transport:
+            continue
+        candidates = {_name_key(key), _name_key(cfg.get("name")), _name_key(cfg.get("machine"))}
+        candidates.update(_name_key(a) for a in (cfg.get("aliases") or ()) if isinstance(a, str))
+        ip = str(cfg.get("ip") or "")
+        if ip and not re.fullmatch(r"[0-9.:]+", ip):
+            candidates.add(_name_key(ip.split(".")[0]))
+        candidates.discard("")
+        if wanted & candidates:
+            return transport
+    return ""
+
+
 def current_machine_id() -> str:
     """The name this box stamps on what it sends, on any computer or device.
 
-    A box listed in fleet_hosts.json keeps its fleet node name. Every other box
-    (a new laptop, a phone, a tenant's PC) is named at runtime from its own
-    hostname or a persisted device id, never the literal "standalone", so a
-    reply always says which machine it came from. Routing decisions still use
-    get_current_node(), whose "standalone" means "no fleet configured here".
+    A box listed in fleet_hosts.json keeps its fleet node name. Otherwise the
+    node registry (nodes.json) is asked whether this hostname is an alias of a
+    fleet node, so an aliased box keeps the fleet's name. Every other box (a new
+    laptop, a phone, a tenant's PC) is named at runtime from its own hostname or
+    a persisted device id, never the literal "standalone", so a reply always says
+    which machine it came from. Routing decisions still use get_current_node(),
+    whose "standalone" means "no fleet configured here".
     """
     n = get_current_node()
-    return local_node() if not n or n == "standalone" else n
+    if n and n != "standalone":
+        return n
+    runtime = local_node()
+    return registry_node_for(runtime, resolve_origin_host()) or runtime
 
 
 def _self_node_name() -> str:
