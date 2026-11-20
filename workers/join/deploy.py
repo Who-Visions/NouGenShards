@@ -106,15 +106,22 @@ def relay_bindings(env) -> list:
     ]
 
 
-def _google(btype: str, name: str, secret: str) -> dict:
-    """Google sign-in client for join. When the keymaker has no value, keep the one the
-    live worker already holds (Cloudflare "inherit" binding) instead of failing or
-    swapping in a different OAuth client, which would break sign-in."""
-    val = keymaker.get_secret(secret)
-    if val:
-        return {"type": btype, "name": name, "text": val}
-    print(f"{secret} not in keymaker: inheriting the live worker's {name}")
-    return {"type": "inherit", "name": name}
+def _google_pair() -> list:
+    """Google sign-in client for join, resolved as a PAIR. Both in the keymaker: send both.
+    Neither: keep the live worker's pair (Cloudflare "inherit"; needs an existing worker, so a
+    first-ever deploy fails loudly at the API). Only one: refuse, since a new id with an old
+    secret (or the reverse) breaks sign-in."""
+    cid = keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_ID")
+    sec = keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")
+    if cid and sec:
+        return [{"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": sec},
+                {"type": "plain_text", "name": "GOOGLE_CLIENT_ID", "text": cid}]
+    if not cid and not sec:
+        print("NOUGEN_JOIN_GOOGLE_CLIENT_ID/SECRET not in keymaker: inheriting the live worker's pair")
+        return [{"type": "inherit", "name": "GOOGLE_CLIENT_SECRET"},
+                {"type": "inherit", "name": "GOOGLE_CLIENT_ID"}]
+    raise SystemExit("only one of NOUGEN_JOIN_GOOGLE_CLIENT_ID/SECRET is in the keymaker; "
+                     "store both or neither; nothing deployed")
 
 
 def main():
@@ -128,8 +135,7 @@ def main():
         {"type": "durable_object_namespace", "name": "COORD", "class_name": "JoinCoordinator"},
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
         {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
-        _google("secret_text", "GOOGLE_CLIENT_SECRET", "NOUGEN_JOIN_GOOGLE_CLIENT_SECRET"),
-        _google("plain_text", "GOOGLE_CLIENT_ID", "NOUGEN_JOIN_GOOGLE_CLIENT_ID"),
+        *_google_pair(),
         {"type": "plain_text", "name": "CF_ACCOUNT_ID", "text": acct},
         {"type": "plain_text", "name": "CF_ZONE_ID", "text": zone},
         {"type": "plain_text", "name": "ZONE_NAME", "text": ZONE},
