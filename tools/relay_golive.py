@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -93,12 +94,15 @@ class Ctx:
 
 
 def _run(argv, env=None):
-    return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(ROOT))
+    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=env, cwd=str(ROOT))
 
 
 def _fetch(url, timeout):
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        # Cloudflare answers 403 (error 1010) to the default Python-urllib User-Agent.
+        req = urllib.request.Request(url, headers={"User-Agent": _env("NOUGEN_GOLIVE_UA", "nougen-golive/1.0")})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read(2048).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return exc.code, ""
@@ -171,6 +175,12 @@ def pinned_supervisor(path: Path = JOIN_WORKER) -> str:
     return m.group(1)
 
 
+def npx_path() -> str:
+    """npx as an executable path. On Windows npx is npx.cmd, which CreateProcess
+    cannot start by its bare name, so resolve it on PATH. NOUGEN_GOLIVE_NPX overrides."""
+    return _env("NOUGEN_GOLIVE_NPX", shutil.which("npx") or "npx")
+
+
 def keyfor_argv(cmd: list[str]) -> list[str]:
     return [sys.executable, keyfor_path(), cf_key(), "--exec", "--as", "CLOUDFLARE_API_TOKEN", "--", *cmd]
 
@@ -208,7 +218,7 @@ def step_relay(ctx: Ctx) -> str:
     ctx.account_id = (r.stdout or "").strip().splitlines()[-1].strip() if r.stdout.strip() else ""
     if not re.fullmatch(r"[0-9a-f]{32}", ctx.account_id):
         raise GateError("account resolve returned no account id")
-    deploy = ["npx", "--yes", "wrangler", "deploy", "--env", "production", "--config", str(RELAY_CONFIG)]
+    deploy = [npx_path(), "--yes", "wrangler", "deploy", "--env", "production", "--config", str(RELAY_CONFIG)]
     if ctx.apply:
         env = {**os.environ, "CLOUDFLARE_ACCOUNT_ID": ctx.account_id}
         d = ctx.run(keyfor_argv(deploy), env=env)
