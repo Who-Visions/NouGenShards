@@ -667,3 +667,40 @@ def test_revived_cycle_is_capped_by_remaining_lifetime_budget(env):
     dr.revive_failed(cfg, ports)
     dr.tick(cfg, ports)            # revived cycle may use only the 15 left, not a fresh 20
     assert seen == [20, 15]
+
+
+def test_revival_is_capped_by_remaining_lifetime_budget(env):
+    c = Clock()
+    budgets = []
+
+    def execute(task, agent, route, ctx, strat):
+        budgets.append(ctx["budget_tokens"])
+        return {"output": "o", "tokens": min(10, ctx["budget_tokens"])}
+
+    ports, _ = _fail_ports(c, execute=execute)
+    cfg = dr.Config(task_token_budget=40, max_attempts=4, max_tasks_per_tick=1, revive_base_s=1.0,
+                    revive_max_s=1.0, max_revivals=50, lifetime_token_budget=45)
+    for _ in range(12):
+        dr.tick(cfg, ports)
+        c.t += 5
+        dr.revive_failed(cfg, ports)
+    assert budgets[:4] == [40, 30, 20, 10]
+    assert budgets[4:] == [5]  # revived cycle gets only the 5 lifetime tokens left
+    assert dr.status()["tasks"] == {"blocked": 1}
+    with dr._connect() as conn:
+        assert conn.execute("SELECT SUM(tokens) FROM attempts").fetchone()[0] == 45
+
+
+def test_exhausted_lifetime_budget_is_never_revived(env):
+    c = Clock()
+    ports, _ = _fail_ports(c)
+    cfg = dr.Config(task_token_budget=20, max_attempts=2, max_tasks_per_tick=1, revive_base_s=1.0,
+                    revive_max_s=1.0, max_revivals=50, lifetime_token_budget=20)
+    dr.tick(cfg, ports)
+    dr.tick(cfg, ports)
+    assert dr.status()["tasks"] == {"failed": 1}
+    c.t += 5
+    assert dr.revive_failed(cfg, ports) == {"revived": 0, "escalated": 1}
+    with dr._connect() as conn:
+        row = conn.execute("SELECT revivals, blocked_reason FROM tasks").fetchone()
+    assert row["revivals"] == 0 and "lifetime token budget" in row["blocked_reason"]
