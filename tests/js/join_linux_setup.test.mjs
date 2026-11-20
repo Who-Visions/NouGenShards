@@ -87,7 +87,16 @@ function box({ port = 4999, id = "sample-acct", relay_url = "" } = {}) {
     },
   });
   const read = (f) => (existsSync(join(T, f)) ? readFileSync(join(T, f), "utf8") : "");
-  return { T, B, acct, run, read, healthy: () => writeFileSync(join(T, "healthy"), "") };
+  // In foreground mode setup starts the helper with `nohup ... &` and exits at once, so the
+  // stand-in can write its log a moment after the script returns (seen on a loaded macOS box).
+  // Poll for the expected line instead of reading once; give up after `ms`.
+  const readUntil = (f, re, ms = 5000) => {
+    const end = Date.now() + ms;
+    let s = read(f);
+    while (!re.test(s) && Date.now() < end) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); s = read(f); }
+    return s;
+  };
+  return { T, B, acct, run, read, readUntil, healthy: () => writeFileSync(join(T, "healthy"), "") };
 }
 
 const reports = (b) => [...b.read("curl.log").matchAll(/\/report \{"state":"([a-z_]+)"\}/g)].map((m) => m[1]);
@@ -104,7 +113,7 @@ test("sandbox: runs without autostart, checks the discovered port, prints PASS a
   assert.match(r.stdout, /NOUGEN SETUP: PASS node=127\.0\.0\.1:4999 tunnel=connected mode=foreground/);
   assert.match(r.stdout, /nougen-supervisor run/);
   assert.match(b.read("curl.log"), /127\.0\.0\.1:4999\/health/);
-  assert.match(b.read("supervisor.log"), /^run/m);
+  assert.match(b.readUntil("supervisor.log", /^run/m), /^run/m);
   assert.ok(!/install/.test(b.read("supervisor.log")), "sandbox mode must not try to install autostart");
   assert.deepEqual(reports(b), ["started", "node_ok", "ok"]);
   assert.ok(existsSync(join(b.B, "setup.log")));
@@ -116,7 +125,7 @@ test("autostart unavailable (crontab exec error) is a WARN, not exit 1", { skip:
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /WARN: this computer has no way to start NouGen by itself/);
   assert.match(r.stdout, /NOUGEN SETUP: PASS .* mode=foreground/);
-  assert.match(b.read("supervisor.log"), /^install[\s\S]*^run/m);
+  assert.match(b.readUntil("supervisor.log", /^install[\s\S]*^run/m), /^install[\s\S]*^run/m);
 });
 
 test("a rerun skips every finished step and downloads nothing", { skip: !hasSh }, () => {
