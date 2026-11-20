@@ -242,7 +242,15 @@ def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
     label = sender or machine
     if label:
         mid = str(origin.get("machine_id") or "").strip()
-        return f"{label} [{mid}]" if mid and mid != "unknown" else label
+        if mid and mid != "unknown":
+            label = f"{label} [{mid}]"
+        # Envelopes are unsigned: only a sender this process stamped itself is
+        # shown as fact. Everything else is a claim and says so, until a
+        # signature check can mark it verified.
+        trust = origin.get("origin_trust")
+        if trust not in ("stamped", "verified"):
+            label = f"{label} (asserted)"
+        return label
     return f"NouGenMsg-{get_current_node()} (origin unstamped)"
 
 
@@ -1029,6 +1037,24 @@ class NouGenMsgBus:
         """'<node>-<lane>' when the lane is known, else the legacy 'nougen-<node>'."""
         return f"{machine}-{lane}" if lane else f"nougen-{machine}"
 
+    @staticmethod
+    def _is_genuine_forward(supplied: Dict[str, Any], local_node: str, current: str) -> bool:
+        """True only when the envelope plausibly arrived from another machine.
+
+        A bare non-empty relay_path is not enough: any local caller can type
+        one and claim to be any machine. A real hop shows the claimed origin as
+        the first entry and a previous hop that is not this machine as the
+        last. Anything else is re-stamped here and the claim kept as a
+        conflict. Envelopes are unsigned, so this blocks casual and accidental
+        spoofing, not a deliberate forger.
+        """
+        path = [str(p).strip().lower() for p in (supplied.get("relay_path") or []) if str(p).strip()]
+        claimed = str(supplied.get("machine") or supplied.get("node") or "").strip().lower()
+        if not path or not claimed or path[0] != claimed:
+            return False
+        local = {local_node.lower(), str(current or "").lower()}
+        return path[-1] not in local
+
     @classmethod
     def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
@@ -1048,7 +1074,7 @@ class NouGenMsgBus:
         # origin box; only then is its machine/original_sender the truth.
         # Otherwise this process IS the origin, and a caller-typed node is a
         # claim: logged as a conflict, never used as the sender.
-        forwarded = bool(supplied.get("relay_path"))
+        forwarded = cls._is_genuine_forward(supplied, ident["node"], current)
         if forwarded:
             sender_machine = claimed_machine or current
             sender_id = supplied.get("machine_id") or "unknown"
@@ -1068,6 +1094,10 @@ class NouGenMsgBus:
             "machine": sender_machine,
             "machine_id": sender_id,
             "node_source": None if forwarded else ident["node_source"],
+            # "stamped": this process resolved the sender itself.
+            # "forwarded-unverified": kept from an upstream hop; envelopes are
+            # not signed, so a forward is plausible, never proven.
+            "origin_trust": "forwarded-unverified" if forwarded else "stamped",
             "coach": supplied.get("coach") or coach_for_machine(sender_machine),
             "transport_machine": current,
             "lane": lane,
