@@ -19,6 +19,13 @@ stay out of the public runtime): ``NOUGEN_MCP_MSG_HOSTS`` is a comma list of
 hosts that get the messaging profile below, and ``NOUGEN_MCP_HOST_SCOPES``
 (JSON ``{host: {"name":.., "tools": [..]}}``) adds or overrides any host.
 With neither set, no host is scoped and every request passes through.
+
+``NOUGEN_MCP_OPEN_HOSTS`` (comma list) turns on fail-closed: once it and a
+scope are set, a request whose Host and X-Forwarded-Host name neither a scoped
+host nor an open (full-surface) host is refused with 403 instead of passing
+through. That covers a proxy that rewrites Host to an internal value while the
+client supplies its own X-Forwarded-Host. Loopback callers that reach the node
+directly need their host (for example ``127.0.0.1``) listed as open.
 """
 from __future__ import annotations
 
@@ -50,7 +57,7 @@ def load_scopes(env: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any
     scopes: Dict[str, Dict[str, Any]] = {}
     for host in (env.get("NOUGEN_MCP_MSG_HOSTS") or "").split(","):
         if host.strip():
-            scopes[host.strip().lower()] = MESSAGING_PROFILE
+            scopes[_bare(host)] = MESSAGING_PROFILE
     raw = (env.get("NOUGEN_MCP_HOST_SCOPES") or "").strip()
     if raw:
         try:
@@ -63,14 +70,58 @@ def load_scopes(env: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any
             for host, v in parsed.items():
                 if isinstance(host, str) and isinstance(v, dict) and isinstance(v.get("tools"), list):
                     name = v.get("name") if isinstance(v.get("name"), str) else None
-                    scopes[host.lower()] = {"name": name, "tools": [t for t in v["tools"] if isinstance(t, str)]}
+                    scopes[_bare(host)] = {"name": name, "tools": [t for t in v["tools"] if isinstance(t, str)]}
     return {h: {"name": v.get("name"), "tools": frozenset(v["tools"])} for h, v in scopes.items()}
 
 
-def _host(scope: dict) -> str:
-    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
-    host = headers.get("x-forwarded-host") or headers.get("host") or ""
-    return host.split(",")[0].strip().split(":")[0].lower()
+def load_open_hosts(env: Optional[Dict[str, str]] = None) -> frozenset:
+    """Hosts allowed the full tool surface once fail-closed is on."""
+    env = os.environ if env is None else env
+    return frozenset(h for h in (_bare(x) for x in (env.get("NOUGEN_MCP_OPEN_HOSTS") or "").split(",")) if h)
+
+
+def _bare(host: str) -> str:
+    """Hostname only: lower case, no port, no brackets, no trailing root dot,
+    so "MSGS.example.test.:443" and "msgs.example.test" are the same host."""
+    h = host.strip().lower()
+    if h.startswith("["):
+        h = h[1:].split("]", 1)[0]
+    elif h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    return h.rstrip(".")
+
+
+def _hosts(scope: dict) -> list:
+    """Every hostname the request could be judged by: the Host header and each
+    X-Forwarded-Host entry. A client controls X-Forwarded-Host, so it must
+    never be able to talk a scoped host out of its scope."""
+    out = []
+    for k, v in scope.get("headers") or []:
+        name = k.decode("latin-1").lower()
+        if name in ("host", "x-forwarded-host"):
+            out.extend(h for h in (_bare(x) for x in v.decode("latin-1").split(",")) if h)
+    return out
+
+
+def _host_header(scope: dict) -> list:
+    """The Host header alone. Only this can earn the full tool surface: the
+    client writes X-Forwarded-Host, so naming an open host there must never
+    widen a request, only narrow it (scoped) or leave it refused."""
+    out = []
+    for k, v in scope.get("headers") or []:
+        if k.decode("latin-1").lower() == "host":
+            out.extend(h for h in (_bare(x) for x in v.decode("latin-1").split(",")) if h)
+    return out
+
+
+def _resolve(scopes: Dict[str, Dict[str, Any]], scope: dict) -> Optional[Dict[str, Any]]:
+    """Narrowest scope wins: if any candidate host is scoped, the request is
+    scoped, and when several are, only tools allowed by all of them pass."""
+    confs = [scopes[h] for h in _hosts(scope) if h in scopes]
+    if not confs:
+        return None
+    tools = frozenset.intersection(*(c["tools"] for c in confs))
+    return {"name": confs[0].get("name"), "tools": tools}
 
 
 def _error(req_id: Any, message: str) -> dict:
@@ -105,12 +156,22 @@ def _rewrite(msg: Any, allowed: frozenset, server_name: Optional[str]) -> Any:
 class HostScopedMCP:
     """ASGI wrapper; see module docstring."""
 
-    def __init__(self, app: Callable[..., Awaitable[None]], scopes: Optional[Dict[str, Dict[str, Any]]] = None):
+    def __init__(self, app: Callable[..., Awaitable[None]], scopes: Optional[Dict[str, Dict[str, Any]]] = None,
+                 open_hosts: Optional[Iterable[str]] = None):
         self.app = app
         self.scopes = load_scopes() if scopes is None else scopes
+        self.open_hosts = load_open_hosts() if open_hosts is None else frozenset(_bare(h) for h in open_hosts)
 
     async def __call__(self, scope, receive, send):
-        conf = self.scopes.get(_host(scope)) if scope.get("type") == "http" else None
+        conf = _resolve(self.scopes, scope) if scope.get("type") == "http" else None
+        if conf is None and scope.get("type") == "http" and self.scopes and self.open_hosts \
+                and not any(h in self.open_hosts for h in _host_header(scope)):
+            out = json.dumps({"error": "host not recognised"}).encode()
+            await send({"type": "http.response.start", "status": 403,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"content-length", str(len(out)).encode())]})
+            await send({"type": "http.response.body", "body": out})
+            return
         if conf is None or scope.get("method") != "POST":
             return await self.app(scope, receive, send)
 
