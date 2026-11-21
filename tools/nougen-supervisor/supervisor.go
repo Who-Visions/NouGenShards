@@ -136,6 +136,9 @@ func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
 	if _, err := os.Stat(cf); err != nil {
 		cf = filepath.Join(l.base, exe("cloudflared"))
 	}
+	if n.Cloudflared != "" {
+		cf = n.Cloudflared
+	}
 	// The token goes in the environment, not the arguments: arguments are
 	// visible to every other program on the computer.
 	cmd := exec.Command(cf, "tunnel", "--no-autoupdate", "--metrics", metricsAddr, "run")
@@ -333,6 +336,11 @@ func (s *Supervisor) launch(u *unit, cmd *exec.Cmd, logPath, id, kind string, no
 
 func (s *Supervisor) checkNode(e *entry, now time.Time) {
 	u, n := &e.n, e.node
+	if n.TunnelOnly {
+		// No node to run: the account is its tunnel alone.
+		u.state = "none"
+		return
+	}
 	if s.ok(fmt.Sprintf("http://127.0.0.1:%d/health", n.Port)) {
 		s.markUp(u, now)
 		return
