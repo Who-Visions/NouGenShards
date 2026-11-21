@@ -249,6 +249,15 @@ def test_fail_closed_refuses_unrecognised_host():
     assert inner.seen == []
 
 
+def test_fail_closed_forwarded_open_host_cannot_widen():
+    app, inner = fail_closed()
+    # Proxy rewrote Host to an internal name; client names an OPEN host in XFH.
+    status, body = raw_call(app, "internal.svc", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                            [(b"x-forwarded-host", b"mcp.example.test")])
+    assert status == 403 and body == {"error": "host not recognised"}
+    assert inner.seen == []
+
+
 def test_fail_closed_lets_open_hosts_through():
     app, _ = fail_closed()
     for host in ("mcp.example.test", "127.0.0.1:4444"):

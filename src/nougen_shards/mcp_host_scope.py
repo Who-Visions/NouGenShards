@@ -103,6 +103,17 @@ def _hosts(scope: dict) -> list:
     return out
 
 
+def _host_header(scope: dict) -> list:
+    """The Host header alone. Only this can earn the full tool surface: the
+    client writes X-Forwarded-Host, so naming an open host there must never
+    widen a request, only narrow it (scoped) or leave it refused."""
+    out = []
+    for k, v in scope.get("headers") or []:
+        if k.decode("latin-1").lower() == "host":
+            out.extend(h for h in (_bare(x) for x in v.decode("latin-1").split(",")) if h)
+    return out
+
+
 def _resolve(scopes: Dict[str, Dict[str, Any]], scope: dict) -> Optional[Dict[str, Any]]:
     """Narrowest scope wins: if any candidate host is scoped, the request is
     scoped, and when several are, only tools allowed by all of them pass."""
@@ -154,7 +165,7 @@ class HostScopedMCP:
     async def __call__(self, scope, receive, send):
         conf = _resolve(self.scopes, scope) if scope.get("type") == "http" else None
         if conf is None and scope.get("type") == "http" and self.scopes and self.open_hosts \
-                and not any(h in self.open_hosts for h in _hosts(scope)):
+                and not any(h in self.open_hosts for h in _host_header(scope)):
             out = json.dumps({"error": "host not recognised"}).encode()
             await send({"type": "http.response.start", "status": 403,
                         "headers": [(b"content-type", b"application/json"),
