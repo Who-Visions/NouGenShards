@@ -3693,7 +3693,11 @@ def _go_vector_rows(q_vec, limit: int, domain_key, excluded_types):
         answered = set(out.get("dbs") or ()) | set(out.get("skipped_dim_mismatch") or ())
         rows: dict = {}
         for r in out.get("rows") or ():
-            rows.setdefault(int(r["db"]), []).append((float(r["final_score"]), int(r["id"])))
+            # "sem" (raw cosine) is sent by fronts built after the recall
+            # evidence floor; an older front omits it and the row stays unjudged.
+            sem = r.get("sem")
+            rows.setdefault(int(r["db"]), []).append(
+                (float(r["final_score"]), int(r["id"]), None if sem is None else float(sem)))
         return {i: paths[i] for i in answered if i in paths}, rows
     except Exception as exc:  # pylint: disable=broad-except
         global _GO_LANE_WARNED  # pylint: disable=global-statement
@@ -4164,18 +4168,19 @@ def _recall_min_sim_alone(base: float) -> float:
     return base if v is None else max(v, base)
 
 
-def _has_match_evidence(item: dict, min_sim: float) -> bool:
+def _has_match_evidence(item: dict, min_sim: float, query_has_lexical: bool) -> bool:
     """True when a recall hit has an absolute signal, not just a relative rank."""
     if item.get("_lex_hit") or item.get("_lex_partial") or item.get("_title_exact") or item.get("_token_exact"):
         return True
     if "_vec_sim" not in item:
-        # Never matched by the vector lane and no all-terms lexical hit
-        # (e.g. a ranked-OR retry on one token): no evidence.
+        # Never matched by the vector lane and no lexical hit: no evidence.
         return False
     sim = item["_vec_sim"]
     if sim is None:
-        # Vector row with no cosine recorded (Go lane): cannot judge, keep it.
-        return True
+        # Vector row with no cosine (a Go front older than the "sem" field):
+        # unjudgeable. Keep it only when the query has an all-terms lexical
+        # match, so pure nonsense cannot ride in on an unscored row.
+        return query_has_lexical
     return sim >= min_sim
 
 
@@ -4580,10 +4585,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         # vector cosine >= NOUGEN_RECALL_MIN_SIM. No evidence -> empty result.
         min_sim = _recall_min_sim()
         if min_sim is not None:
-            lexical = any(it.get("_lex_hit") or it["_title_exact"] or it.get("_token_exact")
+            lexical = any(it.get("_lex_hit") or it.get("_title_exact") or it.get("_token_exact")
                           for it in scored_results)
             floor = min_sim if lexical else _recall_min_sim_alone(min_sim)
-            surviving = [it for it in surviving if _has_match_evidence(it, floor)]
+            surviving = [it for it in surviving if _has_match_evidence(it, floor, lexical)]
         elif not surviving and scored_results:
             # Floor disabled: legacy behaviour, never return empty.
             surviving = [scored_results[0]]

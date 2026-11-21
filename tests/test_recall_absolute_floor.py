@@ -80,6 +80,31 @@ def test_go_lane_rows_without_cosine_are_kept(lanes):
     assert 11 in _ids("anchor")
 
 
+def test_unscored_go_row_does_not_pass_a_nonsense_query(lanes):
+    lanes["vec"] = [_row(13, "old go front row", _vec_sim=None)]
+    assert _ids("zzqx vorpalqq") == []
+
+
+def test_go_front_sem_field_reaches_the_floor(monkeypatch):
+    import io
+    import json as _json
+    payload = {"paths": {"1": "db1"}, "dbs": [1],
+               "rows": [{"db": 1, "id": 5, "final_score": 0.4, "sem": 0.31},
+                        {"db": 1, "id": 6, "final_score": 0.3}]}
+    monkeypatch.setenv("NOUGEN_VECTOR_GO", "1")
+    monkeypatch.setenv("NGS_GO_FRONT_URL", "http://front.test")
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp(_json.dumps(payload).encode()))
+    _, rows = core._go_vector_rows([0.1], 5, "*", set())
+    assert rows[1] == [(0.4, 5, 0.31), (0.3, 6, None)]
+
+
 def test_floor_off_restores_legacy_top_hit(lanes, monkeypatch):
     monkeypatch.setenv("NOUGEN_RECALL_MIN_SIM", "off")
     lanes["vec"] = [_row(1, "newest dense shard", sim=0.2)]
