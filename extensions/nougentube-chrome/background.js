@@ -39,8 +39,12 @@ blocker.reset();   // a worker that starts holds nothing, so let go of anything 
 // backgroundThrottling), so a worker that lives on the page's pings can die mid-job. Any extension API call restarts its idle timer.
 const jobs = new Map();   // awake port -> { id: blocker id or null, text: progress shown on the toolbar button }
 let selfPing = null;
+// Answers in flight (chat streams, bridge calls). A slow local model can take minutes, and the page's own pings
+// are throttled when Chrome slows the tab, so the worker keeps itself alive from its side while any answer is pending.
+let inflight = 0;
+const busy = d => { inflight = Math.max(0, inflight + d); syncJobs(); };
 function syncJobs() {
-  const holding = [...jobs.values()].some(j => j.id !== null);
+  const holding = inflight > 0 || [...jobs.values()].some(j => j.id !== null);
   if (holding && !selfPing) selfPing = setInterval(() => { try { chrome.runtime.getPlatformInfo(); } catch { /* worker is going away anyway */ } }, 20000);
   if (!holding && selfPing) { clearInterval(selfPing); selfPing = null; }
 }
@@ -223,6 +227,7 @@ chrome.runtime.onConnect.addListener(port => {
       const c = ctrl = new AbortController(), ms = bridge.timeoutOf ? bridge.timeoutOf(msg) : bridge.timeout;
       let timedOut = false;
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
+      busy(1);
       try {
         const r = await bridgeFetch("/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
         // Read text and parse safely: a reachable bridge that answers with HTML or an empty body is reported as
@@ -235,7 +240,7 @@ chrome.runtime.onConnect.addListener(port => {
         if (closed) return;
         if (!timedOut) findBridge();
         send({ ok: false, error: timedOut ? "the bridge took too long" : "the NouGenOpen bridge is not running (nougen-open serve)" });
-      } finally { clearTimeout(timer); }
+      } finally { clearTimeout(timer); busy(-1); }
     });
     return;
   }
@@ -245,6 +250,10 @@ chrome.runtime.onConnect.addListener(port => {
   const send = m => { if (!closed) try { port.postMessage(m); } catch {} };
   port.onMessage.addListener(async ({ messages, ping }) => {
     if (ping) return;   // keepalive only
+    busy(1);
+    try { await answer(messages); } finally { busy(-1); }
+  });
+  async function answer(messages) {
     const c = await cfg();
     const routes = c.model === "auto" ? await autoRoutes(c) : [routeFor(c, c.model)];
     if (!routes.length) return send({ error: "No model route is available. Start Ollama or the NouGenOpen bridge, or add a provider key in ⚙ settings." });
@@ -267,5 +276,5 @@ chrome.runtime.onConnect.addListener(port => {
       } finally { clearTimeout(timer); }
     }
     send({ error: (routes.length > 1 ? "Every route failed. " : "") + failed.join(" · ") });
-  });
+  }
 });
