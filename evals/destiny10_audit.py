@@ -148,6 +148,16 @@ def main() -> int:
       + (f"({min(sf_tps)}-{max(sf_tps)} vs {min(po_tps)}-{max(po_tps)}, about {st.mean(po_tps)/st.mean(sf_tps):.1f}x)." if cost_clear else "."))
     P(f"- no task was marked done without passing verification: **{'yes' if clean_rollback else 'no'}** (rollback violations).")
     P("\nThe honest claim shape matches the literature in shard 26910: memory here buys a cheaper run at equal success, not more solves.\n")
+    P("## Other evidence: Destiny 10 v2 (reported by another lane, not re-run here)\n")
+    P("Relay leg `20261121T230041Z__claude-app__g-whoentertains` and shard 31727@db8 report a second, "
+      "retrieval-based benchmark: six tasks whose answer is a NouGen convention that only the vault holds, "
+      "`mrs-b:latest`, seed 1, temperature 0. Reported result: no_memory 0/6, prompt_only 0/6, "
+      "shards_first 0/6. The leg measures why: the answer was inside the recall budget for 1 of 6 tasks, "
+      "present in the top 3 hits for 3 of 6, and absent for 3 of 6. Its oracle control and extra seeds did not run.\n")
+    P("This is the opposite picture from the table above. Where facts are seeded verbatim and the query "
+      "names them, memory wins on cost. Where facts must be retrieved from plain-language task text, "
+      "the reported result is no gain. Taken together, the synthetic result should not be read as evidence "
+      "that shards-first helps on real fleet tasks.\n")
     P("## What would close it\n")
     P("1. A benchmark where a lane changes between runs (an improver), with tasks it never saw, so the held-out event means something.")
     P("2. Store per-task outcomes so Rescue and Harm are exact instead of bounds.")
