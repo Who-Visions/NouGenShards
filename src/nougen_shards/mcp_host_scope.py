@@ -67,10 +67,30 @@ def load_scopes(env: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any
     return {h: {"name": v.get("name"), "tools": frozenset(v["tools"])} for h, v in scopes.items()}
 
 
-def _host(scope: dict) -> str:
-    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
-    host = headers.get("x-forwarded-host") or headers.get("host") or ""
-    return host.split(",")[0].strip().split(":")[0].lower()
+def _bare(host: str) -> str:
+    return host.strip().split(":")[0].lower()
+
+
+def _hosts(scope: dict) -> list:
+    """Every hostname the request could be judged by: the Host header and each
+    X-Forwarded-Host entry. A client controls X-Forwarded-Host, so it must
+    never be able to talk a scoped host out of its scope."""
+    out = []
+    for k, v in scope.get("headers") or []:
+        name = k.decode("latin-1").lower()
+        if name in ("host", "x-forwarded-host"):
+            out.extend(h for h in (_bare(x) for x in v.decode("latin-1").split(",")) if h)
+    return out
+
+
+def _resolve(scopes: Dict[str, Dict[str, Any]], scope: dict) -> Optional[Dict[str, Any]]:
+    """Narrowest scope wins: if any candidate host is scoped, the request is
+    scoped, and when several are, only tools allowed by all of them pass."""
+    confs = [scopes[h] for h in _hosts(scope) if h in scopes]
+    if not confs:
+        return None
+    tools = frozenset.intersection(*(c["tools"] for c in confs))
+    return {"name": confs[0].get("name"), "tools": tools}
 
 
 def _error(req_id: Any, message: str) -> dict:
@@ -110,7 +130,7 @@ class HostScopedMCP:
         self.scopes = load_scopes() if scopes is None else scopes
 
     async def __call__(self, scope, receive, send):
-        conf = self.scopes.get(_host(scope)) if scope.get("type") == "http" else None
+        conf = _resolve(self.scopes, scope) if scope.get("type") == "http" else None
         if conf is None or scope.get("method") != "POST":
             return await self.app(scope, receive, send)
 

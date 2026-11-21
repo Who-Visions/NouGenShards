@@ -30,8 +30,8 @@ class FakeMCP:
         await send({"type": "http.response.body", "body": out})
 
 
-def call(app, host, payload):
-    scope = {"type": "http", "method": "POST", "headers": [(b"host", host.encode())]}
+def call(app, host, payload, extra_headers=()):
+    scope = {"type": "http", "method": "POST", "headers": [(b"host", host.encode()), *extra_headers]}
     got = {}
 
     async def receive():
@@ -184,3 +184,20 @@ def test_malformed_tool_call_names_are_refused_not_crashed():
         res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params})
         assert res["id"] == 9 and res["error"]["code"] == -32601, params
     assert inner.seen == []
+
+
+def test_spoofed_forwarded_host_cannot_unscope_msgs_host():
+    app, inner = make()
+    xfh = [(b"x-forwarded-host", b"mcp.example.test")]
+    res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, xfh)
+    assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
+    res = call(app, "msgs.example.test",
+               {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "vault_put"}}, xfh)
+    assert res["error"]["code"] == -32601 and len(inner.seen) == 1
+
+
+def test_forwarded_msgs_host_behind_proxy_is_scoped():
+    app, _ = make()
+    xfh = [(b"x-forwarded-host", b"msgs.example.test, edge.example.test")]
+    res = call(app, "127.0.0.1:4444", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, xfh)
+    assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
