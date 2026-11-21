@@ -3757,7 +3757,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             # file under the same index); anything else is scored here.
             delegated = go_lane is not None and go_lane[0].get(i) == str(get_db_path(i))
             cache = None if delegated else _vector_cache_entry(i, conn)
-            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id)
+            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id, sem|None)
             if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
                 # A 384-d query against a 768-d DB (or the reverse) is a provider
                 # switch without a backfill. Say so once per DB rather than
