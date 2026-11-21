@@ -4422,11 +4422,13 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         # Absolute-match evidence survives fusion (RRF fills missing keys):
         # a lexical lane hit is a real match; vector rows carry _vec_sim.
         # An all-terms match is full evidence (_lex_hit). A ranked-OR retry hit
-        # really contains a query token, so it keeps itself (_lex_partial), but
-        # it does not vouch for vector-only neighbours: those then need the
-        # stricter NOUGEN_RECALL_MIN_SIM_ALONE floor.
+        # really contains a query token, and a fuzzy hit shares character
+        # trigrams with it, so both keep themselves (_lex_partial), but neither
+        # vouches for vector-only neighbours: those then need the stricter
+        # NOUGEN_RECALL_MIN_SIM_ALONE floor.
         for it in keyword_results:
-            it["_lex_partial" if it.get("_or_retry") else "_lex_hit"] = True
+            partial = it.get("_or_retry") or it.get("_fuzzy")
+            it["_lex_partial" if partial else "_lex_hit"] = True
 
         lanes = [keyword_results, vector_results]
         exact_token_results = [item for item in keyword_results
@@ -4571,25 +4573,29 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
-        if len(scored_results) > limit:
-            cutoff = len(scored_results) // 2
-            surviving = scored_results[:max(limit, cutoff)]
-        else:
-            surviving = scored_results
-        # Filter anything below dynamic threshold (e.g. 0.01)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
         # Absolute relevance floor. Relevance above is min-max normalised inside
         # the candidate set, so the best of an all-noise set always scored 1.0 and
         # a gibberish query still returned the newest dense shards. Keep a hit only
         # with real evidence: a lexical lane match, an exact title/token, or a
         # vector cosine >= NOUGEN_RECALL_MIN_SIM. No evidence -> empty result.
+        # Applied BEFORE the bottom-half truncation: rejected noise must not use up
+        # the slots a genuine match needs (limit=1 with four dense weak rows ahead
+        # of a 0.90 cosine match returned [] otherwise).
         min_sim = _recall_min_sim()
+        candidates = scored_results
         if min_sim is not None:
             lexical = any(it.get("_lex_hit") or it.get("_title_exact") or it.get("_token_exact")
                           for it in scored_results)
             floor = min_sim if lexical else _recall_min_sim_alone(min_sim)
-            surviving = [it for it in surviving if _has_match_evidence(it, floor, lexical)]
-        elif not surviving and scored_results:
+            candidates = [it for it in scored_results if _has_match_evidence(it, floor, lexical)]
+        if len(candidates) > limit:
+            cutoff = len(candidates) // 2
+            surviving = candidates[:max(limit, cutoff)]
+        else:
+            surviving = candidates
+        # Filter anything below dynamic threshold (e.g. 0.01)
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
+        if min_sim is None and not surviving:
             # Floor disabled: legacy behaviour, never return empty.
             surviving = [scored_results[0]]
     else:

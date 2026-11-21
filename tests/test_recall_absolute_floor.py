@@ -105,6 +105,21 @@ def test_go_front_sem_field_reaches_the_floor(monkeypatch):
     assert rows[1] == [(0.4, 5, 0.31), (0.3, 6, None)]
 
 
+def test_floor_runs_before_truncation_so_noise_cannot_eat_the_slots(lanes):
+    # limit=1, four dense weak rows rank ahead of a 0.90 cosine match: the
+    # truncation used to keep only the weak ones, then the floor emptied them.
+    weak = [_row(20 + n, "dense weak", sim=0.30, density_score=5.0) for n in range(4)]
+    lanes["vec"] = weak + [_row(30, "genuine semantic match", sim=0.90)]
+    got = core.retrieve("a paraphrased question", limit=1, domain_key="*") or []
+    assert [r["id"] for r in got] == [30]
+
+
+def test_fuzzy_keyword_hit_keeps_itself_but_does_not_lower_the_vector_floor(lanes):
+    lanes["kw"] = [_row(40, "trigram neighbour", _fuzzy=True)]
+    lanes["vec"] = [_row(41, "vector neighbour", sim=0.60)]  # under the 0.65 alone floor
+    assert _ids("some misspelled qurey") == [40]
+
+
 def test_floor_off_restores_legacy_top_hit(lanes, monkeypatch):
     monkeypatch.setenv("NOUGEN_RECALL_MIN_SIM", "off")
     lanes["vec"] = [_row(1, "newest dense shard", sim=0.2)]
