@@ -20,6 +20,15 @@ type Node struct {
 	Tunnel string `json:"tunnel"`
 	URL    string `json:"url,omitempty"`
 
+	// A tunnel-only account publishes a tunnel with no node of its own, such as
+	// a named tunnel that fronts another service on this computer. Its port is
+	// only used to name its readiness port; nothing is started on it. The tunnel
+	// token is read from TunnelFile (an absolute path) so it need not sit in
+	// node.json; Cloudflared optionally names the cloudflared binary to run.
+	TunnelOnly  bool   `json:"tunnel_only,omitempty"`
+	TunnelFile  string `json:"tunnel_file,omitempty"`
+	Cloudflared string `json:"cloudflared,omitempty"`
+
 	Dir    string `json:"-"` // the account's folder
 	Source string `json:"-"` // which file described it: node.json, run.ps1 or run.sh
 }
@@ -98,11 +107,42 @@ func loadNode(dir string) (Node, bool) {
 	if n.ID == "" {
 		n.ID = filepath.Base(dir)
 	}
+	if n.TunnelOnly {
+		return tunnelOnlyNode(n)
+	}
 	if n.Port < 1 || n.Port > 65535 || n.Token == "" {
 		return Node{}, false
 	}
 	// A folder whose download never finished has nothing to run yet.
 	if _, err := os.Stat(filepath.Join(n.SrcDir(), "app.py")); err != nil {
+		return Node{}, false
+	}
+	return n, true
+}
+
+// maxTunnelToken bounds what is read from a tunnel token file.
+const maxTunnelToken = 4096
+
+// tunnelOnlyNode checks a tunnel-only account. It needs a tunnel, a port for
+// its readiness check, and no node: nothing app-side is required or started.
+func tunnelOnlyNode(n Node) (Node, bool) {
+	if n.Port < 1 || n.Port > 65535 {
+		return Node{}, false
+	}
+	if n.TunnelFile != "" {
+		if !filepath.IsAbs(n.TunnelFile) {
+			return Node{}, false
+		}
+		b, err := os.ReadFile(n.TunnelFile)
+		if err != nil || len(b) > maxTunnelToken {
+			return Node{}, false
+		}
+		n.Tunnel = strings.TrimSpace(strings.TrimPrefix(string(b), utf8BOM))
+	}
+	if n.Tunnel == "" {
+		return Node{}, false
+	}
+	if n.Cloudflared != "" && !filepath.IsAbs(n.Cloudflared) {
 		return Node{}, false
 	}
 	return n, true
