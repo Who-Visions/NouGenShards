@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+node_modules
+analysis
+.relay
+.env
+.env.*
+*.env
+deploy/replica/replica.env
