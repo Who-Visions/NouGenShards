@@ -28,7 +28,7 @@ function load(fetchImpl) {
     storage: { sync: { get: async () => ({}) }, local: { get: async () => ({}), set: async () => {} } },
     sidePanel: { setPanelBehavior: async () => {} },
   };
-  const ctx = { chrome, fetch: fetchImpl, AbortController, AbortSignal, TextDecoder, setTimeout: fast, clearTimeout, console, URL };
+  const ctx = { chrome, fetch: fetchImpl, AbortController, AbortSignal, TextDecoder, setTimeout: fast, clearTimeout, console, URL, setInterval: (fn, ms) => setInterval(fn, ms).unref(), clearInterval };
   ctx.globalThis = ctx;
   ctx.importScripts = (...names) => { for (const n of names) vm.runInContext(readFileSync(new URL(n, dir), 'utf8'), ctx); };
   vm.createContext(ctx);

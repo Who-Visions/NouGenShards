@@ -490,17 +490,26 @@
     // Only bound (per-video summary/chat) streams share S.port; unbound jobs
     // (morph, batch) keep isolated ports so concurrent streams never cancel each other.
     if (bound && S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
-    const port = chrome.runtime.connect({ name: "chat" });
-    port.bound = !!bound;
-    if (bound) S.port = port;
-    let fin = false;
-    // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
-    const ka = setInterval(() => { try { port.postMessage({ ping: 1 }); } catch {} }, 15000);
+    let fin = false, port = null, ka = null, retried = false;
     const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); if (bound && S.port === port) S.port = null; onDone(e, m); };
-    port.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
-    port.onMessage.addListener(m => { if (m.stage && onStage) onStage(m.stage); if (m.reset && onReset) onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
-    port.onDisconnect.addListener(() => end("\n\n⚠ The extension's background page stopped before the answer arrived. Press Regenerate."));
-    port.postMessage({ messages });
+    // If Chrome stops the background worker mid-answer (a slow local model can run for minutes), reconnect once
+    // and ask again from the start, dropping the partial text, before telling the user anything.
+    const open = () => {
+      const p = port = chrome.runtime.connect({ name: "chat" });
+      p.bound = !!bound;
+      if (bound) S.port = p;
+      // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
+      clearInterval(ka); ka = setInterval(() => { try { p.postMessage({ ping: 1 }); } catch {} }, 15000);
+      p.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
+      p.onMessage.addListener(m => { if (port !== p) return; if (m.stage && onStage) onStage(m.stage); if (m.reset && onReset) onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
+      p.onDisconnect.addListener(() => {
+        if (fin || port !== p) return;
+        if (!retried && (!bound || mine())) { retried = true; if (onStage) onStage("The background page restarted; asking again"); if (onReset) onReset(); return open(); }
+        end("\n\n⚠ The extension's background page stopped twice before the answer arrived. Press Regenerate, or pick a faster model.");
+      });
+      p.postMessage({ messages });
+    };
+    open();
   }
   // Split on topic boundaries: a >=3s silence gap or a transition phrase, near a target size.
   const TRANS = /\b(moving on|let'?s talk about|next up|now let'?s|the next (thing|step|part)|another thing|so that'?s it|in conclusion|to sum up|first of all|secondly|finally)\b/i;
