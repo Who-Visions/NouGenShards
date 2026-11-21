@@ -3794,7 +3794,8 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                         continue
                     decayed_utility = float(cache["util"][idx]) * _temporal_decay(cache["ts"][idx], query_now)
                     scored.append((float(sem_scores[idx]) * WEIGHT_LIKELIHOOD
-                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx])))
+                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx]),
+                                   float(sem_scores[idx])))
                 for sid, utility, ts, dom, etype, emb in cache["legacy"]:
                     if domain_key not in (None, "*") and dom != domain_key:
                         continue
@@ -3807,7 +3808,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     except Exception:  # pylint: disable=broad-except
                         sem = 0.0
                     decayed_utility = utility * _temporal_decay(ts, query_now)
-                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid))
+                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid, sem))
             elif cache and cache["dim"] not in (None, qdim):
                 logger.warning(
                     "vector lane skipped on DB %s: cached embedding dim %s != query dim %s "
@@ -3817,15 +3818,20 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             scored.sort(key=lambda t: (-t[0], t[1]))
             top = scored[:limit]
             placeholders = ",".join("?" for _ in top)
-            by_id = {sid: score for score, sid in top}
+            by_id = {t[1]: t[0] for t in top}
+            # Go-lane tuples are (final_score, id) with no cosine: None = unknown.
+            sim_by_id = {t[1]: (t[2] if len(t) > 2 else None) for t in top}
             cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                 FROM shards WHERE id IN ({placeholders})
-            """, [sid for _, sid in top])
+            """, [t[1] for t in top])
             for row in cursor:
                 item = hydrate(dict(row))
                 item["_db_index"] = i
                 item["final_score"] = by_id.get(item["id"], 0.0)
+                # Raw cosine, kept so recall can apply an ABSOLUTE floor after
+                # fusion (RRF and min-max normalisation are both relative).
+                item["_vec_sim"] = sim_by_id.get(item["id"])
                 db_rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
             _note_retrieval_db_failure(i, exc)
@@ -4123,6 +4129,56 @@ def _rrf_lane_weights() -> dict:
     return weights
 
 
+# Measured on a production vault (2026-11-21): real vector-only matches 0.58-0.84,
+# unrelated-topic neighbours 0.44-0.50, pure nonsense still reaches 0.55-0.59
+# on a couple of noise-attractor shards. So vector-only hits need 0.55 when the
+# query has lexical support elsewhere, and 0.65 when it has none at all.
+_RECALL_MIN_SIM_DEFAULT = 0.55
+_RECALL_MIN_SIM_ALONE_DEFAULT = 0.65
+
+
+def _env_floor(name: str, default: float) -> Optional[float]:
+    """Float floor from env; "off"/"none"/"" disables it (returns None)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if raw.strip().lower() in ("", "off", "none", "disabled"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
+def _recall_min_sim() -> Optional[float]:
+    """Absolute vector-similarity floor for recall hits (NOUGEN_RECALL_MIN_SIM).
+
+    "off"/"none"/"" disables the floor (legacy: always return the top hit)."""
+    return _env_floor("NOUGEN_RECALL_MIN_SIM", _RECALL_MIN_SIM_DEFAULT)
+
+
+def _recall_min_sim_alone(base: float) -> float:
+    """Stricter floor when no candidate has lexical support (NOUGEN_RECALL_MIN_SIM_ALONE)."""
+    v = _env_floor("NOUGEN_RECALL_MIN_SIM_ALONE", _RECALL_MIN_SIM_ALONE_DEFAULT)
+    return base if v is None else max(v, base)
+
+
+def _has_match_evidence(item: dict, min_sim: float) -> bool:
+    """True when a recall hit has an absolute signal, not just a relative rank."""
+    if item.get("_lex_hit") or item.get("_lex_partial") or item.get("_title_exact") or item.get("_token_exact"):
+        return True
+    if "_vec_sim" not in item:
+        # Never matched by the vector lane and no all-terms lexical hit
+        # (e.g. a ranked-OR retry on one token): no evidence.
+        return False
+    sim = item["_vec_sim"]
+    if sim is None:
+        # Vector row with no cosine recorded (Go lane): cannot judge, keep it.
+        return True
+    return sim >= min_sim
+
+
 def _rrf_k() -> int:
     try:
         k = int(os.environ.get("NOUGEN_RRF_K", _RRF_DEFAULT_K))
@@ -4358,7 +4414,15 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
-            
+        # Absolute-match evidence survives fusion (RRF fills missing keys):
+        # a lexical lane hit is a real match; vector rows carry _vec_sim.
+        # An all-terms match is full evidence (_lex_hit). A ranked-OR retry hit
+        # really contains a query token, so it keeps itself (_lex_partial), but
+        # it does not vouch for vector-only neighbours: those then need the
+        # stricter NOUGEN_RECALL_MIN_SIM_ALONE floor.
+        for it in keyword_results:
+            it["_lex_partial" if it.get("_or_retry") else "_lex_hit"] = True
+
         lanes = [keyword_results, vector_results]
         exact_token_results = [item for item in keyword_results
                                if _has_exact_query_tokens(query, item)]
@@ -4371,7 +4435,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             lanes.append(exact_token_results)
             lane_weights.append(w["exact"])
         if _title_lane_enabled():
-            lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
+            title_results = _title_retrieve(query, candidate_limit, active_domain, include_research)
+            for it in title_results:
+                it["_lex_hit"] = True
+            lanes.append(title_results)
             lane_weights.append(w["title"])
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
@@ -4379,7 +4446,13 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             try:
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
-                    lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
+                    # The atoms lane is FTS over distilled facts: a real token
+                    # match, so partial evidence. The entity-graph lane matches
+                    # loosely and is not evidence; its rows must clear the floor.
+                    atoms = distill.atoms_lane(query, candidate_limit, include_research, active_domain)
+                    for it in atoms or []:
+                        it["_lex_partial"] = True
+                    lanes.append(atoms)
                     lane_weights.append(w["atoms"])
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
                     lane_weights.append(w["graph"])
@@ -4500,7 +4573,19 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             surviving = scored_results
         # Filter anything below dynamic threshold (e.g. 0.01)
         surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
-        if not surviving and scored_results:
+        # Absolute relevance floor. Relevance above is min-max normalised inside
+        # the candidate set, so the best of an all-noise set always scored 1.0 and
+        # a gibberish query still returned the newest dense shards. Keep a hit only
+        # with real evidence: a lexical lane match, an exact title/token, or a
+        # vector cosine >= NOUGEN_RECALL_MIN_SIM. No evidence -> empty result.
+        min_sim = _recall_min_sim()
+        if min_sim is not None:
+            lexical = any(it.get("_lex_hit") or it["_title_exact"] or it.get("_token_exact")
+                          for it in scored_results)
+            floor = min_sim if lexical else _recall_min_sim_alone(min_sim)
+            surviving = [it for it in surviving if _has_match_evidence(it, floor)]
+        elif not surviving and scored_results:
+            # Floor disabled: legacy behaviour, never return empty.
             surviving = [scored_results[0]]
     else:
         surviving = []
