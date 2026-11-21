@@ -1,5 +1,5 @@
 ---
-description: NouGen root dispatcher — dynamic router over every NouGen MCP tool (shards, valerion, fleet-registry, usage, ctx, ollama), with end-to-end recall/shard/relay/verify loops
+description: NouGen root dispatcher — dynamic router over every NouGen MCP tool (shards connector + local, usage, ctx, ollama), with end-to-end recall/shard/relay/verify loops
 argument-hint: "<intent or subcommand> ...args  (empty = show live tool tree)"
 ---
 
@@ -26,83 +26,70 @@ memorized count — server tool counts drift as the fleet ships changes.
 
 ## Tool Atlas (grouped by domain — call the right server directly, don't guess a name)
 
-Each domain below lists the MCP server(s) that own it. If a tool you need isn't in this
-atlas (new tool shipped since this file was written), use `ToolSearch` with a keyword
-query against the relevant server prefix (`mcp__nougen-shards__`, `mcp__valerion__`,
-`mcp__nougen-fleet-registry__`, `mcp__nougen-usage__`, `mcp__nougen-ctx__`,
-`mcp__ollama__`) before giving up — this keeps the router correct as the fleet evolves
-without editing this file every time.
+Servers that exist (verified 2026-11-21): the **NouGenShards connector** (claude.ai
+connector, tool prefix `mcp__564cae0a-cc96-45aa-b930-9e8283516878__`), local
+**`nougen-shards`** (stdio, `mcp__nougen-shards__`), `nougen-usage`, `nougen-ctx`, and
+`ollama` (user scope, `npx ollama-mcp`). `antigravity-fts5-shards` is legacy fallback only.
+There is no `valerion` or `nougen-fleet-registry` server — do not route to them. If a
+tool isn't listed here, `ToolSearch` against these prefixes before giving up.
 
-- **Recall / memory read** — `nougen-shards` and `valerion` (same underlying vault,
-  either works; prefer whichever is already loaded to save a round trip):
-  `shards_search`, `shards_recall`, `shard_get`, `shard_related`,
-  `shard_provenance_graph`, `shards_window`, `recent_shards`, `shard_stats`,
-  `shard_schema`, `recall_context`, `federated_recall`, `global_search`,
-  `search_memory_vault`, `search_fleet`, `search_capabilities`.
-  Discipline: search summaries first, pull full `shard_get` bodies only when the
-  summary is insufficient.
+- **Recall / memory read** — connector: `shards_search`, `shards_recall`, `get_shard`,
+  `shards_window`, `recall_window`, `temporal_query`, `shards_status`, `shards_coverage`,
+  `substrate_coverage`. Local `nougen-shards`: `recall_memory`, `recall_layered`,
+  `recall_related`, `search_shards`, `get_memory_stats`. Search summaries first; pull
+  `get_shard` bodies only when the summary is insufficient.
 
-- **Memory write** — `write_intelligence_shard`, `write_distilled_shard`,
-  `shards_capture`, `write_memory`, `shards_amend`, `shards_mark`, `shards_retract`,
-  `shards_forget`, `vault_put`. Tags always as a LIST. Never write personal/course
-  content verbatim — paraphrase with citation, per public-repo and copyright rules.
+- **Memory write** — connector: `shards_capture`, `shards_amend`, `shards_mark`,
+  `shards_retract`, `shards_forget`, `vault_put` (`vault_list` to read names). Local:
+  `add_shard`, `capture_experience`, `link_shards`. Tags always as a LIST. Never write
+  personal/course content verbatim.
 
-- **Relay / cross-agent handoff** — `relay_create`, `relay_read`, `relay_latest`,
-  `relay_open`, `relay_ack`, `relay_claim_list`, `relay_publish_live`,
-  `relay_clean_stale_legs`. Body = structured markdown, headed sections, status emoji,
-  matching existing fleet house style. Acking a leg = committing to finish it.
+- **Relay / cross-agent handoff** — connector: `relay_create`, `relay_read`,
+  `relay_latest`, `relay_open`, `relay_ack`, `relay_claim_list`; claims via
+  `fleet_claim`, `fleet_claim_status`, `fleet_release`. Body = structured markdown,
+  headed sections, status emoji. Acking a leg = committing to finish it.
 
-- **Fleet health / topology** — `fleet_whoami`, `mesh_health`, `fleet_node_ping`,
-  `fleet_provider_status`, `fleet_coverage_matrix`, `list_fleet_nodes`, `inspect_node`,
-  `registry_diagnostics`, `federation_health`, `multi_tenant_vault_status`,
-  `context_budget_diagnostics`. Use for `/nougen status` and before trusting an
-  "empty" recall result (adversarial control: confirm the lane actually answered).
+- **Fleet health / topology** — connector: `fleet_whoami`, `node_status`,
+  `sync_mesh_status`, `tunnel_status`, `wake_daemon_status`, `token_fuse_status`;
+  plus `session_connectors_status` for what this session has loaded. Use for
+  `/nougen status` and before trusting an "empty" recall result.
 
-- **NouGenMsg (fleet chat)** — `nougenmsg_inbox`, `nougenmsg_latest`, `nougenmsg_read`,
-  `nougenmsg_search`. Capitalized "NouGenMsg" in prose, lowercase module name in code.
+- **NouGenMsg (fleet chat)** — connector: `nougenmsg_inbox`, `nougenmsg_latest`,
+  `nougenmsg_send`, `nougenmsg_reply`, `nougenmsg_claim`, `nougenmsg_peers`, `nougenmsg`.
+  Local `nougen-shards`: `nougenmsg_search`.
 
-- **Ask a specific persona/model** — `ask_dav1d`, `ask_griot`, `ask_rhea`, `ask_xoah`,
-  `dav1d_exec`, `kaedra_ask`, `xoah_pressure`, `xoah_self`, `xoah_throne`. These are
-  fleet personas, not generic chat — route only when the user names one or the intent
-  clearly matches a persona's specialty.
+- **Ask a specific persona/model** — connector: `ask_dav1d`, `ask_griot`, `ask_muse`,
+  `ask_rhea`, `ask_xoah`, `dav1d_exec`, `kaedra_ask`, `xoah_pressure`, `xoah_self`,
+  `xoah_throne`, `persona_resolve`. Route only when the user names one or intent
+  clearly matches.
 
-- **Usage / cost** — `nougen-usage` server: `my_token_usage`, `machine_token_usage`,
+- **Usage / cost** — `nougen-usage`: `my_token_usage`, `machine_token_usage`,
   `fleet_token_usage`, `token_cost_by_model`, `token_usage_provenance`,
-  `tracker_live_status`. Also `tracker_daily`, `tracker_lanes`, `tracker_spend` on
-  `nougen-shards`/`valerion`. Lead with the COLD (uncached, full list-price) dollar
-  figure per the usage-reporting doctrine; cached/actual price is a footnote only.
+  `tracker_live_status`. Connector: `tracker_daily`, `tracker_lanes`, `tracker_spend`,
+  `evaluate_quota`. Lead with the COLD (uncached, list-price) dollar figure.
 
 - **Context-mode indexing** (`nougen-ctx`) — `ctx_execute`, `ctx_execute_file`,
   `ctx_batch_execute`, `ctx_search`, `ctx_index`, `ctx_insight`, `ctx_fetch_and_index`,
-  `ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`. Use instead of raw shell output
-  for large files/logs/diffs — this is the 98%-context-savings path.
+  `ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`. Use for large output.
 
-- **Local free-fleet generation** (`ollama`) — `ollama_generate`, `ollama_chat`,
-  `ollama_list`, `ollama_ps`, `ollama_show`, `ollama_pull`, `ollama_embed`,
-  `ollama_web_search`, `ollama_web_fetch`, `ollama_copy`, `ollama_create`,
-  `ollama_delete`, `ollama_push`. Discover models via `ollama_list` (`/api/tags`) at
-  call time — never hardcode a model tag. Custom fleet models first, then gemma4
-  e2b/e4b; never a 12b/27b/31b local tag.
+- **Local free-fleet generation** (`ollama`) — tool names come from `ollama-mcp`;
+  discover with `ToolSearch "+ollama"`. List models at call time, never hardcode a tag;
+  custom fleet models first, then gemma4 e2b/e4b, never a 12b/27b/31b local tag. If
+  the server isn't loaded, call `http://127.0.0.1:11434/v1/chat/completions` (max_tokens
+  >= 1400) or `NouGen/tools/fleet.py` for many routes.
 
-- **Audio** — NouGenHear lives outside MCP, at
-  `$NOUGEN_HOME/audio_stt` (`python -m nougen_hear ...`) and the
-  real `audio_transcribe`/`audio_batch_transcribe`/`audio_voice_memo_ingest` tools on
-  `valerion`/`nougen-fleet-registry` now shell into it.
+- **Audio / media** — local `nougen-shards`: `transcribe_media`. NouGenHear CLI at
+  `$NOUGEN_HOME/audio_stt` (`python -m nougen_hear ...`). YouTube: connector
+  `nougentube`, `nougentube_ingest`, `nougentube_transcript`, `youtube_ingest`.
 
-- **Git / PR** — not MCP; the NouGenShards CLI git skill: `./tools/nougen pr
-  {attach,status,confetti,review}` from `NouGenShards-push-main`. Use `gh` directly for
-  anything the CLI doesn't cover (checks, merges — merges need explicit user go-ahead).
+- **Git / PR** — not MCP: `./tools/nougen pr {attach,status,confetti,review}` from
+  `NouGenShards-push-main`; `gh` for the rest (merges need explicit user go-ahead).
 
 - **Dream / evolve** — `./tools/nougen dream` / `./tools/nougen evolve` in
-  NouGenShards-push-main. Both are gated (Dream Lane: gate-don't-write, only trivial
-  fixes auto-apply). Describe what a run would do before triggering a mutating one.
+  NouGenShards-push-main. Gated; describe what a mutating run would do first.
 
-- **Fleet audio/voice extras** — `audio_batch_transcribe`, `audio_voice_clone_status`,
-  `audio_voice_memo_ingest`, `voice_model_catalog`, `voice_synthesis_probe` on
-  `nougen-fleet-registry`/`valerion`.
-
-- **Provenance / canon** — `canon_lock_query`, `canon_diff_audit`,
-  `shard_provenance_graph`, `truth_ceremony_verify`, `unfinished_destinies`.
+- **Provenance / destinies** — connector: `unfinished_destinies`, `search_destinies`,
+  `get_destiny`, `create_destiny`, `update_destiny`, `link_destiny`.
 
 ## End-to-end loops (the "top .01%" path — use these for anything nontrivial)
 
