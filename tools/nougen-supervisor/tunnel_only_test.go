@@ -106,3 +106,19 @@ func TestTunnelOnlyTunnelIsRestartedWhenItDies(t *testing.T) {
 		t.Fatalf("started %d nodes, want 0", starts)
 	}
 }
+
+// An account switched to tunnel-only while its node still runs must stop that node.
+func TestSwitchingAnAccountToTunnelOnlyStopsItsNode(t *testing.T) {
+	s, base := newTest(t, fakeLauncher{node: "ok", tunnel: "ok"}, fastTiming())
+	writeNode(t, base, "acct", freePort(t), "tunnel-token")
+	tickUntil(t, s, "node up", func() bool {
+		st := s.Snapshot()
+		return len(st.Nodes) == 1 && st.Nodes[0].Node.State == "up"
+	})
+	e := s.entries["acct"]
+	node := e.n.proc
+	writeTunnelOnly(t, base, "acct", e.node.Port, "tunnel-token-value")
+	tickUntil(t, s, "node stopped", func() bool {
+		return e.node.TunnelOnly && e.n.state == "none" && !node.alive()
+	})
+}

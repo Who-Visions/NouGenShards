@@ -337,8 +337,10 @@ func (s *Supervisor) launch(u *unit, cmd *exec.Cmd, logPath, id, kind string, no
 func (s *Supervisor) checkNode(e *entry, now time.Time) {
 	u, n := &e.n, e.node
 	if n.TunnelOnly {
-		// No node to run: the account is its tunnel alone.
-		u.state = "none"
+		// No node to run: the account is its tunnel alone. An account switched
+		// to tunnel-only may still have a node running from before; stop it.
+		u.retire()
+		u.proc, u.state = nil, "none"
 		return
 	}
 	if s.ok(fmt.Sprintf("http://127.0.0.1:%d/health", n.Port)) {
