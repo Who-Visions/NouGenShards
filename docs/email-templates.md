@@ -220,9 +220,7 @@ irreversible tools (`shards_forget`, `vault_put`, `dav1d_exec`,
   contrast. Dark-mode rules in the template switch to near-black /
   near-white greys — no pure black or pure white anywhere.
 - **Company: "Who Visions LLC".** The footer and copyright line use
-  exactly that. "Pool Visions LLC" appeared in one message and is
-  **UNCONFIRMED, likely voice-to-text — do not use it** anywhere in
-  templates, docs, or copy until the operator confirms a rename.
+  exactly that (confirmed by Dave, 2026-11-22).
 - One column, 600 px, centred, ≥24 px padding; single primary CTA
   above the fold ("Open my Tester folder", first person); the
   five-step checklist follows the CTA, then the Guest Pack, social
