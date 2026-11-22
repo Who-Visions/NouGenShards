@@ -65,6 +65,32 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "machine": {
+            "type": "string",
+            "description": "The machine name this node's legs and usage carry, when it differs from the node name."
+          },
+          "coach": {
+            "type": "string",
+            "description": "Coach route this node answers to (NouGenRelay)."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other names that route to this node."
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Words that route a relay leg to this node."
+          },
+          "msg_cli": {
+            "type": "string",
+            "description": "Path of the NouGenMsg CLI on this node, for ssh fallback."
           }
         }
       }
