@@ -419,3 +419,14 @@ def test_message_pinned_to_another_node_never_wakes_a_local_agent():
     local = make("claude-app", "claude-code@phoebus", "here", now=1000.0)
     hub.send(local)
     assert len(calls) == 1
+
+
+def test_receipt_claiming_another_scheme_never_verifies():
+    hub = Hub(WireStore(), node="phoebus", key=b"shared", key_scheme="shared-key", clock=lambda: 1000.0)
+    env = make("claude-app", "codex", "hi", now=1000.0)
+    hub.send(env, push=False)
+    forged = receipts.sign(b"shared", E.canonical(env), env["id"], "phoebus", "acked", "forged", 1001.0, scheme="node")
+    hub.store.add_receipt(forged)
+    st = hub.status(env["id"])
+    assert st["receipts"][0]["verified"] is True       # the real accepted receipt
+    assert st["receipts"][-1]["verified"] is False     # claims "node" on a shared-key hub
