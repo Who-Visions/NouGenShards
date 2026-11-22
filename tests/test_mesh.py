@@ -207,3 +207,48 @@ def test_nougen_cli_forwards_mesh_verbs(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             cli.main()
         assert seen["argv"] == want
+
+
+def test_http_rpc_tools_call_a_remote_mcp_server(tmp_path, monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen["auth"] = self.headers.get("Authorization")
+            name = seen["body"]["params"]["name"]
+            if name == "boom":
+                reply = {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [{"type": "text", "text": "nope"}]}}
+            else:
+                reply = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": '{"ok": true}'}]}}
+            out = ("event: message\ndata: " + json.dumps(reply) + "\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    root = tmp_path / "repos"
+    tools = [{"name": "latest", "transport": "http", "path": "/mcp", "rpc": "tools/call"},
+             {"name": "boom", "transport": "http", "path": "/mcp", "rpc": "tools/call"}]
+    _fake_repo(root, "nougen-fleet-mcp", "fleet-mcp", tools)
+    me = _fake_repo(root, "NouGenShards", "shards", [])
+    monkeypatch.setenv("NOUGEN_FLEET_MCP_URL", f"http://127.0.0.1:{srv.server_port}")
+    monkeypatch.setenv("NOUGEN_FLEET_MCP_TOKEN", "t0k")
+    try:
+        assert mesh.call("fleet-mcp.latest", {"limit": 2}, near=str(me)) == {"ok": True}
+        assert seen["body"]["method"] == "tools/call"
+        assert seen["body"]["params"] == {"name": "latest", "arguments": {"limit": 2}}
+        assert seen["auth"] == "Bearer t0k"
+        with pytest.raises(mesh.MeshError, match="nope"):
+            mesh.call("fleet-mcp.boom", {}, near=str(me))
+    finally:
+        srv.shutdown()

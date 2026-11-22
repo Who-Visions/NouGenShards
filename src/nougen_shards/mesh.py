@@ -446,11 +446,19 @@ def _call_http(spec: Dict[str, Any], args: Dict[str, Any], at: Optional[str], ti
     token = _env(f"NOUGEN_{service.upper().replace('-', '_')}_TOKEN") or _env("NOUGEN_MESH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    rpc = spec.get("rpc")
+    if rpc:                                  # an MCP server over HTTP: JSON-RPC tools/call
+        method = "POST"
+        payload: Any = {"jsonrpc": "2.0", "id": 1, "method": rpc,
+                        "params": {"name": spec.get("tool") or spec["name"], "arguments": args}}
+        headers["Accept"] = "application/json, text/event-stream"
+    else:
+        payload = args
     if method == "GET":
         if args:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(args)
     else:
-        data = json.dumps(args).encode()
+        data = json.dumps(payload).encode()
         headers["Content-Type"] = "application/json"
     try:
         with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers, method=method),
@@ -460,10 +468,40 @@ def _call_http(spec: Dict[str, Any], args: Dict[str, Any], at: Optional[str], ti
         raise MeshError(f"{spec['repo']}.{spec['name']}: HTTP {exc.code} from {service}") from exc
     except (urllib.error.URLError, OSError) as exc:
         raise MeshError(f"{spec['repo']}.{spec['name']}: {service} not reachable ({exc})") from exc
+    if rpc:
+        return _rpc_result(spec, body)
     try:
         return json.loads(body)
     except ValueError:
         return body
+
+
+def _rpc_result(spec: Dict[str, Any], body: str) -> Any:
+    """Unwrap a JSON-RPC reply (plain JSON or one SSE ``data:`` event) to the tool's own result."""
+    text = body.strip()
+    if not text.startswith("{"):
+        events = [ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")]
+        text = events[-1] if events else text
+    try:
+        msg = json.loads(text)
+    except ValueError as exc:
+        raise MeshError(f"{spec['repo']}.{spec['name']}: reply is not JSON-RPC") from exc
+    if msg.get("error"):
+        err = msg["error"]
+        raise MeshError(f"{spec['repo']}.{spec['name']}: {err.get('message', err) if isinstance(err, dict) else err}")
+    result = msg.get("result")
+    if isinstance(result, dict) and isinstance(result.get("content"), list):
+        if result.get("structuredContent") is not None:
+            return result["structuredContent"]
+        texts = [c.get("text", "") for c in result["content"] if isinstance(c, dict) and c.get("type") == "text"]
+        joined = "\n".join(texts)
+        if result.get("isError"):
+            raise MeshError(f"{spec['repo']}.{spec['name']}: {joined or 'tool error'}")
+        try:
+            return json.loads(joined)
+        except ValueError:
+            return joined
+    return result
 
 
 def manifest_from_mcp(repo: str, server: str, *, pythonpath: Optional[List[str]] = None,
