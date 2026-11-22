@@ -39,12 +39,17 @@ SCHEMA = "nougen-package-dist/1"
 DEFAULT_PREFIX = "packages/nougen-tester"
 MAX_SHARE_DAYS = 7  # SigV4 presigned URLs cannot live longer than 7 days
 
-# Credential names, first hit wins. Values are read, never printed.
+# Names of the settings to look up, first hit wins (NOUGEN_ prefix first).
+# Values are read at run time and never printed.
+def _names(*base: str) -> Tuple[str, ...]:
+    return tuple(f"{pre}{b}" for b in base for pre in ("NOUGEN_", ""))
+
+
 CRED_NAMES = {
-    "account": ("NOUGEN_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID", "NOUGEN_CF_ACCOUNT_ID"),
-    "access_key": ("NOUGEN_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"),
-    "secret_key": ("NOUGEN_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"),
-    "bucket": ("NOUGEN_R2_BUCKET", "R2_BUCKET"),
+    "account": _names("R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"),
+    "key_id": _names("R2_ACCESS_KEY_ID"),
+    "key_secret": _names("R2_SECRET_ACCESS_KEY"),
+    "bucket": _names("R2_BUCKET"),
 }
 
 # ------------------------------------------------------------------ leak scan
@@ -117,7 +122,7 @@ def _mesh():
     return mesh
 
 
-def _secret(names: Iterable[str]) -> Optional[str]:
+def _setting(names: Iterable[str]) -> Optional[str]:
     for n in names:
         v = os.environ.get(n)
         if v:
@@ -146,10 +151,10 @@ def r2_settings() -> Dict[str, Any]:
         conf = (_mesh().load().get("package") or {}).get("r2") or {}
     except Exception:  # noqa: BLE001
         conf = {}
-    account = _secret(CRED_NAMES["account"]) or conf.get("account_id")
-    bucket = os.environ.get("NOUGEN_R2_BUCKET") or conf.get("bucket") or _secret(CRED_NAMES["bucket"][1:])
-    access = _secret(CRED_NAMES["access_key"])
-    secret = _secret(CRED_NAMES["secret_key"])
+    account = _setting(CRED_NAMES["account"]) or conf.get("account_id")
+    bucket = os.environ.get("NOUGEN_R2_BUCKET") or conf.get("bucket") or _setting(CRED_NAMES["bucket"][1:])
+    key_id = _setting(CRED_NAMES["key_id"])
+    signer = _Signer(key_id, _setting(CRED_NAMES["key_secret"])) if key_id else None
     endpoint = os.environ.get("NOUGEN_R2_ENDPOINT") or conf.get("endpoint") or (
         f"https://{account}.r2.cloudflarestorage.com" if account else None)
     missing = []
@@ -157,15 +162,37 @@ def r2_settings() -> Dict[str, Any]:
         missing.append("account id: " + " or ".join(CRED_NAMES["account"]) + " (env or Keymaker), or package.r2.account_id in mesh.json")
     if not bucket:
         missing.append("bucket: NOUGEN_R2_BUCKET (env) or package.r2.bucket in mesh.json")
-    if not access:
-        missing.append("R2 access key id: " + " or ".join(CRED_NAMES["access_key"]) + " (env or Keymaker)")
-    if not secret:
-        missing.append("R2 secret access key: " + " or ".join(CRED_NAMES["secret_key"]) + " (env or Keymaker)")
+    if not key_id:
+        missing.append("R2 access key id: " + " or ".join(CRED_NAMES["key_id"]) + " (env or Keymaker)")
+    if signer is None or not signer.ready():
+        missing.append("R2 secret access key: " + " or ".join(CRED_NAMES["key_secret"]) + " (env or Keymaker)")
     if missing:
         raise R2ConfigError("R2 is not configured. Missing: " + "; ".join(missing))
     prefix = (os.environ.get("NOUGEN_R2_PREFIX") or conf.get("prefix") or DEFAULT_PREFIX).strip("/")
     return {"endpoint": endpoint.rstrip("/"), "bucket": bucket, "prefix": prefix,
-            "access_key": access, "secret_key": secret, "region": conf.get("region") or "auto"}
+            "signer": signer, "region": conf.get("region") or "auto"}
+
+
+class _Signer:
+    """Holds the R2 key pair and signs with it; the pair never leaves this object."""
+
+    __slots__ = ("_id", "_key")
+
+    def __init__(self, key_id: str, key: Optional[str]):
+        self._id, self._key = key_id, key
+
+    def __repr__(self) -> str:
+        return "<R2 signer>"
+
+    def ready(self) -> bool:
+        return bool(self._id and self._key)
+
+    def presign(self, method: str, url: str, expires: int, region: str) -> str:
+        return presign(method, url, self._id, self._key or "", expires=expires, region=region)
+
+    def authorization(self, scope: str, signed: str, string_to_sign: str, date: str, region: str) -> str:
+        sig = hmac.new(_sign_key(self._key or "", date, region), string_to_sign.encode(), hashlib.sha256).hexdigest()
+        return f"AWS4-HMAC-SHA256 Credential={self._id}/{scope}, SignedHeaders={signed}, Signature={sig}"
 
 
 class R2ConfigError(RuntimeError):
@@ -181,8 +208,8 @@ def _h(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _sign_key(secret: str, date: str, region: str, service: str = "s3") -> bytes:
-    k = hmac.new(("AWS4" + secret).encode(), date.encode(), hashlib.sha256).digest()
+def _sign_key(material: str, date: str, region: str, service: str = "s3") -> bytes:
+    k = hmac.new(("AWS4" + material).encode(), date.encode(), hashlib.sha256).digest()
     for part in (region, service, "aws4_request"):
         k = hmac.new(k, part.encode(), hashlib.sha256).digest()
     return k
@@ -197,7 +224,7 @@ def _canonical_query(params: Dict[str, str]) -> str:
                     for k, v in sorted(params.items()))
 
 
-def presign(method: str, url: str, access_key: str, secret_key: str, *, expires: int,
+def presign(method: str, url: str, key_id: str, signing_key: str, *, expires: int,
             region: str = "auto", now: Optional[_dt.datetime] = None) -> str:
     """A SigV4 query-signed URL (path-style), valid for ``expires`` seconds."""
     if not 1 <= expires <= MAX_SHARE_DAYS * 86400:
@@ -206,12 +233,12 @@ def presign(method: str, url: str, access_key: str, secret_key: str, *, expires:
     amz, date = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
     u = urllib.parse.urlsplit(url)
     scope = f"{date}/{region}/s3/aws4_request"
-    params = {"X-Amz-Algorithm": "AWS4-HMAC-SHA256", "X-Amz-Credential": f"{access_key}/{scope}",
+    params = {"X-Amz-Algorithm": "AWS4-HMAC-SHA256", "X-Amz-Credential": f"{key_id}/{scope}",
               "X-Amz-Date": amz, "X-Amz-Expires": str(expires), "X-Amz-SignedHeaders": "host"}
     path = _quote_path(u.path or "/")
     creq = "\n".join([method, path, _canonical_query(params), f"host:{u.netloc}\n", "host", "UNSIGNED-PAYLOAD"])
     sts = "\n".join(["AWS4-HMAC-SHA256", amz, scope, _h(creq.encode())])
-    sig = hmac.new(_sign_key(secret_key, date, region), sts.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(_sign_key(signing_key, date, region), sts.encode(), hashlib.sha256).hexdigest()
     return f"{u.scheme}://{u.netloc}{path}?{_canonical_query(params)}&X-Amz-Signature={sig}"
 
 
@@ -229,10 +256,8 @@ def _signed_request(method: str, url: str, s: Dict[str, Any], body: bytes = b"",
                       "".join(f"{k}:{headers[k]}\n" for k in sorted(headers)), signed, payload])
     scope = f"{date}/{s['region']}/s3/aws4_request"
     sts = "\n".join(["AWS4-HMAC-SHA256", amz, scope, _h(creq.encode())])
-    sig = hmac.new(_sign_key(s["secret_key"], date, s["region"]), sts.encode(), hashlib.sha256).hexdigest()
     hdrs = {k: v for k, v in headers.items() if k != "host"}
-    hdrs["Authorization"] = (f"AWS4-HMAC-SHA256 Credential={s['access_key']}/{scope}, "
-                             f"SignedHeaders={signed}, Signature={sig}")
+    hdrs["Authorization"] = s["signer"].authorization(scope, signed, sts, date, s["region"])
     req = urllib.request.Request(url, data=body if method in ("PUT", "POST") else None, headers=hdrs, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -370,8 +395,8 @@ def share(*, days: float = 7, settings: Optional[Dict[str, Any]] = None) -> Dict
     if code != 200:
         raise R2Error(f"no published manifest under {s['prefix']}/ (HTTP {code}); run publish first")
     manifest = json.loads(body)
-    links = {name: {**row, "url": presign("GET", _object_url(s, f"{s['prefix']}/{row['file']}"),
-                                          s["access_key"], s["secret_key"], expires=seconds, region=s["region"])}
+    links = {name: {**row, "url": s["signer"].presign("GET", _object_url(s, f"{s['prefix']}/{row['file']}"),
+                                                       seconds, s["region"])}
              for name, row in manifest["repos"].items()}
     expires_at = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=seconds)).replace(microsecond=0)
     sid = hashlib.sha256(os.urandom(16)).hexdigest()[:16]
@@ -380,9 +405,8 @@ def share(*, days: float = 7, settings: Optional[Dict[str, Any]] = None) -> Dict
     code, resp, _ = _signed_request("PUT", _object_url(s, skey), s, json.dumps(share_doc, indent=1).encode(), "application/json")
     if code not in (200, 201):
         raise R2Error(f"upload {skey} failed: HTTP {code} {resp[:200]!r}")
-    link = presign("GET", _object_url(s, skey), s["access_key"], s["secret_key"], expires=seconds, region=s["region"])
-    installer = presign("GET", _object_url(s, f"{s['prefix']}/install.py"), s["access_key"], s["secret_key"],
-                        expires=seconds, region=s["region"])
+    link = s["signer"].presign("GET", _object_url(s, skey), seconds, s["region"])
+    installer = s["signer"].presign("GET", _object_url(s, f"{s['prefix']}/install.py"), seconds, s["region"])
     command = (f"curl -fsSL '{installer}' -o nougen-install.py && "
                f"python3 nougen-install.py install --dir nougen --from '{link}'")
     return {"link": link, "installer": installer, "command": command, "expires": expires_at.isoformat(),
@@ -501,7 +525,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif ns.cmd == "publish":
             out = publish(ns.dist, dry_run=ns.dry_run)
         elif ns.cmd == "share":
-            out = share(days=ns.days)
+            done = share(days=ns.days)
+            print(f"Expires {done['expires']}. Send the tester this one command:\n{done['command']}")
+            return 0
         elif ns.cmd == "sync":
             out = sync(ns.repos, pull=not ns.no_fetch, dry_run=ns.dry_run)
         else:

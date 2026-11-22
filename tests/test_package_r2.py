@@ -23,7 +23,7 @@ def clean_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "user"))
     monkeypatch.setenv("NOUGEN_ROOT", str(tmp_path / "user" / ".nougen"))
-    monkeypatch.setattr(pr, "_secret", lambda names: next((os.environ[n] for n in names if os.environ.get(n)), None))
+    monkeypatch.setattr(pr, "_setting", lambda names: next((os.environ[n] for n in names if os.environ.get(n)), None))
 
 
 def _fake_key(prefix: str, n: int) -> str:
@@ -173,4 +173,4 @@ def test_publish_refuses_a_tampered_tarball(tmp_path, monkeypatch):
     (tmp_path / "dist" / manifest["repos"]["relay"]["file"]).write_bytes(b"changed")
     with pytest.raises(pr.R2Error):
         pr.publish(str(tmp_path / "dist"), settings={"endpoint": "http://127.0.0.1:9", "bucket": "b", "prefix": "p",
-                                                     "access_key": "a", "secret_key": "s", "region": "auto"})
+                                                     "signer": pr._Signer("a", "s"), "region": "auto"})
