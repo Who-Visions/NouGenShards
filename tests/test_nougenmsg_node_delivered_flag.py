@@ -50,6 +50,13 @@ def test_no_lane_reports_stays_unknown(node):
     body = node._receipt({"delivered": True, "routed": True, "results": {"queued": "background"}})
     assert body["delivered"] is True
     assert body["delivery_verified"] is None
+    assert body["status"] == "queued"
+
+
+def test_queue_accepted_alone_is_not_verified(node):
+    res = {"phoebus": {"codex": {"queue_accepted": True, "delivery_verified": False}}}
+    body = node._receipt({"delivered": True, "routed": True, "results": res})
+    assert body["delivered"] is False and body["status"] == "unverified"
 
 
 def test_foreign_dispatch_uses_honest_flag(node, monkeypatch):

@@ -218,9 +218,8 @@ def _lanes_verified(results: object) -> "bool | None":
                 if node.get("pipe_delivered") is True:
                     return True
             if "queue_accepted" in node:
+                # Accepted into a queue is not a receiver confirmation.
                 seen = True
-                if node.get("queue_accepted") is True:
-                    return True
             if isinstance(node.get("delivered"), list):
                 seen = True
                 if node["delivered"]:
@@ -247,6 +246,8 @@ def _receipt(body: dict) -> dict:
     if verified is False:
         body["delivered"] = False
         body["status"] = "unverified"
+    elif verified is None:
+        body.setdefault("status", "queued")
     return body
 
 
