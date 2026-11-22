@@ -206,6 +206,7 @@ projects/
 *.bak*
 bin/ngs-node.sh.bak*
 ~/
+!extensions/nougentube-chrome/icons/*.png
 .env.*
 !.env.example
 
@@ -223,3 +224,4 @@ ops/launchd/
 
 # local git worktree checkouts
 wt/
+extensions/nougentube-chrome/_metadata/

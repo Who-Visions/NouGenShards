@@ -6,6 +6,12 @@ import importlib
 import sys
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
+# Before any submodule reads NOUGEN_VAULT_DIR: if the configured vault folder
+# points at another vault, repoint the variable so every reader agrees
+# (vault_unify.py). Stdlib-only and never raises.
+from . import vault_unify as _vault_unify
+_vault_unify.adopt_pointer_into_env()
+
 # Keep ordinary package imports light. In particular, the Tauri chat sidecar
 # must not initialize the complete 9-DB engine just to load chat_service.
 _EXPORTS = {

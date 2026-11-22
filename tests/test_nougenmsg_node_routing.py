@@ -52,7 +52,7 @@ def test_cross_node_target_routes_via_fleet_bus(server, monkeypatch):
 
     class FakeBus:
         @staticmethod
-        def emit_node(node: str, target: str, text: str, origin=None):
+        def emit_node(node: str, target: str, text: str, origin=None, **_kw):
             calls.append((node, target, text, origin))
             return {node: "DELIVERED"}
 
@@ -74,7 +74,7 @@ def test_forwarded_preserves_origin_envelope_and_dedups_retries(server, monkeypa
 
     class FakeBus:
         @staticmethod
-        def emit_node(node: str, target: str, text: str, origin=None):
+        def emit_node(node: str, target: str, text: str, origin=None, **_kw):
             calls.append((node, target, text, origin))
             return {node: "DELIVERED"}
 
@@ -98,7 +98,7 @@ def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
 
     class FakeBus:
         @staticmethod
-        def emit_fleet(text: str, target: str = "all", origin=None, background: bool = False, nodes=None):
+        def emit_fleet(text: str, target: str = "all", origin=None, background: bool = False, nodes=None, **_kw):
             calls.append((text, target, origin, background))
             peers.append(nodes)
             return {"phoebus": "ok", "blade": {"queued": True}}
@@ -119,7 +119,7 @@ def test_cross_node_route_error_returns_502_and_releases_claim(server, monkeypat
 
     class FakeBus:
         @staticmethod
-        def emit_node(node: str, target: str, text: str, origin=None):
+        def emit_node(node: str, target: str, text: str, origin=None, **_kw):
             if succeed:
                 return {node: "ok"}
             return {node: "Error: ssh timeout"}

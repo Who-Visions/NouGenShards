@@ -69,11 +69,75 @@ func (l realLauncher) Node(n Node) *exec.Cmd {
 	return cmd
 }
 
+// transportFile is written by setup into an account's folder when neither
+// tunnel protocol could connect and the relay could. Its content is one word.
+const transportFile = "transport"
+
+// transportOf says how an account reaches the internet: "tunnel" (cloudflared,
+// the default and the answer for any missing or unreadable file) or "relay"
+// (an outbound connection on port 443, for networks that block the tunnel).
+func transportOf(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, transportFile))
+	if err != nil {
+		return "tunnel"
+	}
+	if strings.TrimSpace(strings.TrimPrefix(string(b), utf8BOM)) == "relay" {
+		return "relay"
+	}
+	return "tunnel"
+}
+
+// relayURLFile holds the relay address setup used, one line, when it did not
+// come from node.json.
+const relayURLFile = "relay_url"
+
+// maxRelayURL bounds what is read from relayURLFile and passed as an argument.
+const maxRelayURL = 2048
+
+// relayURL returns the saved relay address, or "" when there is none or it is
+// not a plain https or wss address. Anything else is ignored rather than
+// passed to a program as an argument.
+func relayURL(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, relayURLFile))
+	if err != nil || len(b) > maxRelayURL {
+		return ""
+	}
+	u := strings.TrimSpace(strings.TrimPrefix(string(b), utf8BOM))
+	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "wss://") {
+		return ""
+	}
+	for _, r := range u {
+		if r <= ' ' || r == 0x7f || r == '"' || r == '\'' || r == '\\' {
+			return ""
+		}
+	}
+	return u
+}
+
 func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
+	if transportOf(n.Dir) == "relay" {
+		// The relay client reads the account's token from node.json itself, so
+		// no credential is passed in arguments or added to the environment.
+		args := []string{"run", "--python", "3.11",
+			"python", "-m", "nougen_shards.relay_client", "run", "--node-json", filepath.Join(n.Dir, "node.json")}
+		// Setup may have learned the relay address from its own environment,
+		// which autostart does not carry over a restart. It saves the address
+		// beside the transport file; an address is not a credential.
+		if u := relayURL(n.Dir); u != "" {
+			args = append(args, "--relay-url", u)
+		}
+		cmd := exec.Command(filepath.Join(l.base, exe("uv")), args...)
+		cmd.Dir = n.SrcDir()
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(n.SrcDir(), "src"))
+		return cmd
+	}
 	// Each account has its own copy; the earliest setups kept one in base.
 	cf := filepath.Join(n.Dir, exe("cloudflared"))
 	if _, err := os.Stat(cf); err != nil {
 		cf = filepath.Join(l.base, exe("cloudflared"))
+	}
+	if n.Cloudflared != "" {
+		cf = n.Cloudflared
 	}
 	// The token goes in the environment, not the arguments: arguments are
 	// visible to every other program on the computer.
@@ -272,6 +336,13 @@ func (s *Supervisor) launch(u *unit, cmd *exec.Cmd, logPath, id, kind string, no
 
 func (s *Supervisor) checkNode(e *entry, now time.Time) {
 	u, n := &e.n, e.node
+	if n.TunnelOnly {
+		// No node to run: the account is its tunnel alone. An account switched
+		// to tunnel-only may still have a node running from before; stop it.
+		u.retire()
+		u.proc, u.state = nil, "none"
+		return
+	}
 	if s.ok(fmt.Sprintf("http://127.0.0.1:%d/health", n.Port)) {
 		s.markUp(u, now)
 		return
@@ -321,13 +392,18 @@ func (s *Supervisor) checkNode(e *entry, now time.Time) {
 
 func (s *Supervisor) checkTunnel(e *entry, now time.Time) {
 	u, n := &e.tun, e.node
-	if n.Tunnel == "" {
+	relay := transportOf(n.Dir) == "relay"
+	if n.Tunnel == "" && !relay {
 		u.state = "none"
 		return
 	}
 	addr := metricsAddr(n.Port)
 	if u.proc.alive() {
-		if s.ok("http://" + addr + "/ready") {
+		// cloudflared reports readiness on its metrics port. The relay client
+		// has no such port: it holds one outbound connection and reconnects by
+		// itself, so a running relay client is the whole of what can be checked
+		// from here. Whether the public address answers is setup's check.
+		if relay || s.ok("http://"+addr+"/ready") {
 			s.markUp(u, now)
 			return
 		}
@@ -358,7 +434,11 @@ func (s *Supervisor) checkTunnel(e *entry, now time.Time) {
 	}
 	// A tunnel may have several connectors, so starting ours beside one left
 	// by an older launcher is harmless; the old one is gone after a restart.
-	s.launch(u, s.L.Tunnel(n, addr), filepath.Join(n.Dir, "tunnel.log"), n.ID, "tunnel", now)
+	logName, kind := "tunnel.log", "tunnel"
+	if relay {
+		logName, kind = "relay.log", "relay"
+	}
+	s.launch(u, s.L.Tunnel(n, addr), filepath.Join(n.Dir, logName), n.ID, kind, now)
 }
 
 // Tick checks every account once. New account folders are picked up here, so

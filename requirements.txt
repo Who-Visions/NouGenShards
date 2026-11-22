@@ -23,7 +23,7 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
     # via gradio
 brotli==1.2.1
     # via gradio
-certifi==2026.10.19
+certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
@@ -58,7 +58,7 @@ fsspec==2026.9.0
     #   huggingface-hub
 google-api-core==2.39.0
     # via google-api-python-client
-google-api-python-client==2.200.0
+google-api-python-client==2.202.0
     # via nougen-shards (pyproject.toml)
 google-auth==2.58.1
     # via
@@ -135,7 +135,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 markdown-it-py==4.2.0
     # via rich
-markupsafe==3.0.3
+markupsafe==3.0.4
     # via
     #   gradio
     #   jinja2
@@ -212,7 +212,7 @@ pyparsing==3.3.3
     # via httplib2
 python-dateutil==2.9.0.post0
     # via pandas
-python-multipart==0.0.32
+python-multipart==0.0.33
     # via
     #   gradio
     #   mcp
@@ -256,7 +256,7 @@ sqlalchemy==2.1.6
     # via nougen-shards (pyproject.toml)
 sse-starlette==3.6.0
     # via mcp
-starlette==1.7.0
+starlette==1.10.0
     # via
     #   fastapi
     #   gradio

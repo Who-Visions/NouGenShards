@@ -112,3 +112,41 @@ outside the desktop session. That is not a broken remote or an expired token.
 **The first run says nothing.** By design. The cursor adopts the current listing
 so installing on a node with thousands of existing legs does not replay them.
 Announcements begin with the next new leg.
+
+## Discovering how a node reaches the internet
+
+`nougen transport discover [--account-dir D] [--refresh] [--json]`
+(`src/nougen_shards/transport_discovery.py`) decides, at runtime and the same
+way every time, which transport a tenant node uses. Lanes do not guess.
+
+**Order, fixed:** `quic` -> `http2` -> `relay` -> `none`.
+
+| Probe | What it does | Passes when |
+| --- | --- | --- |
+| `edge_tls_7844` | TCP connect to a resolved edge address on 7844, then a real TLS handshake | The server answers with a TLS record and the handshake completes. Any other bytes fail it, and the first 64 are quoted in the reason |
+| `edge_dns` | SRV `_v2-origintunneld._tcp.argotunnel.com`, then A lookups, using the system resolver | Real addresses come back, none in `198.18.0.0/15` (a sandbox's fake-IP range) |
+| `relay_https` | `GET <relay>/_relay/status?id=<node>` with no auth, then with the node token if one exists | 401 without auth (the relay is live). With the token, 200 means auth is provisioned and 401 means the `RELAY_AUTH` record is missing. The token is never logged |
+
+The decision is a pure function of those results. `http2` needs both edge
+probes. `quic` is chosen only when cloudflared has already reported a quic
+connection (`--observed quic`), because Python cannot test QUIC. Otherwise
+`relay` if the relay is live, else `none` (exit code 2).
+
+**Relay URL:** `NOUGEN_RELAY_URL`, then `relay_url` in the endpoints file (the
+same loader `relay_client` uses), then node.json, then `relay.<domain>` (domain
+from `NOUGEN_TENANT_DOMAIN`). A bare host or `https://` URL becomes
+`wss://<host>/_relay/connect`. A per-tenant host (`<name>-<hex>.<domain>`) is
+never a relay; it falls back to the default with a reason.
+
+**Cache:** `<account dir>/transport.json` holds the decision, the probe
+evidence and a timestamp, and is re-probed after 15 minutes, on `--refresh`, or
+on `--failing`. A `quic`/`http2` decision is also written to
+`TUNNEL_TRANSPORT_PROTOCOL` in `tunnel.env`, which the supervisor already reads.
+Other keys in that file are kept.
+
+### A probe must read bytes
+
+A successful TCP connect proves nothing. A sandbox interceptor accepts the
+socket and replies in plain text, and a TCP-only probe reports the port as
+"open". Every probe here reads what the other end sends and checks it: a TLS
+record on 7844, real addresses from DNS, and an HTTP status from the relay.

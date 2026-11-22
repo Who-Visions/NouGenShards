@@ -1,0 +1,1 @@
+{"$schema":"https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json","badges":[],"links":[],"project":{"description":"A child manifest, compiled by --recurse.","emoji":"","title":"Sample Subproject"},"schema_version":1,"sections":[{"content":"Child project overview.","title":"Overview"}],"table_of_contents":true}

@@ -263,3 +263,10 @@ def shared_mcp_client():
         yield client
     finally:
         client.__exit__(None, None, None)
+
+
+@pytest.fixture(autouse=True)
+def _no_claude_ping_dedupe(monkeypatch):
+    """Ping dedupe writes a ledger beside the real Claude inbox; tests that
+    need it opt in with their own tmp inbox and NOUGEN_PING_DEDUPE_S."""
+    monkeypatch.setenv("NOUGEN_PING_DEDUPE_S", "0")

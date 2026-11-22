@@ -1,0 +1,56 @@
+{
+  "schema": "destiny-bench/1",
+  "issue": 1085,
+  "seed": 1087,
+  "started_utc": "2026-11-21T22:32:21Z",
+  "lanes": {
+    "primary": "gemma4:e2b-qat",
+    "alternate": "gemma2:2b",
+    "endpoint": "http://localhost:11434/v1/chat/completions"
+  },
+  "world": {
+    "facts": 100,
+    "distractors": 75,
+    "tasks": 100
+  },
+  "claim_limits": "Measures one reconciler loop on small local models. Proves nothing about AGI or RSI.",
+  "arms": [
+    {
+      "arm": "no_memory",
+      "tasks": 100,
+      "done": 0,
+      "success_rate": 0.0,
+      "states": {
+        "failed": 100
+      },
+      "first_attempt_passes": 0,
+      "passes_by_strategy": {},
+      "attempt_outcomes": {
+        "crashed": 10,
+        "failed_verification": 290,
+        "route_timeout": 20
+      },
+      "tokens_total": 315929,
+      "prompt_tokens": 21433,
+      "lane_calls": 290,
+      "lane_errors": 0,
+      "tokens_per_success": null,
+      "faults_injected": {
+        "route_timeout": 20,
+        "crash": 10,
+        "crash_ticks": 10
+      },
+      "recovery_rate": 0.0,
+      "faulted_tasks": 30,
+      "faulted_done": 0,
+      "unfaulted_success_rate": 0.0,
+      "faulted_tasks_lost": 0,
+      "rollback_violations": 0,
+      "violation_samples": [],
+      "destiny_final_status": "dormant",
+      "ticks": 14,
+      "wall_s": 13340.5
+    }
+  ],
+  "finished_utc": "2026-11-22T02:14:42Z"
+}

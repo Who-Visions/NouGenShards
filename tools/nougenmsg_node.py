@@ -191,9 +191,85 @@ def _dispatch_routes(msg: dict, routes: list) -> "tuple[int, dict]":
                      "error": "no resolved node accepted the message", "node": NODE,
                      "target": msg["target"], "message_id": msg["message_id"],
                      "results": results, "failed": failed}
-    return 200, {"delivered": True, "routed": True, "duplicate": False, "method": "fleet_bus",
-                 "node": NODE, "target": msg["target"], "message_id": msg["message_id"],
-                 "build": build_id(), "results": results, "failed": failed}
+    return 200, _receipt({"delivered": True, "routed": True, "duplicate": False,
+                          "method": "fleet_bus", "node": NODE, "target": msg["target"],
+                          "message_id": msg["message_id"], "build": build_id(),
+                          "results": results, "failed": failed})
+
+
+_VERIFY_KEYS = ("delivery_verified", "pipe_delivered")
+
+
+def _lane_reports(results: object) -> list:
+    """The per-lane report dicts.
+
+    Results nest as ``{node: {lane: report}}`` (or lists of those). Descend through
+    containers until a dict that is itself a lane report, then stop: nothing inside
+    a lane report is read as another verdict, so an unrelated nested object that
+    carries a ``delivered`` or ``pipe_delivered`` key never counts.
+    """
+    out: list = []
+    if isinstance(results, list):
+        for v in results:
+            out.extend(_lane_reports(v))
+    elif isinstance(results, dict):
+        if _lane_state(results) is not None:
+            out.append(results)
+        else:
+            for v in results.values():
+                if isinstance(v, (dict, list)):
+                    out.extend(_lane_reports(v))
+    return out
+
+
+def _lane_state(lane: dict) -> "str | None":
+    """'verified', 'queued', 'unverified', or None when the dict is not a lane report."""
+    reported = False
+    for key in _VERIFY_KEYS:
+        if key in lane:
+            reported = True
+            if lane.get(key) is True:
+                return "verified"
+    if isinstance(lane.get("delivered"), list):
+        reported = True
+        if lane["delivered"]:
+            return "verified"
+    if "queue_accepted" in lane:
+        # Accepted into a queue is not a receiver confirmation.
+        return "queued" if lane.get("queue_accepted") is True else "unverified"
+    return "unverified" if reported else None
+
+
+def _lanes_verified(results: object) -> "bool | None":
+    """Did any receiving lane confirm delivery?
+
+    True when at least one lane reports a verified hand-off, False when lanes
+    reported and none verified, None when the result carries no lane reports
+    (for example a background fan-out that has not answered yet).
+    """
+    states = [s for s in map(_lane_state, _lane_reports(results)) if s]
+    if not states:
+        return None
+    return "verified" in states
+
+
+def _receipt(body: dict) -> dict:
+    """Make the top-level flag honest: routed is not delivered.
+
+    ``delivered`` stays True only when some lane verified the hand-off or no lane
+    reported at all. When lanes reported and none verified, ``delivered`` becomes
+    False and ``status`` says why: ``queued`` when at least one lane accepted it
+    into a queue, else ``unverified``. Either way the message was routed.
+    """
+    states = [s for s in map(_lane_state, _lane_reports(body.get("results"))) if s]
+    verified = None if not states else ("verified" in states)
+    body["delivery_verified"] = verified
+    if verified is False:
+        body["delivered"] = False
+        body["status"] = "queued" if "queued" in states else "unverified"
+    elif verified is None:
+        body.setdefault("status", "queued")
+    return body
 
 
 def _get_fleet_bus():
@@ -221,14 +297,18 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "node": NODE,
             "target": msg["target"],
         }
+    # Everything this receiver handles arrived from another box or connector,
+    # so it is forwarded: the bus keeps the sender's claim (marked unverified)
+    # and never labels it with this node's own name.
     raw_env = msg.get("origin_envelope")
     origin = dict(raw_env) if isinstance(raw_env, dict) else {}
     origin.setdefault("original_sender", msg.get("sender", "unknown"))
     if dest_node == "fleet":
         # The peers come from the live table when the resolver supplied them.
         peers = {"nodes": list(dest[2])} if len(dest) > 2 else {}
-        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True, **peers)
-        return 200, {
+        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True,
+                             forwarded=True, **peers)
+        return 200, _receipt({
             "delivered": True,
             "routed": True,
             "duplicate": False,
@@ -238,8 +318,9 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "message_id": msg["message_id"],
             "build": build_id(),
             "results": res,
-        }
-    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin)
+        })
+    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin,
+                        forwarded=True)
     node_res = res.get(dest_node) if isinstance(res, dict) else res
     if not res or (isinstance(node_res, str) and node_res.startswith("Error")):
         return 502, {
@@ -252,7 +333,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "message_id": msg["message_id"],
             "results": res,
         }
-    return 200, {
+    return 200, _receipt({
         "delivered": True,
         "routed": True,
         "duplicate": False,
@@ -262,7 +343,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
         "message_id": msg["message_id"],
         "build": build_id(),
         "results": res,
-    }
+    })
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -848,6 +929,30 @@ code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</
 <li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
 
 
+_WIRE = None
+_WIRE_LOCK = threading.Lock()
+
+
+def wire_service():
+    """The node's wire v2 hub, built on first use (None if it cannot load).
+
+    One SQLite inbox per node, beside the legacy inbox unless NOUGEN_WIRE_DB
+    says otherwise. Every /wire route needs the fleet X-NGS-Token or a scoped
+    guest token (nougen_shards.wire.access).
+    """
+    global _WIRE  # pylint: disable=global-statement
+    with _WIRE_LOCK:
+        if _WIRE is None:
+            try:
+                from nougen_shards.wire.service import WireService
+                db = os.environ.get("NOUGEN_WIRE_DB", "").strip() or str(INBOX.parent / "wire.db")
+                _WIRE = WireService.from_env(NODE, db)
+            except Exception as exc:  # pylint: disable=broad-except
+                print("[nougenmsg_node] wire unavailable: {}: {}".format(type(exc).__name__, exc), flush=True)
+                return None
+        return _WIRE
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -892,6 +997,53 @@ class Handler(BaseHTTPRequestHandler):
         elif length > 0:
             self.rfile.read(length)
 
+    def _wire(self, method: str) -> bool:
+        """Serve /wire/* (wire v2). True when the request was answered here."""
+        if not self._route().startswith("/wire"):
+            return False
+        svc = wire_service()
+        if svc is None:
+            self._discard_body()
+            self._send({"error": "wire v2 unavailable on this node"}, 503)
+            return True
+        if AUTH_LATCH and not AUTH_TOKEN:
+            self._discard_body()
+            self._send({"error": "unauthorized", "reason": "auth latched required but no token resolved"}, 401)
+            return True
+        caller, why = svc.authenticate(self.headers.get("X-NGS-Token", ""), AUTH_TOKEN)
+        if caller is None:
+            self._discard_body()
+            self._send({"error": "unauthorized", "reason": why,
+                        "fix": "send your token in the X-NGS-Token header; ask the node owner for a new one if it expired"}, 401)
+            return True
+        body = {}
+        if method == "POST":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > (1 << 20):
+                    # Read off a modestly oversize body first, so the sender gets a
+                    # readable 413 and not a broken pipe; past 8 MiB just hang up.
+                    left = length if length <= (8 << 20) else 0
+                    while left > 0:
+                        chunk = self.rfile.read(min(left, 1 << 16))
+                        if not chunk:
+                            break
+                        left -= len(chunk)
+                    self.close_connection = True
+                    self._send({"error": "body over 1 MiB", "fix": "keep text under 64 KiB"}, 413)
+                    return True
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except (ValueError, UnicodeDecodeError) as exc:
+                self._send({"error": "bad payload: {}".format(exc)}, 400)
+                return True
+            if not isinstance(body, dict):
+                self._send({"error": "body must be a JSON object"}, 400)
+                return True
+        code, payload = svc.handle(method, self.path, body, self.headers.get("X-NGS-Owner", ""), caller)
+        self._send(payload, code)
+        return True
+
     def _reject_unauthorized(self) -> bool:
         """Refuse a request that must not proceed. True when already answered.
 
@@ -917,6 +1069,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:
+        if self._wire("GET"):
+            return
         route = self._route()
         if route == "/" and wants_html(self.headers.get("Accept")):
             self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
@@ -944,6 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found", "path": route}, 404)
 
     def do_POST(self) -> None:
+        if self._wire("POST"):
+            return
         if self._route() != "/msg":
             self._discard_body()
             self._send({"error": "not found", "path": self._route()}, 404)
@@ -1059,6 +1215,13 @@ def main() -> int:
         flush=True)
     ok, detail = registry_parity_ok()
     print("[nougenmsg_node] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
+    if os.environ.get("NOUGEN_WIRE_PUMP", "1").strip() != "0":
+        svc = wire_service()
+        if svc is not None:
+            svc.start_pump(float(os.environ.get("NOUGEN_WIRE_PUMP_S", "5") or 5))
+            print("[nougenmsg_node] wire v2 push_lanes={} receipts={}".format(
+                ",".join(sorted(svc.hub.adapters)) or "none",
+                "signed" if svc.hub.key else "UNSIGNED"), flush=True)
     server = BoundedThreadingHTTPServer((bind, port), Handler)
     try:
         server.serve_forever()

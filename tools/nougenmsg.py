@@ -716,6 +716,8 @@ def main():
             origin[field] = args[idx + 1]
             args = [value for pos, value in enumerate(args)
                     if pos not in (idx, idx + 1)]
+    # True only when an upstream node shipped this envelope to us over a hop.
+    from_hop = False
     if "--origin-b64" in args:
         idx = args.index("--origin-b64")
         if idx + 1 >= len(args):
@@ -727,6 +729,7 @@ def main():
             decoded = json.loads(base64.urlsafe_b64decode(encoded + padding))
             if isinstance(decoded, dict):
                 origin.update(decoded)
+                from_hop = True
         except (ValueError, json.JSONDecodeError):
             print("[!] Error: invalid origin envelope.")
             return
@@ -806,7 +809,10 @@ def main():
         return
 
     curr = get_current_node()
-    if not raw_text:
+    # A hop receiver must not re-style: the origin already finalized the text,
+    # and re-styling stamped it with THIS box's name and time ("BLADE /
+    # CLAUDE-CLI" on WhoArt's message), which also defeated delivery dedupe.
+    if not raw_text and not from_hop:
         text = house_style(text, curr, resolve_agent_label())
     if multi_target:
         res = NouGenMsgBus.send_resolved(multi_target, text, origin=origin)
@@ -816,7 +822,8 @@ def main():
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)
     elif node in ["local", curr]:
-        res = NouGenMsgBus.live_ping(target=target_agent, text=text, origin=origin)
+        res = NouGenMsgBus.live_ping(target=target_agent, text=text, origin=origin,
+                                     forwarded=from_hop)
         print_inline_banner(f"LOCAL LIVE-PING: {curr.upper()} -> {target_agent.upper()}", res, text)
     else:
         res, used = dispatch_node(node=node, target=target_agent, text=text, origin=origin, route=route)

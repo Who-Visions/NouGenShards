@@ -115,6 +115,29 @@
       "--surface": "#151024",
       "--text": "#f8f2ff",
       "--warn": "#ffb020"
+    },
+    "youtube": {
+      "--accent": "#ff2a4a",
+      "--bad": "#ff5c5c",
+      "--bg": "#0f0f0f",
+      "--border": "#3a2a1a",
+      "--border-strong": "#d4a017",
+      "--chart-1": "#ff2a4a",
+      "--chart-2": "#f5c518",
+      "--chart-3": "#ffffff",
+      "--chart-4": "#ff8a00",
+      "--control-ink": "#0f0f0f",
+      "--extra": "#f5c518",
+      "--focus": "#f5c518",
+      "--good": "#5fd068",
+      "--muted": "#c9bfa8",
+      "--outline-width": "2px",
+      "--radius-control": "8px",
+      "--radius-panel": "12px",
+      "--raised": "#272727",
+      "--surface": "#1c1a17",
+      "--text": "#fff8e7",
+      "--warn": "#f5c518"
     }
   },
   "evidence": [
