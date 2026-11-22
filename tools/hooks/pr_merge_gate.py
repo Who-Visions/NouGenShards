@@ -26,11 +26,19 @@ def gh(*args: str) -> str:
 
 def threads_unresolved(repo: str, pr: int) -> int:
     owner, name = repo.split("/", 1)
-    query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p)"
-             "{reviewThreads(first:100){nodes{isResolved}}}}}")
-    raw = gh("api", "graphql", "-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"p={pr}")
-    nodes = json.loads(raw)["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-    return sum(1 for n in nodes if not n["isResolved"])
+    query = ("query($o:String!,$n:String!,$p:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$p)"
+             "{reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved}}}}}")
+    unresolved = 0
+    after = None
+    while True:  # every page: a clear gate must have seen all threads
+        args = ["api", "graphql", "-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"p={pr}"]
+        if after:
+            args += ["-F", f"after={after}"]
+        page = json.loads(gh(*args))["data"]["repository"]["pullRequest"]["reviewThreads"]
+        unresolved += sum(1 for n in page["nodes"] if not n["isResolved"])
+        if not page["pageInfo"]["hasNextPage"]:
+            return unresolved
+        after = page["pageInfo"]["endCursor"]
 
 
 def evaluate(repo: str, pr: int, allow_red: set[str]) -> tuple[list[str], list[str]]:

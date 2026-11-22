@@ -43,15 +43,22 @@ def _tokens(command: str) -> list:
         return command.split()
 
 
-def merge_segments(command: str) -> list:
-    """Return the argument lists (after `gh pr merge`) for each merge in a command line."""
+def merge_segments_cwd(command: str, base_cwd: Optional[str] = None) -> list:
+    """Return (args after the merge subcommand, effective cwd) for each merge in a command line.
+
+    A `cd <dir>` earlier in the chain moves the directory the merge really runs in.
+    """
     out: list = []
     seg: list = []
+    cwd = base_cwd
     for tok in _tokens(command) + [";"]:
         if tok in _SEPARATORS or tok.strip() == "":
+            if len(seg) >= 2 and seg[0] in ("cd", "pushd", "Set-Location", "sl"):
+                target = seg[1]
+                cwd = target if os.path.isabs(target) or not cwd else os.path.join(cwd, target)
             for i in range(len(seg) - 2):
                 if os.path.basename(seg[i]).lower() in ("gh", "gh.exe") and seg[i + 1] == "pr" and seg[i + 2] == "merge":
-                    out.append(seg[i + 3:])
+                    out.append((seg[i + 3:], cwd))
                     break
             seg = []
         else:
@@ -59,11 +66,21 @@ def merge_segments(command: str) -> list:
     return out
 
 
+def merge_segments(command: str) -> list:
+    """Return the argument lists (after the merge subcommand) for each merge in a command line."""
+    return [args for args, _cwd in merge_segments_cwd(command)]
+
+
 def api_merge_targets(command: str) -> list:
     """`gh api -X PUT repos/<o>/<r>/pulls/<n>/merge` merges a PR without `gh pr merge`."""
     if not re.search(r"\bgh(?:\.exe)?\s+api\b", command):
         return []
     return [(m.group(1), int(m.group(2))) for m in _API_MERGE.finditer(command)]
+
+
+# Merge flags that consume the next token as their value; that token is never the PR number.
+_VALUE_FLAGS = {"-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email",
+                "--match-head-commit"}
 
 
 def parse_merge_args(args: list) -> dict:
@@ -80,6 +97,8 @@ def parse_merge_args(args: list) -> dict:
             skip = True
         elif tok.startswith("--repo="):
             info["repo"] = tok.split("=", 1)[1]
+        elif tok in _VALUE_FLAGS:
+            skip = True
         elif tok.startswith("-"):
             continue
         elif info["pr"] is None:
@@ -145,11 +164,11 @@ def decide(payload: dict) -> Optional[str]:
     targets: list = []
     try:
         if tool == "Bash" or tool == "PowerShell":
-            for args in merge_segments(str(tool_input.get("command", ""))):
+            for args, seg_cwd in merge_segments_cwd(str(tool_input.get("command", "")), cwd):
                 info = parse_merge_args(args)
                 if info["admin"]:
                     return "merge denied: --admin bypasses the gate and branch protection"
-                targets.append(resolve_target(info, cwd))
+                targets.append(resolve_target(info, seg_cwd))
             targets.extend(api_merge_targets(str(tool_input.get("command", ""))))
             if not targets and _RAW_MERGE.search(str(tool_input.get("command", ""))):
                 return "merge gate: a `gh pr merge` is hidden inside a quoted string; run it directly so the gate can read it"
