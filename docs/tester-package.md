@@ -52,19 +52,30 @@ transport:
 - `http`: a path on the repo's service endpoint; the only kind that runs on
   another node.
 
-### 3. One small module: `nougen_mesh.py`
+### 3. Native to the `nougen` CLI
 
-Canonical copy: `src/nougen_shards/mesh.py`. Stdlib only, Python 3.10+. Each
-repo carries a byte-identical copy so it works alone;
-`nougen-mesh check-vendored <file>` catches drift.
+The `nougen` command from NouGenShards drives the whole package. The mesh code
+is `src/nougen_shards/mesh.py` (stdlib only, Python 3.10+); each repo carries a
+byte-identical copy as `nougen_mesh.py` so it works alone, and
+`nougen mesh check-vendored <file>` catches drift.
 
 ```
-nougen-mesh whoami                  # this box: machine, agent, node, wire v2 address
-nougen-mesh doctor                  # which repos are installed, which lack a manifest
-nougen-mesh tools                   # every repo.tool on this box
-nougen-mesh call open.nougen_ask '{"prompt": "hi"}'
-nougen-mesh call shards.recall_memory '{"query": "x"}' --at <node>   # http tools only
+nougen mesh install --dir ~/nougen --deps   # clone the ten repos side by side (sources: nougen.package.json)
+nougen mesh setup --agent my-claude         # first run: this box's own identity into ~/.nougen/mesh.json
+nougen whoami                               # machine, agent, node, wire v2 address
+nougen mesh doctor                          # which repos are installed, which lack a manifest
+nougen up                                   # start every declared service (or: nougen up open msg)
+nougen mesh status                          # pid, url, answering?
+nougen tools                                # every repo.tool on this box
+nougen call open.nougen_ask prompt="hi"     # key=value args, or one JSON object
+nougen call shards.recall_memory query=x --at <node>   # http tools only, through the ingress
+nougen down                                 # stop what nougen up started, nothing else
 ```
+
+Services are declared in each repo's `nougen.tools.json` under `services`
+(argv, env with `{port}` filled from the mesh, `env_required`, health path).
+A service whose required config is missing reports `needs_config` and does not
+start: the Shards node will not run without the tester's own `NGS_NODE_TOKEN`.
 
 Python callers use `mesh.call("repo.tool", {...})`. Messages use the wire v2
 address from `mesh.self_address(lane)`: `lane[@node]`.

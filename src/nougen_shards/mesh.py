@@ -545,11 +545,191 @@ def file_digest(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# ---------------------------------------------------------------- install + run
+PACKAGE_FILE = "nougen.package.json"
+
+
+def package(source: Optional[str] = None, near: Optional[str] = None) -> Dict[str, Any]:
+    """The package list: which repos, cloned from where. ``source`` is a file;
+    otherwise NOUGEN_PACKAGE_FILE, then nougen.package.json in the NouGenShards
+    checkout. Clone URLs live in that data file, never in code."""
+    for cand in (source, _env("NOUGEN_PACKAGE_FILE")):
+        if cand:
+            data = _read_json(Path(cand).expanduser())
+            if isinstance(data, dict):
+                return data
+    shards = repo_dir("shards", near)
+    data = _read_json(shards / PACKAGE_FILE) if shards is not None else None
+    return data if isinstance(data, dict) else {}
+
+
+def install(dest: str, *, source: Optional[str] = None, only: Optional[List[str]] = None, near: Optional[str] = None,
+            deps: bool = False, dry_run: bool = False) -> Dict[str, Any]:
+    """Clone each package repo that is missing into ``dest``, side by side.
+
+    Uses the tester's own git and GitHub access. ``deps`` also runs
+    ``pip install -e`` for repos that have a pyproject.toml.
+    """
+    pkg = package(source, near)
+    entries = pkg.get("repos") if isinstance(pkg.get("repos"), dict) else {}
+    root = Path(dest).expanduser()
+    os.environ["NOUGEN_REPOS_DIR"] = str(root)
+    out: Dict[str, Any] = {}
+    for name in only or list(REPOS):
+        have = repo_dir(name, near)
+        if have is not None:
+            out[name] = {"state": "present", "path": str(have)}
+            continue
+        url = (entries.get(name) or {}).get("clone") if isinstance(entries.get(name), dict) else entries.get(name)
+        if not url:
+            out[name] = {"state": "no_source", "fix": f"add repos.{name}.clone to {PACKAGE_FILE}"}
+            continue
+        target = root / REPOS[name]
+        if dry_run:
+            out[name] = {"state": "would_clone", "path": str(target)}
+            continue
+        root.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(["git", "clone", "--depth", "1", str(url), str(target)], capture_output=True, text=True)
+        out[name] = {"state": "cloned" if r.returncode == 0 else "clone_failed", "path": str(target)}
+        if r.returncode != 0:
+            out[name]["error"] = (r.stderr or r.stdout).strip()[-300:]
+    if deps and not dry_run:
+        for name, row in out.items():
+            p = Path(row.get("path") or "")
+            if row["state"] in ("cloned", "present") and (p / "pyproject.toml").exists():
+                r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(p)],
+                                   capture_output=True, text=True)
+                row["deps"] = "ok" if r.returncode == 0 else (r.stderr or r.stdout).strip()[-300:]
+    return out
+
+
+def services(near: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Long-running services each installed repo declares in its manifest."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, d in installed(near).items():
+        for svc in manifest(d).get("services") or []:
+            if isinstance(svc, dict) and svc.get("name") and svc.get("argv"):
+                out[svc["name"]] = {**svc, "repo": name, "repo_dir": str(d)}
+    return out
+
+
+def _run_dir() -> Path:
+    return home() / "run"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _service_state(svc: Dict[str, Any]) -> Dict[str, Any]:
+    pidfile = _run_dir() / f"{svc['name']}.pid"
+    pid = int(pidfile.read_text().strip()) if pidfile.exists() and pidfile.read_text().strip().isdigit() else None
+    url = endpoint(svc.get("port_service") or svc["name"])
+    health = url + str(svc.get("health") or "/health") if url else None
+    answers = False
+    if health:
+        try:
+            with urllib.request.urlopen(health, timeout=1.5):
+                answers = True
+        except urllib.error.HTTPError:
+            answers = True          # something is listening
+        except (urllib.error.URLError, OSError):
+            answers = False
+    return {"repo": svc["repo"], "pid": pid if pid and _pid_alive(pid) else None, "url": url, "answers": answers}
+
+
+def status(near: Optional[str] = None) -> Dict[str, Any]:
+    return {name: _service_state(svc) for name, svc in services(near).items()}
+
+
+def start(names: Optional[List[str]] = None, near: Optional[str] = None) -> Dict[str, Any]:
+    """Start declared services (all, or those named by service or repo) in the background."""
+    out: Dict[str, Any] = {}
+    run = _run_dir()
+    logs = home() / "logs"
+    for name, svc in services(near).items():
+        if names and name not in names and svc["repo"] not in names:
+            continue
+        state = _service_state(svc)
+        if state["pid"] or state["answers"]:
+            out[name] = {**state, "state": "already_up"}
+            continue
+        missing = [k for k in svc.get("env_required") or [] if not _env(k)]
+        if missing:
+            out[name] = {"repo": svc["repo"], "state": "needs_config", "set": missing}
+            continue
+        port_name = svc.get("port_service") or name
+        fill = str(port(port_name) or "")
+        argv = [str(a).replace("{port}", fill) for a in svc["argv"]]
+        d = Path(svc["repo_dir"])
+        exe = _repo_python(d) if argv[0] in ("python", "python3") else (shutil.which(argv[0]) or argv[0])
+        env = dict(os.environ)
+        env.update({str(k): str(v).replace("{port}", fill) for k, v in (svc.get("env") or {}).items()})
+        env["PYTHONPATH"] = os.pathsep.join([str(d / "src"), str(d)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        run.mkdir(parents=True, exist_ok=True)
+        logs.mkdir(parents=True, exist_ok=True)
+        log = open(logs / f"{name}.log", "ab")
+        try:
+            proc = subprocess.Popen([exe, *argv[1:]], cwd=str(d), env=env, stdout=log, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, start_new_session=os.name != "nt")
+        except OSError as exc:
+            out[name] = {"repo": svc["repo"], "state": "failed", "error": str(exc)}
+            continue
+        finally:
+            log.close()
+        (run / f"{name}.pid").write_text(str(proc.pid))
+        out[name] = {"repo": svc["repo"], "state": "started", "pid": proc.pid, "log": str(logs / f"{name}.log")}
+    return out
+
+
+def stop(names: Optional[List[str]] = None, near: Optional[str] = None) -> Dict[str, Any]:
+    """Stop services this mesh started (only pids it recorded; never anything else)."""
+    import signal
+
+    out: Dict[str, Any] = {}
+    for name, svc in services(near).items():
+        if names and name not in names and svc["repo"] not in names:
+            continue
+        pidfile = _run_dir() / f"{name}.pid"
+        raw = pidfile.read_text().strip() if pidfile.exists() else ""
+        if not raw.isdigit() or not _pid_alive(int(raw)):
+            pidfile.unlink(missing_ok=True)
+            out[name] = "not_running"
+            continue
+        try:
+            os.kill(int(raw), signal.SIGTERM)
+            out[name] = "stopped"
+        except OSError as exc:
+            out[name] = f"failed: {exc}"
+        pidfile.unlink(missing_ok=True)
+    return out
+
+
+def parse_args(tokens: List[str]) -> Dict[str, Any]:
+    """CLI arguments for a tool: one JSON object, or key=value pairs (values JSON when they parse)."""
+    if len(tokens) == 1 and tokens[0].lstrip().startswith("{"):
+        return json.loads(tokens[0])
+    out: Dict[str, Any] = {}
+    for tok in tokens:
+        if "=" not in tok:
+            raise ValueError(f"argument {tok!r}: use key=value or one JSON object")
+        k, v = tok.split("=", 1)
+        try:
+            out[k] = json.loads(v)
+        except ValueError:
+            out[k] = v
+    return out
+
+
 # ---------------------------------------------------------------- CLI
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
-    ap = argparse.ArgumentParser(prog="nougen-mesh", description="Find and call tools across NouGen repos.")
+    ap = argparse.ArgumentParser(prog="nougen mesh", description="Install, run and call tools across the NouGen repos.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("setup", help="write this box's mesh.json (first run)")
     s.add_argument("--machine")
@@ -560,9 +740,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub.add_parser("whoami")
     sub.add_parser("doctor")
     sub.add_parser("tools")
-    c = sub.add_parser("call", help="call repo.tool with JSON args")
+    c = sub.add_parser("call", help="call repo.tool with key=value args or one JSON object")
     c.add_argument("tool")
-    c.add_argument("args", nargs="?", default="{}")
+    c.add_argument("args", nargs="*")
     c.add_argument("--at", help="run on another node through its endpoint")
     g = sub.add_parser("manifest", help="write nougen.tools.json from this repo's MCP server")
     g.add_argument("repo", choices=sorted(REPOS))
@@ -570,10 +750,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     g.add_argument("--service")
     g.add_argument("--pythonpath", nargs="*")
     g.add_argument("--merge", help="JSON file of extra tools (cli/http) to append")
+    i = sub.add_parser("install", help="clone the package repos that are missing, side by side")
+    i.add_argument("--dir", default=".", help="where the repos go (default: here)")
+    i.add_argument("--source", help="package file (default: nougen.package.json in NouGenShards)")
+    i.add_argument("--only", nargs="*", choices=sorted(REPOS))
+    i.add_argument("--deps", action="store_true", help="also pip install -e each Python repo")
+    i.add_argument("--dry-run", action="store_true")
+    for verb in ("up", "down"):
+        u = sub.add_parser(verb, help=("start" if verb == "up" else "stop") + " services (all, or the named ones)")
+        u.add_argument("names", nargs="*")
+    sub.add_parser("status", help="which services are running")
     v = sub.add_parser("check-vendored", help="compare a vendored nougen_mesh.py with this file")
     v.add_argument("paths", nargs="+")
     ns = ap.parse_args(argv)
-    here = os.getcwd()
+    here = os.getcwd() if _repo_top(Path(os.getcwd())) is not None else __file__
     if ns.cmd == "setup":
         out: Any = setup(machine_name=ns.machine, agent_name=ns.agent, node_name=ns.node, repos_dir=ns.repos_dir,
                          near=here, force=ns.force)
@@ -586,16 +776,33 @@ def main(argv: Optional[List[str]] = None) -> int:
                for k, v in sorted(tools(here).items())}
     elif ns.cmd == "call":
         try:
-            out = call(ns.tool, json.loads(ns.args), near=here, at=ns.at)
+            out = call(ns.tool, parse_args(ns.args), near=here, at=ns.at)
         except (MeshError, ValueError) as exc:
             print(json.dumps({"error": str(exc)}))
             return 1
+    elif ns.cmd == "install":
+        out = install(ns.dir, source=ns.source, only=ns.only, near=here, deps=ns.deps, dry_run=ns.dry_run)
+    elif ns.cmd == "up":
+        out = start(ns.names or None, near=here)
+    elif ns.cmd == "down":
+        out = stop(ns.names or None, near=here)
+    elif ns.cmd == "status":
+        out = status(here)
     elif ns.cmd == "manifest":
         data = manifest_from_mcp(ns.repo, ns.server, pythonpath=ns.pythonpath, service=ns.service)
+        prev = _read_json(Path(MANIFEST_FILE))
+        prev = prev if isinstance(prev, dict) else {}
+        # hand-written parts survive a regenerate: services, and tools that are not MCP tools
+        extra = [t for t in prev.get("tools") or [] if isinstance(t, dict) and t.get("transport") != "mcp"]
         if ns.merge:
-            extra = _read_json(Path(ns.merge)) or []
-            names = {t["name"] for t in data["tools"]}
-            data["tools"] += [t for t in extra if isinstance(t, dict) and t.get("name") not in names]
+            extra += _read_json(Path(ns.merge)) or []
+        names = {t["name"] for t in data["tools"]}
+        for t in extra:
+            if isinstance(t, dict) and t.get("name") and t["name"] not in names:
+                data["tools"].append(t)
+                names.add(t["name"])
+        if prev.get("services"):
+            data["services"] = prev["services"]
         Path(MANIFEST_FILE).write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         out = {"wrote": MANIFEST_FILE, "tools": len(data["tools"])}
     else:

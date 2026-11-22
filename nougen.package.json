@@ -1,0 +1,17 @@
+{
+  "schema": "nougen-package/1",
+  "name": "nougen-tester",
+  "about": "The ten repos of the NouGen tester package. `nougen mesh install --dir <folder>` clones the missing ones side by side with the tester's own git access; `nougen mesh setup` then writes the tester's own identity.",
+  "repos": {
+    "shards": {"clone": "https://github.com/Who-Visions/NouGenShards.git"},
+    "relay": {"clone": "https://github.com/Who-Visions/NouGenRelay.git"},
+    "msg": {"clone": "https://github.com/Who-Visions/NouGenMsg.git"},
+    "code": {"clone": "https://github.com/WhoVisions/NouGenCode.git"},
+    "design": {"clone": "https://github.com/Who-Visions/nougendesign.git"},
+    "tracker": {"clone": "https://github.com/Who-Visions/NouGenTracker.git"},
+    "open": {"clone": "https://github.com/Who-Visions/NouGenOpen.git"},
+    "fleet-mcp": {"clone": "https://github.com/Who-Visions/nougen-fleet-mcp.git"},
+    "claude": {"clone": "https://github.com/Who-Visions/NouGenClaude.git"},
+    "portable": {"clone": "https://github.com/Who-Visions/NouGenPortable.git"}
+  }
+}

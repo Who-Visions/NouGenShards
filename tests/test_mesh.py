@@ -153,3 +153,57 @@ _FLEET_WORDS = re.compile(r"(?i)\b(blade|phoebus|whoart|kaedra|apollo|hyperion|n
 def test_no_fleet_names(rel):
     text = (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
     assert not _FLEET_WORDS.search(text), _FLEET_WORDS.search(text)
+
+
+def test_services_start_status_stop_and_need_config(tmp_path, monkeypatch):
+    root = tmp_path / "repos"
+    d = _fake_repo(root, "NouGenOpen", "open", [])
+    (d / "srv.py").write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    m = json.loads((d / mesh.MANIFEST_FILE).read_text())
+    m["services"] = [{"name": "open", "argv": ["python", "srv.py", "{port}"], "env": {"X_PORT": "{port}"}},
+                     {"name": "gated", "argv": ["python", "srv.py"], "env_required": ["NEEDS_TOKEN_X"]}]
+    (d / mesh.MANIFEST_FILE).write_text(json.dumps(m))
+    monkeypatch.setenv("NOUGEN_OPEN_PORT", "59871")
+    near = str(d)
+    up = mesh.start(near=near)
+    assert up["open"]["state"] == "started" and up["gated"] == {"repo": "open", "state": "needs_config", "set": ["NEEDS_TOKEN_X"]}
+    st = mesh.status(near)
+    assert st["open"]["pid"] == up["open"]["pid"] and st["open"]["url"] == "http://127.0.0.1:59871"
+    assert mesh.start(["open"], near=near)["open"]["state"] == "already_up"
+    assert mesh.stop(["open"], near=near) == {"open": "stopped", "gated": "not_running"}   # a repo name covers its services
+    assert mesh.stop(["open"], near=near)["open"] == "not_running"
+
+
+def test_install_clones_only_missing_repos_from_the_package_file(tmp_path):
+    src = tmp_path / "src-relay"
+    src.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(src)], check=True)
+    subprocess.run(["git", "-C", str(src), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+                    "--allow-empty", "-m", "x"], check=True)
+    pkg = _write(tmp_path / "pkg.json", {"repos": {"relay": {"clone": str(src)}}})
+    root = tmp_path / "repos"
+    me = _fake_repo(root, "NouGenShards", "shards", [])
+    out = mesh.install(str(root), source=str(pkg), only=["shards", "relay", "msg"], near=str(me))
+    assert out["shards"]["state"] == "present"
+    assert out["relay"]["state"] == "cloned" and (root / "NouGenRelay" / ".git").exists()
+    assert out["msg"]["state"] == "no_source"
+
+
+def test_cli_args_accept_key_value_or_json():
+    assert mesh.parse_args(['{"a": 1}']) == {"a": 1}
+    assert mesh.parse_args(["prompt=hi there", "n=3", "flag=true"]) == {"prompt": "hi there", "n": 3, "flag": True}
+    with pytest.raises(ValueError):
+        mesh.parse_args(["bare"])
+
+
+def test_nougen_cli_forwards_mesh_verbs(monkeypatch, capsys):
+    from nougen_shards import cli
+    seen = {}
+    monkeypatch.setattr(mesh, "main", lambda argv: seen.setdefault("argv", argv) and 0)
+    for argv, want in ((["nougen", "mesh", "doctor"], ["doctor"]), (["nougen", "call", "open.x", "a=1"], ["call", "open.x", "a=1"])):
+        seen.clear()
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit):
+            cli.main()
+        assert seen["argv"] == want

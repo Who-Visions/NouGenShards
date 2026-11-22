@@ -3,6 +3,36 @@
  "repo": "shards",
  "schema": "nougen-tools/1",
  "service": "shards",
+ "services": [
+  {
+   "argv": [
+    "python",
+    "app.py"
+   ],
+   "description": "Shards node: recall, capture, sync and the node MCP at /mcp",
+   "env": {
+    "NGS_HOST": "127.0.0.1",
+    "NGS_PORT": "{port}"
+   },
+   "env_required": [
+    "NGS_NODE_TOKEN"
+   ],
+   "health": "/health",
+   "name": "shards"
+  },
+  {
+   "argv": [
+    "python",
+    "tools/nougenmsg_node.py"
+   ],
+   "description": "NouGenMsg node: the local message bus",
+   "env": {
+    "NOUGEN_AGY_MSG_PORT": "{port}"
+   },
+   "health": "/health",
+   "name": "msg"
+  }
+ ],
  "tools": [
   {
    "args": {

@@ -3034,6 +3034,16 @@ def get_parser():
         description="Dedicated OpenRouter Free Fleet Worker Engine with Keymaker API key auto-resolution and zero-cost multi-model fallback."
     )
     p_open.add_argument("open_args", nargs=argparse.REMAINDER, help="Subcommands: status | ask [prompt] [--model MODEL] [--system SYSTEM]")
+
+    # The tester package, native to this CLI: every verb forwards to nougen_shards.mesh.
+    p_mesh = subparsers.add_parser(
+        "mesh", add_help=False,
+        help="Tester package: install | setup | whoami | doctor | up | down | status | tools | call",
+        description="Install, configure, run and call tools across the ten NouGen repos.")
+    p_mesh.add_argument("mesh_args", nargs=argparse.REMAINDER)
+    for verb, text in _MESH_ALIASES.items():
+        p_alias = subparsers.add_parser(verb, add_help=False, help=text)
+        p_alias.add_argument("mesh_args", nargs=argparse.REMAINDER)
     
     p_destiny_list = destiny_sub.add_parser("list", help="List unfinished/active destinies")
     p_destiny_list.add_argument("--status", choices=list(destiny.STATUSES), default=None)
@@ -4679,6 +4689,21 @@ def cmd_claim(args):
         print(f"✓ Immediate execution launched (PID {res['execution_pid']}): {args.execute_cmd}")
 
 
+_MESH_ALIASES = {
+    "call": "Call any NouGen repo's tool: nougen call open.nougen_ask prompt=hi",
+    "tools": "List every repo.tool installed on this box",
+    "up": "Start NouGen services (all, or the named repos)",
+    "down": "Stop NouGen services this box started",
+    "whoami": "This box's machine, agent, node and wire address",
+}
+
+
+def cmd_mesh(argv):
+    """nougen mesh <verb> ... and the short aliases (nougen call / tools / up / down / whoami)."""
+    from . import mesh
+    return mesh.main(argv)
+
+
 def cmd_open(args):
     """Forward to the NouGenOpen CLI (OpenRouter Free Fleet Engine)."""
     try:
@@ -4799,6 +4824,10 @@ def main():
     if sys.argv[1] == "open":
         cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
         return
+    if sys.argv[1] == "mesh":
+        sys.exit(cmd_mesh(sys.argv[2:] or ["--help"]))
+    if sys.argv[1] in _MESH_ALIASES:
+        sys.exit(cmd_mesh(sys.argv[1:]))
     if sys.argv[1] in ("auto", "boost", "plan", "compact", "find", "policy", "market", "console"):
         from . import surface
         sys.exit(surface.main(sys.argv[1:]))
@@ -4810,7 +4839,7 @@ def main():
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             known_cmds.update(action.choices.keys())
-    known_cmds.update({"cf", "relay", "open", "zombies", "sweep"})
+    known_cmds.update({"cf", "relay", "open", "zombies", "sweep", "mesh", *_MESH_ALIASES})
 
     # If first argument is not a flag (-h, --version, etc) and not a registered subcommand,
     # automatically interpret `nougen <query>` as `nougen search "<query>"`
