@@ -154,7 +154,9 @@ def search_docs(query: str, libraries: Optional[List[str]] = None) -> Dict[str, 
         return {"status": "error", "available": False, "error": "query is required"}
     params: Dict[str, Any] = {"query": query.strip()}
     if libraries:
-        params["libraryName"] = [str(l) for l in libraries[:4]]
+        # v3 search takes repeated `library` hints; `libraryName` belongs
+        # to the v2 library-resolution endpoint and is ignored here.
+        params["library"] = [str(l) for l in libraries[:4]]
     res = _call("/api/v3/search", params)
     res["query"] = query.strip()
     return res

@@ -145,6 +145,39 @@ def test_401_key_rejected(with_key, monkeypatch):
 
 # --- MCP tools delegate to the client, like the arxiv_* tools ---
 
+def test_search_sends_library_hints_as_library_param(with_key, monkeypatch):
+    # v3 search takes repeated `library` hints; `libraryName` belongs to
+    # the v2 resolve endpoint and is silently ignored by v3 (Codex P2).
+    seen = {}
+
+    def _capture(path, params, api_key):
+        seen["path"] = path
+        seen["params"] = params
+        return 200, {}, "docs..."
+
+    monkeypatch.setattr("nougen_shards.context7._http_get", _capture)
+    res = context7.search_docs("How do I cache?", libraries=["next.js", "/vercel/next.js"])
+    assert res["status"] == "ok"
+    assert seen["path"] == "/api/v3/search"
+    assert seen["params"]["library"] == ["next.js", "/vercel/next.js"]
+    assert "libraryName" not in seen["params"]
+
+
+def test_resolve_keeps_library_name_param(with_key, monkeypatch):
+    seen = {}
+
+    def _capture(path, params, api_key):
+        seen["path"] = path
+        seen["params"] = params
+        return 200, {}, json.dumps({"results": []})
+
+    monkeypatch.setattr("nougen_shards.context7._http_get", _capture)
+    res = context7.resolve_library("next.js", query="caching")
+    assert res["status"] == "ok"
+    assert seen["path"] == "/api/v2/libs/search"
+    assert seen["params"]["libraryName"] == "next.js"
+
+
 def test_mcp_search_delegates(monkeypatch):
     mock = MagicMock(return_value={"status": "ok", "available": True,
                                    "result": {"text": "docs..."}, "query": "caching"})
