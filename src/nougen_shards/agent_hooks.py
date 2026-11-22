@@ -221,6 +221,9 @@ def prompt(evt: dict) -> dict:
     # Same budget source as claude_code_hook (env-tunable once #1087 lands).
     budget = getattr(recall_hook, "_env_budget_ms", None)
     result = recall_hook.recall_hook(text, **({"budget_ms": budget()} if budget else {}))
+    learn = getattr(recall_hook, "record_budget_sample", None)
+    if learn:
+        learn(result)
     block = recall_hook.format_block(result)
     try:
         from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
