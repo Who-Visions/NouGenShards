@@ -95,6 +95,18 @@
           "type": "string"
         }
       }
+    },
+    "relay_live": {
+      "type": "object",
+      "description": "Relay live daemon settings. self: extra <machine>/<agent> legs this box writes and should not wake on (its own machine/agent is always included).",
+      "properties": {
+        "self": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }
