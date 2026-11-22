@@ -853,6 +853,29 @@ code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</
 <li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
 
 
+_WIRE = None
+_WIRE_LOCK = threading.Lock()
+
+
+def wire_service():
+    """The node's wire v2 hub, built on first use (None if it cannot load).
+
+    One SQLite inbox per node, beside the legacy inbox unless NOUGEN_WIRE_DB
+    says otherwise. Every /wire route is behind the same X-NGS-Token as /msg.
+    """
+    global _WIRE  # pylint: disable=global-statement
+    with _WIRE_LOCK:
+        if _WIRE is None:
+            try:
+                from nougen_shards.wire.service import WireService
+                db = os.environ.get("NOUGEN_WIRE_DB", "").strip() or str(INBOX.parent / "wire.db")
+                _WIRE = WireService.from_env(NODE, db)
+            except Exception as exc:  # pylint: disable=broad-except
+                print("[nougenmsg_node] wire unavailable: {}: {}".format(type(exc).__name__, exc), flush=True)
+                return None
+        return _WIRE
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -897,6 +920,36 @@ class Handler(BaseHTTPRequestHandler):
         elif length > 0:
             self.rfile.read(length)
 
+    def _wire(self, method: str) -> bool:
+        """Serve /wire/* (wire v2). True when the request was answered here."""
+        if not self._route().startswith("/wire"):
+            return False
+        if self._reject_unauthorized():
+            return True
+        body = {}
+        if method == "POST":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > (1 << 20):
+                    self.close_connection = True
+                    self._send({"error": "body over 1 MiB"}, 413)
+                    return True
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except (ValueError, UnicodeDecodeError) as exc:
+                self._send({"error": "bad payload: {}".format(exc)}, 400)
+                return True
+            if not isinstance(body, dict):
+                self._send({"error": "body must be a JSON object"}, 400)
+                return True
+        svc = wire_service()
+        if svc is None:
+            self._send({"error": "wire v2 unavailable on this node"}, 503)
+            return True
+        code, payload = svc.handle(method, self.path, body, self.headers.get("X-NGS-Owner", ""))
+        self._send(payload, code)
+        return True
+
     def _reject_unauthorized(self) -> bool:
         """Refuse a request that must not proceed. True when already answered.
 
@@ -922,6 +975,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self) -> None:
+        if self._wire("GET"):
+            return
         route = self._route()
         if route == "/" and wants_html(self.headers.get("Accept")):
             self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
@@ -949,6 +1004,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found", "path": route}, 404)
 
     def do_POST(self) -> None:
+        if self._wire("POST"):
+            return
         if self._route() != "/msg":
             self._discard_body()
             self._send({"error": "not found", "path": self._route()}, 404)
@@ -1064,6 +1121,13 @@ def main() -> int:
         flush=True)
     ok, detail = registry_parity_ok()
     print("[nougenmsg_node] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
+    if os.environ.get("NOUGEN_WIRE_PUMP", "1").strip() != "0":
+        svc = wire_service()
+        if svc is not None:
+            svc.start_pump(float(os.environ.get("NOUGEN_WIRE_PUMP_S", "5") or 5))
+            print("[nougenmsg_node] wire v2 push_lanes={} receipts={}".format(
+                ",".join(sorted(svc.hub.adapters)) or "none",
+                "signed" if svc.hub.key else "UNSIGNED"), flush=True)
     server = BoundedThreadingHTTPServer((bind, port), Handler)
     try:
         server.serve_forever()
