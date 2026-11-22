@@ -2,9 +2,11 @@
 
 Runs the package the way a new tester would, on a scratch home with a made-up
 identity, and fails if any output names the owner's machines, hosts, accounts
-or paths.
+or paths. Those names are read from the box it runs on before switching to the
+tester identity, so run it on an owner box (or pass --forbid / set
+NOUGEN_SURFACE_NAMES) for the check to mean something.
 
-    python tools/tester_wargame.py --repos <dir with the ten checkouts> [--json]
+    python tools/tester_wargame.py --repos <dir with the ten checkouts> [--forbid WORD ...] [--json]
 
 Steps: mesh setup -> whoami -> doctor -> tools -> a local tool call in every
 installed repo that lists a safe read-only one -> up/status/down of services
@@ -23,12 +25,60 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-#: Words that must never reach a tester's screen. This is the test's own
-#: vocabulary of the owner's fleet, which is why it is allowed to name it.
-OWNER = re.compile(
-    r"(?i)\b(blade1tb|blade|phoebus|whoart|kaedra|apollo|hyperion|kushboy\w*|aiwithdav3|g-whoentertains|"
-    r"whoentertains|superdave\w*)\b|nougenai\.com|The Observatory|Watchtower|C:\\\\Users\\\\super|/Users/kushboygroup|"
-    r"192\.168\.1\.\d+")
+#: Generic leak shape: a private LAN address.
+GENERIC = (r"192\.168\.\d+\.\d+",)
+
+#: Identity words too common to mean anything on their own.
+_COMMON = {"root", "user", "runner", "admin", "claude", "ubuntu", "localhost", "standalone", "unknown-agent",
+           "tester-box", "tester-claude"}
+
+
+def owner_vocabulary(extra: List[str]) -> "re.Pattern[str]":
+    """The owner's names, resolved at runtime from the box this runs on.
+
+    Nothing is written here: this file is public, and a guard that spells the
+    owner's names would publish them. Words come from the real box's mesh
+    identity, node list and ingress host, the OS account, git identity,
+    ``NOUGEN_SURFACE_NAMES`` (comma-separated) and ``--forbid``.
+    """
+    words: set = set()
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from nougen_shards import mesh  # noqa: PLC0415
+        ident = mesh.identity()
+        words.update(str(v) for k, v in ident.items() if k in ("machine", "agent", "node", "tenant") and v)
+        words.update(mesh.nodes())
+        door = mesh.ingress() or ""
+        host = re.sub(r"^\w+://", "", door).split("/")[0]
+        if host:
+            words.add(host)
+            words.add(".".join(host.split(".")[-2:]))
+    except Exception:  # noqa: BLE001 - a box with no mesh simply contributes nothing
+        pass
+    home = str(Path.home())
+    if home.count(os.sep) >= 2:                      # the owner's own home path, raw and JSON-escaped
+        words.update({home, home.replace("\\", "\\\\")})
+    try:
+        import getpass  # noqa: PLC0415
+        words.add(getpass.getuser())
+    except Exception:  # noqa: BLE001
+        pass
+    for key in ("user.name", "user.email"):
+        try:
+            val = subprocess.run(["git", "config", "--global", key], capture_output=True, text=True,
+                                 timeout=5).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            val = ""
+        if val:
+            words.add(val.split("@")[0] if "@" in val else val)
+    words.update(w.strip() for w in os.environ.get("NOUGEN_SURFACE_NAMES", "").split(","))
+    words.update(extra)
+    words = {w for w in words if len(w) >= 4 and w.lower() not in _COMMON}
+    parts = [re.escape(w) for w in sorted(words, key=len, reverse=True)] + list(GENERIC)
+    return re.compile(r"(?i)(?<![A-Za-z0-9])(?:" + "|".join(parts) + r")(?![A-Za-z0-9])")
+
+
+OWNER: "re.Pattern[str]" = re.compile(r"(?!)")
 
 #: Read-only tools worth calling once per repo, when the repo lists them.
 SAFE_CALLS = {
@@ -56,7 +106,10 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--repos", required=True, help="directory holding the package checkouts side by side")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--keep-home", action="store_true")
+    ap.add_argument("--forbid", action="append", default=[], help="another word that must never show (repeatable)")
     ns = ap.parse_args(argv)
+    global OWNER
+    OWNER = owner_vocabulary(ns.forbid)
     repos = Path(ns.repos).resolve()
     shards = next((d for d in repos.iterdir() if d.name.lower() == "nougenshards"), None)
     if shards is None:
