@@ -184,3 +184,13 @@ def test_sign_in_page_is_styled_only_by_the_nougen_core_tokens():
         assert token + ":" in hud_login._design_tokens(), f"{token} is not a nougen-core token"
     page = hud_login.login_page(host="pat-ab12.example.com")
     assert hud_login._design_tokens()[:40] in page
+
+
+@pytest.mark.parametrize("bad_exp", ["NaN", "Infinity", "-Infinity", "1e400"])
+def test_non_finite_exp_never_verifies(bad_exp):
+    """json accepts NaN/Infinity; a NaN exp compares False to everything and
+    would never expire. A signed token with a non-finite exp must be refused."""
+    body = hud_login._b64(('{"sub": "acct", "exp": %s, "n": "nonce1234"}' % bad_exp).encode())
+    token = body + "." + hud_login._sig("s3cret", "ticket", body)
+    assert hud_login.verify("s3cret", "ticket", token, now=0) is None
+    assert hud_login.verify("s3cret", "ticket", token, now=2e9) is None
