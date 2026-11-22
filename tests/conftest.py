@@ -210,6 +210,16 @@ def _target_resolver_isolation(monkeypatch, tmp_path):
     monkeypatch.setenv("NOUGEN_LANE_PRESENCE_FILE", str(tmp_path / "lane_presence.json"))
 
 
+@pytest.fixture(autouse=True)
+def _context_call_isolation(monkeypatch, tmp_path):
+    """The per-prompt context call reaches for the fleet gateway, writes receipts and
+    can restart a node. Keep tests off the gateway, out of ~/.nougen and away from any
+    supervisor; a test of those paths opts back in itself."""
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_GATEWAY", "0")
+    monkeypatch.setenv("NOUGEN_CONTEXT_CALL_REPAIR", "0")
+    monkeypatch.setenv("NOUGEN_CONTEXT_CALL_DIR", str(tmp_path / "context_call"))
+
+
 @pytest.fixture(scope="session")
 def shared_mcp_client():
     """The one lifespan-entered node client for the whole process.

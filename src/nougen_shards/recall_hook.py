@@ -16,8 +16,13 @@ Three lanes run at once and the best one that finishes inside the budget wins:
    in-process ``core.retrieve`` against the 3 GB vault rebuilds the index (~18 s)
    and never finishes inside any sane budget; the node is the only way the
    vector lane wins. Skipped when ``NOUGEN_RECALL_HOOK_NODE=0`` or no token.
-2. ``full``  - in-process ``core.retrieve`` (keyword + vector, RRF).
-3. ``keyword`` - in-process keyword-only sweep; the floor everywhere.
+2. ``gateway`` - the fleet gateway's ``/search`` (``endpoints.fleet_gateway_url()``,
+   resolved at run time, never pinned here). Covers a box with no local node
+   (a tester, a fresh install) and a local node that is down. Skipped when
+   ``NOUGEN_RECALL_HOOK_GATEWAY=0``, no gateway is configured, or it is the
+   same URL as the local node.
+3. ``full``  - in-process ``core.retrieve`` (keyword + vector, RRF).
+4. ``keyword`` - in-process keyword-only sweep; the floor everywhere.
 
 The host is never blocked past ``budget_ms`` and never told "no matching shards"
 when the truth is "the sweep did not finish" (same invariant as
@@ -52,6 +57,68 @@ def _node_token() -> Optional[str]:
         return get_secret("NGS_NODE_TOKEN")
     except Exception:
         return None
+
+
+def _gateway_enabled() -> bool:
+    return os.environ.get("NOUGEN_RECALL_HOOK_GATEWAY", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _gateway_url() -> Optional[str]:
+    """The fleet gateway this box is configured for, or None. Never a pinned host."""
+    if not _gateway_enabled():
+        return None
+    try:
+        from . import endpoints  # pylint: disable=import-outside-toplevel
+        url = endpoints.fleet_gateway_url()
+    except Exception:
+        return None
+    if not url:
+        return None
+    local = os.environ.get("NOUGEN_NODE_URL", DEFAULT_NODE_URL).rstrip("/")
+    return None if url.rstrip("/") == local else url.rstrip("/")
+
+
+def _gateway_token() -> Optional[str]:
+    """Gateway token: its own name first, then this box's node token."""
+    for name in ("SHARD_GATEWAY_TOKEN", "NOUGEN_FLEET_GATEWAY_TOKEN"):
+        tok = os.environ.get(name)
+        if tok:
+            return tok
+    try:
+        from .keymaker import get_secret  # pylint: disable=import-outside-toplevel
+        tok = get_secret("SHARD_GATEWAY_TOKEN")
+        if tok:
+            return tok
+    except Exception:
+        pass
+    return _node_token()
+
+
+#: Cloudflare answers 403 to Python's default User-Agent (key_usage notes).
+HTTP_UA = "Mozilla/5.0 (compatible; nougen-recall-hook/1.0)"
+
+
+def _http_search(base_url: str, query: str, limit: int, timeout_s: float, token: str,
+                 fast: bool) -> list:
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    body = json.dumps({"query": query, "limit": limit, "fast": fast}).encode("utf-8")
+    req = urllib.request.Request(base_url.rstrip("/") + "/search", data=body,
+                                 headers={"Content-Type": "application/json", "X-NGS-Token": token,
+                                          "User-Agent": HTTP_UA})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        data = json.load(resp)
+    if isinstance(data, list):
+        return data
+    return list(data.get("results") or []) if isinstance(data, dict) else []
+
+
+def _gateway_search(query: str, limit: int, timeout_s: float, url: str,
+                    token: Optional[str] = None) -> list:
+    """POST /search on the fleet gateway. Raises on any failure; the caller fails open."""
+    token = token or _gateway_token()
+    if not token:
+        raise RuntimeError("no SHARD_GATEWAY_TOKEN or NGS_NODE_TOKEN")
+    return _http_search(url, query, limit, timeout_s, token, fast=timeout_s * 1000.0 < NODE_FAST_BELOW_MS)
 
 
 #: Below this budget the node is asked for its fast path. Measured on WhoArt
@@ -102,10 +169,11 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
                 snippet: int = DEFAULT_SNIPPET) -> dict[str, Any]:
     """Return ``{tier, partial, shards, elapsed_ms, mark, ...}`` within ``budget_ms``.
 
-    tier: ``node`` (warm node, keyword + vector), ``full`` (in-process keyword +
+    tier: ``node`` (warm node, keyword + vector), ``gateway`` (fleet gateway's
+    node, keyword + vector), ``full`` (in-process keyword +
     vector finished), ``keyword`` (only the keyword lane finished; ``partial`` is
     True), or ``none`` (nothing finished, or the message was too short).
-    ``shards`` may be empty at tier ``node``/``full`` -- that is a real "no
+    ``shards`` may be empty at tier ``node``/``gateway``/``full`` -- that is a real "no
     matching shards"; at tier ``none`` with ``partial`` it is not.
     """
     from . import core  # pylint: disable=import-outside-toplevel
@@ -121,6 +189,7 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
         return result
 
     node: list = []
+    gateway: list = []
     full: list = []
     keyword: list = []
     errors: dict[str, str] = {}
@@ -129,6 +198,10 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
     # Resolve the token on the calling thread: the keymaker import is not free
     # and must not come out of the node lane's share of the budget.
     node_token = _node_token() if use_node else None
+    gw_url = _gateway_url()
+    gw_token = _gateway_token() if gw_url else None
+    if gw_url:
+        result["gateway"] = gw_url
     # The budget is for SEARCHING. Measured on WhoArt 2026-11-11: a cold keymaker
     # lookup takes ~780 ms, and starting the clock before it left the node ~20 ms
     # of an 800 ms budget, so nearly every prompt reported "budget exhausted
@@ -142,6 +215,13 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
             node.append(None)
         except Exception as exc:  # node down, no token, slow: fall through
             errors["node"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    def run_gateway() -> None:
+        try:
+            gateway.extend(_gateway_search(query, limit, budget_ms / 1000.0, gw_url, token=gw_token))
+            gateway.append(None)
+        except Exception as exc:  # gateway down, no token, slow: fall through
+            errors["gateway"] = f"{type(exc).__name__}: {exc}"[:200]
 
     def run_full() -> None:
         try:
@@ -158,28 +238,44 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
             errors["keyword"] = f"{type(exc).__name__}: {exc}"[:200]
 
     t_node = threading.Thread(target=contextvars.copy_context().run, args=(run_node,), daemon=True, name="recall-hook-node") if use_node else None
+    t_gw = threading.Thread(target=contextvars.copy_context().run, args=(run_gateway,), daemon=True, name="recall-hook-gateway") if gw_url else None
     t_full = threading.Thread(target=contextvars.copy_context().run, args=(run_full,), daemon=True, name="recall-hook-full")
     t_kw = threading.Thread(target=contextvars.copy_context().run, args=(run_keyword,), daemon=True, name="recall-hook-keyword")
     if t_node:
         t_node.start()
+    if t_gw:
+        t_gw.start()
     t_full.start()
     t_kw.start()
     deadline = started + budget_ms / 1000.0
 
     hits: list = []
-    node_done = False
-    if t_node:
-        # Wait for the node first: it is the only lane that returns vector hits
-        # inside the budget on a large vault. A fast failure (no token, refused
-        # connection) hands the remaining budget to the in-process lanes.
-        while time.monotonic() < deadline and t_node.is_alive() and not (full and full[-1] is None):
-            t_node.join(0.02)
-        node_done = not t_node.is_alive() and bool(node) and node[-1] is None
+    node_done = gw_done = False
+    remote = [t for t in (t_node, t_gw) if t]
+    if remote:
+        # Wait for the warm remote lanes first: they are the only ones that
+        # return vector hits inside the budget on a large vault. The local node
+        # wins a tie; the gateway answers when the node is down or absent. A
+        # fast failure on both hands the remaining budget to the in-process lanes.
+        # An in-process answer ends the wait only if it found something: an empty
+        # local vault (a tester's fresh box) must not beat the fleet's memory.
+        while time.monotonic() < deadline and not (full and full[-1] is None and len(full) > 1):
+            node_done = bool(t_node) and not t_node.is_alive() and bool(node) and node[-1] is None
+            gw_done = bool(t_gw) and not t_gw.is_alive() and bool(gateway) and gateway[-1] is None
+            if node_done or (gw_done and not (t_node and t_node.is_alive())):
+                break
+            if not any(t.is_alive() for t in remote):
+                break
+            time.sleep(0.02)
+        node_done = bool(t_node) and not t_node.is_alive() and bool(node) and node[-1] is None
+        gw_done = bool(t_gw) and not t_gw.is_alive() and bool(gateway) and gateway[-1] is None
     if node_done:
         hits, result["tier"] = node[:-1], "node"
+    elif gw_done:
+        hits, result["tier"] = gateway[:-1], "gateway"
     else:
         t_full.join(max(0.0, deadline - time.monotonic()))
-    if hits or result["tier"] == "node":
+    if hits or result["tier"] in ("node", "gateway"):
         pass
     elif not t_full.is_alive() and full and full[-1] is None:
         hits, result["tier"] = full[:-1], "full"
@@ -206,6 +302,12 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
             break
     if errors:
         result["errors"] = errors
+    # Lanes still running at the deadline: a timeout, not a failure. The context
+    # call reads this to tell "slow" from "down" without probing twice.
+    pending = [name for name, t in (("node", t_node), ("gateway", t_gw), ("full", t_full), ("keyword", t_kw))
+               if t is not None and t.is_alive()]
+    if pending:
+        result["pending"] = pending
     result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
     return result
 
