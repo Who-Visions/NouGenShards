@@ -41,6 +41,26 @@ def resolve_key(explicit: Optional[str] = None) -> Tuple[bytes, str]:
     return b"", "unsigned"
 
 
+def node_key(path: str) -> bytes:
+    """This node's own receipt key, made on first start and kept beside the
+    wire db (0600). Only this node signs and verifies its receipts, so a local
+    key is real per-node proof with zero setup. Raises if it can't be kept."""
+    try:
+        with open(path, "rb") as f:
+            key = f.read().strip()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    import secrets
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    key = secrets.token_hex(32).encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
+    return key
+
+
 def receipt_key(explicit: Optional[str] = None) -> bytes:
     return resolve_key(explicit)[0]
 
