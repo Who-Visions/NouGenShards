@@ -72,6 +72,14 @@ def test_scan_finds_keys_and_skips_placeholders():
     assert all(line in (1, 2) for _, line, _ in pr.scan_text(text))
 
 
+def test_scan_finds_google_aq_keys_and_bearer_tokens():
+    aq, bearer = _fake_key("AQ.Ab8RN6", 40), _fake_key("", 40).lower()
+    text = f'"X-Goog-Api-Key: {aq}"\n"Authorization": "Bearer {bearer}"\n"Authorization": "Bearer <REDACTED_HF_KEY>"\n'
+    kinds = [k for k, _, _ in pr.scan_text(text)]
+    assert "google_aq_key" in kinds and "bearer_token" in kinds
+    assert all(line in (1, 2) for _, line, _ in pr.scan_text(text))
+
+
 def test_pack_excludes_runtime_data_and_writes_a_manifest(tmp_path, monkeypatch):
     _package(tmp_path, {"src/app.py": "print('hi')\n",
                         "logs/old.json": json.dumps({"refresh_token": "1//0" + _fake_key("", 40)})}, monkeypatch)

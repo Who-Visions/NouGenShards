@@ -61,6 +61,8 @@ SECRET_PATTERNS: Dict[str, str] = {
     "google_api_key": r"\bAIza[0-9A-Za-z_\-]{35}\b",
     "google_oauth_refresh": r"\b1//0[A-Za-z0-9_\-]{30,}",
     "google_oauth_access": r"\bya29\.[A-Za-z0-9_\-]{30,}",
+    "google_aq_key": r"\bAQ\.Ab[A-Za-z0-9_\-]{30,}",
+    "bearer_token": r"\bBearer [A-Za-z0-9._\-]{24,}",
     "huggingface_token": r"\bhf_[A-Za-z0-9]{30,}\b",
     "aws_key_id": r"\bAKIA[0-9A-Z]{16}\b",
     "slack_token": r"\bxox[abposr]-[A-Za-z0-9\-]{10,}",
