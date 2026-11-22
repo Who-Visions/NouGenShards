@@ -57,6 +57,10 @@ def resolve_session_title(session_id: str = "") -> str:
     NouGen cc_sessions registry entry (field "title" or "name"). Never invents
     a title: an unknown session stays "" so the label falls back to sid8.
     """
+    if _tenant_scope():
+        # A tenant request must never read the owner's session-title env, the
+        # owner's ~/.claude/sessions, or the owner's cc_sessions registry.
+        return ""
     env = os.environ.get("NOUGEN_SESSION_TITLE", "").strip()
     if env:
         return env
@@ -1428,7 +1432,7 @@ class NouGenMsgBus:
                                   "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
         session_title = supplied.get("session_title")
-        if not forwarded:
+        if not forwarded and not _tenant_scope():
             # This process is the origin: discover who is speaking instead of
             # waiting to be told. A forwarded envelope keeps its upstream
             # session fields untouched; the receiver never stamps its own.

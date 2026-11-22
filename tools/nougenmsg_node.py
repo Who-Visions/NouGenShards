@@ -760,10 +760,11 @@ def _delivery_label(msg: dict) -> str:
 def _run_elevated(msg: dict) -> None:
     try:
         verdict = gate_and_deliver(
-            str(msg.get("text", "")), _delivery_label(msg),
+            str(msg.get("text", "")), str(msg.get("sender", "unknown")),
             message_id=msg.get("message_id"),  # honored if the sender provides one
             origin=str(msg.get("origin", "peer")),
-            origin_proof=msg.get("origin_proof"))
+            origin_proof=msg.get("origin_proof"),
+            label=_delivery_label(msg))  # banner only; authorization reads the raw sender
         # Waking STARTS an agent where delivery only reaches one that is
         # already live, so it runs strictly after the same gates and only
         # on their approval. Never reachable for an unapproved message,

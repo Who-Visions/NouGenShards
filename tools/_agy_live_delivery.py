@@ -646,7 +646,8 @@ def verify_user_origin(claimed_origin: str, proof: "str | None", source: "str | 
 def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                       origin: str = "peer", origin_proof: "str | None" = None,
                       origin_status: "str | None" = None,
-                      classify_text: "str | None" = None) -> dict:
+                      classify_text: "str | None" = None,
+                      label: "str | None" = None) -> dict:
     """One call: dedup, classify origin, then either bypass or run the content gate.
 
     What both callers use. `message_id` is optional — pass it through from a
@@ -654,6 +655,11 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
     sender that doesn't still gets same-content/same-source/same-30s-window
     protection, which is exactly the shape of bug already found once
     tonight (a 3s timeout retry racing a 4s judgment call).
+
+    `label`, if passed, is ONLY the banner shown to the receiving session. It is
+    display text (it can carry a session title) and never feeds origin or
+    authorization checks: those read `source` alone. Keeping them apart stops a
+    title such as "Debug ChatGPT integration" from tripping verify_user_origin.
 
     `classify_text`, if passed, is what Kaedra JUDGES; `text` is still what
     gets dedup'd and DELIVERED. Without this, a caller that wraps untrusted
@@ -683,7 +689,7 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
         # dropped), still fully logged as exactly this path.
         return {"attempted": True, "origin": "user_verified", "kaedra_approved": None,
                 "quarantined": False, "reason_code": "user_origin_proven",
-                "live_delivery": deliver_to_live_sessions(text, source)}
+                "live_delivery": deliver_to_live_sessions(text, label or source)}
 
     text_to_classify = classify_text if classify_text is not None else text
     result = classify_with_kaedra(text_to_classify)
@@ -695,4 +701,4 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                 "policy_version": result["policy_version"]}
     return {**base_origin_field, "attempted": True, "kaedra_approved": True, "quarantined": False,
             "reason_code": result["reason_code"], "policy_version": result["policy_version"],
-            "live_delivery": deliver_to_live_sessions(text, source)}
+            "live_delivery": deliver_to_live_sessions(text, label or source)}

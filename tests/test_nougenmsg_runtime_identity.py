@@ -105,3 +105,57 @@ def test_forwarded_envelope_without_session_is_not_stamped_with_receivers(monkey
     env = NouGenMsgBus._origin_envelope({"machine": "node-b", "relay_path": ["node-b"]}, forwarded=True)
     assert env["session_id"] is None
     assert env["session_title"] is None
+
+
+# --- review fixes: tenant scope and the banner/authorization split ----------
+
+def test_tenant_request_never_reads_owner_session_title(monkeypatch, tmp_path):
+    _write_session(tmp_path, _SID, "Owner Private Title")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", _SID)
+    monkeypatch.setenv("NOUGEN_SESSION_TITLE", "Owner Env Title")
+    monkeypatch.setattr(nougenmsg, "_tenant_scope", lambda: True)
+    assert resolve_session_title(_SID) == ""
+    env = NouGenMsgBus._origin_envelope({})
+    assert env["session_id"] is None
+    assert env["session_title"] is None
+
+
+def _delivery_module(monkeypatch):
+    import sys
+    from pathlib import Path
+    tools = str(Path(__file__).resolve().parents[1] / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import _agy_live_delivery as mod
+    return mod
+
+
+def test_banner_label_never_feeds_origin_authorization(monkeypatch):
+    """A session title containing "chatgpt" must not trip verify_user_origin."""
+    mod = _delivery_module(monkeypatch)
+    calls = {"classified": 0, "delivered": []}
+
+    def fake_classify(_text):
+        calls["classified"] += 1
+        return {"verdict": "DENY", "ok": True, "reason_code": "t", "detail": "", "policy_version": "1"}
+
+    monkeypatch.setattr(mod, "classify_with_kaedra", fake_classify)
+    monkeypatch.setattr(mod, "deliver_to_live_sessions",
+                        lambda text, label: calls["delivered"].append(label) or {})
+    out = mod.gate_and_deliver("unique payload one", "peer-node-claude",
+                               label="peer-node-claude · Debug ChatGPT integration")
+    assert calls["classified"] == 1          # judged by Kaedra: no user_verified bypass
+    assert out["kaedra_approved"] is False
+    assert calls["delivered"] == []
+
+
+def test_banner_label_is_what_the_session_sees(monkeypatch):
+    mod = _delivery_module(monkeypatch)
+    seen = []
+    monkeypatch.setattr(mod, "classify_with_kaedra",
+                        lambda _t: {"verdict": "APPROVE", "ok": True, "reason_code": "t", "policy_version": "1"})
+    monkeypatch.setattr(mod, "deliver_to_live_sessions", lambda text, label: seen.append(label) or {})
+    mod.gate_and_deliver("unique payload two", "raw-sender", label="node-a-claude-app · Planner [deadbeef]")
+    assert seen == ["node-a-claude-app · Planner [deadbeef]"]
+    mod.gate_and_deliver("unique payload three", "raw-sender")
+    assert seen[-1] == "raw-sender"
