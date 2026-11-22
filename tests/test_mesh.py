@@ -15,8 +15,13 @@ _ENV = ("NOUGEN_ROOT", "NOUGEN_MESH_FILE", "NOUGEN_FLEET_NODE", "NOUGEN_NODE_NAM
 
 @pytest.fixture(autouse=True)
 def clean_home(tmp_path, monkeypatch):
-    for var in _ENV:
-        monkeypatch.delenv(var, raising=False)
+    """Every test runs as a fresh box, even on a fleet machine with its own mesh and repo env."""
+    import os
+    for var in list(os.environ):
+        if var.startswith(("NOUGEN_", "NGS_")) or var in _ENV:
+            monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "user"))
     monkeypatch.setenv("NOUGEN_ROOT", str(tmp_path / "home"))
     monkeypatch.setattr(mesh, "_git_config", lambda key: "")
     monkeypatch.setattr(mesh, "_hostname", lambda: "tester-laptop")
