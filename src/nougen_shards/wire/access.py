@@ -17,7 +17,7 @@ Lane and guest tokens live in one JSON file (NOUGEN_WIRE_GUESTS_FILE) as
 SHA-256 hashes, never in clear::
 
     python -m nougen_shards.wire.access mint --name tester-1 --send-to codex,ollama --days 14
-    python -m nougen_shards.wire.access mint --lane codex --name codex-whoart --days 0
+    python -m nougen_shards.wire.access mint --lane codex --name codex-node-a --days 0
 
 Each prints the token once. Every failure answers with a reason and a fix.
 """

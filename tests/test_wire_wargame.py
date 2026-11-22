@@ -142,7 +142,7 @@ def test_shared_token_sends_but_never_reads_or_acks():
 
 def test_lane_token_reads_and_acks_only_its_own_lane(tmp_path):
     path = str(tmp_path / "g.json")
-    tok = access.mint("codex-whoart", lane="codex", days=0, path=path)
+    tok = access.mint("codex-node-a", lane="codex", days=0, path=path)
     book = GuestBook(path)
     codex, _ = access.authenticate(tok, "fleet", book)
     assert codex.kind == "lane" and codex.address == "codex"

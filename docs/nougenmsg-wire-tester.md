@@ -78,7 +78,7 @@ no restart):
 python -m nougen_shards.wire.access mint --name tester-1 --send-to codex,ollama --days 14
 python -m nougen_shards.wire.access list
 python -m nougen_shards.wire.access revoke --name tester-1
-python -m nougen_shards.wire.access mint --lane codex --name codex-whoart --days 0   # an agent's own inbox token
+python -m nougen_shards.wire.access mint --lane codex --name codex-node-a --days 0   # an agent's own inbox token
 ```
 
 War-game the node from outside before handing it over:
