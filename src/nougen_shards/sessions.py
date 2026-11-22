@@ -163,7 +163,7 @@ class RemoteSessionManager:
         elif node == "phoebus":
             cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target all "{wake_payload}"'
         else:
-            cmd = f'python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py --target all "{wake_payload}"'
+            cmd = f'python %USERPROFILE%/.nougen/src/nougenshards/tools/nougenmsg.py --target all "{wake_payload}"'
 
         res = subprocess.run(["ssh", node, cmd], capture_output=True, text=True, timeout=10)
         return {

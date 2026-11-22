@@ -68,7 +68,7 @@ def test_forwarded_envelope_keeps_origin(monkeypatch):
 def test_display_uses_sender_not_bridge():
     origin = {"machine": "nodeorigin", "machine_id": "cccccccccccc",
               "original_sender": "nodeorigin-claude"}
-    assert nougenmsg.display_sender(dict(origin, origin_trust="stamped")) == "nodeorigin-claude [cccccccccccc]"
+    assert nougenmsg.display_sender(dict(origin, origin_trust="stamped")) == "nodeorigin-claude [cccccccc]"  # machine id shown as 8 chars
     assert nougenmsg.display_sender(dict(origin, origin_trust="forwarded-unverified")).endswith("(asserted)")
     assert nougenmsg.display_sender(origin).endswith("(asserted)")
     assert "unstamped" in nougenmsg.display_sender({})

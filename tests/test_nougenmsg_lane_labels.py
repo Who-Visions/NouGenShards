@@ -18,7 +18,7 @@ def test_explicit_lane_labels_sender_node_lane():
 
 
 @pytest.mark.parametrize("raw,short", [
-    ("antigravity", "agy"), ("nougen-agy", "agy"), ("claude-cli", "claude"), ("Ollama", "ollama"),
+    ("antigravity", "agy"), ("nougen-agy", "agy"), ("claude-code", "claude"), ("claude-cli", "claude-cli"), ("Ollama", "ollama"),
 ])
 def test_lane_is_normalised_without_nougen_prefix(raw, short):
     env = NouGenMsgBus._origin_envelope({"lane": raw})

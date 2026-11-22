@@ -4433,6 +4433,41 @@ def arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = 
     return run_arxiv_paper(action=action, ref=ref, pattern=pattern, max_chars=max_chars, refresh=refresh)
 
 
+# Context7 docs on the fleet node. #1191 registered these on the stdio server
+# (nougen_shards/mcp.py) only, so tools/call on a node answered "Unknown tool".
+# Same OWNER_ONLY policy (tenant_policy), same Keymaker key read per call.
+@node_mcp.tool()
+@_offloaded
+def context7_search(query: str, libraries: Optional[List[str]] = None) -> dict:
+    """Search current library docs by question; Context7 picks the libraries and returns ranked snippets."""
+    from nougen_shards.context7 import search_docs
+    return search_docs(query=query, libraries=libraries)
+
+
+@node_mcp.tool()
+@_offloaded
+def context7_resolve(library_name: str, query: str = "") -> dict:
+    """Resolve a library name to its Context7 library ID before fetching docs."""
+    from nougen_shards.context7 import resolve_library
+    return resolve_library(library_name=library_name, query=query)
+
+
+@node_mcp.tool()
+@_offloaded
+def context7_docs(library_id: str, query: str, tokens: int = 5000, language: str = "") -> dict:
+    """Fetch docs snippets for one Context7 library ID (tokens default 5000, ceiling 10000)."""
+    from nougen_shards.context7 import fetch_docs
+    return fetch_docs(library_id=library_id, query=query, tokens=tokens, language=language)
+
+
+@node_mcp.tool()
+@_offloaded
+def context7_usage() -> dict:
+    """Read monthly Context7 usage for this key (plan, requests used, reset date). Free."""
+    from nougen_shards.context7 import usage
+    return usage()
+
+
 @node_mcp.tool()
 @_offloaded
 def morph_gate(ref: str, claims: List[str]) -> dict:

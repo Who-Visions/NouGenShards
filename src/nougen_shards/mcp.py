@@ -1529,6 +1529,73 @@ def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
     return json.dumps(res, default=str, indent=2)
 
 
+# --- Context7 Current-Library Docs ---
+# MCP SURFACE DECISION (2026-11-22): these native fleet tools ARE the
+# Context7 MCP surface. The official remote Context7 MCP server
+# (https://mcp.context7.com/mcp) is NOT wired as a lane: native tools keep
+# one server, one Keymaker auth path (CONTEXT7_API_KEY via
+# keymaker.get_secret at call time) and one tenant-policy label, matching
+# the arxiv_* / nougentube_* pattern. See nougen_shards/context7.py.
+# The Keymaker entry CONTEXT7_API_KEY does not exist yet (2026-11-22);
+# until the operator adds it, every tool below degrades to a clear
+# missing-key error naming the key and the Keymaker — no crash, no leak.
+
+@mcp.tool()
+def context7_search(query: str, libraries: Optional[List[str]] = None) -> str:
+    """
+    Search current library docs by question; Context7 picks the libraries
+    and returns ranked snippets. No library resolve step needed.
+
+    Args:
+        query: The question to answer from current docs (e.g. 'How do I cache in Next.js 15?').
+        libraries: Optional library name/ID hints (max 4, e.g. ['next.js']).
+    """
+    from .context7 import search_docs
+    return json.dumps(search_docs(query=query, libraries=libraries), default=str, indent=2)
+
+
+@mcp.tool()
+def context7_resolve(library_name: str, query: str = "") -> str:
+    """
+    Resolve a library name to its Context7 library ID before fetching docs
+    for a specific library.
+
+    Args:
+        library_name: Library name (e.g. 'next.js').
+        query: Optional topic to rank the matches by.
+    """
+    from .context7 import resolve_library
+    return json.dumps(resolve_library(library_name=library_name, query=query), default=str, indent=2)
+
+
+@mcp.tool()
+def context7_docs(library_id: str, query: str, tokens: int = 5000,
+                  language: str = "") -> str:
+    """
+    Fetch docs snippets for one Context7 library ID.
+
+    Args:
+        library_id: Context7 library ID (e.g. '/vercel/next.js'; pin a version
+            as '/owner/repo/<version>' or '/owner/repo@<version>').
+        query: Topic to fetch docs for (e.g. 'caching').
+        tokens: Snippet budget (default 5000, ceiling 10000).
+        language: Optional language to rank examples by (e.g. 'typescript').
+    """
+    from .context7 import fetch_docs
+    return json.dumps(fetch_docs(library_id=library_id, query=query, tokens=tokens,
+                                 language=language), default=str, indent=2)
+
+
+@mcp.tool()
+def context7_usage() -> str:
+    """
+    Read monthly Context7 usage for this key (plan, requests used, reset date).
+    Free; does not count as a request.
+    """
+    from .context7 import usage
+    return json.dumps(usage(), default=str, indent=2)
+
+
 @mcp.tool()
 def morph_gate(ref: str, claims: List[str]) -> str:
     """
