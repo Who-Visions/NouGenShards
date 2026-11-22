@@ -75,6 +75,9 @@ OWNER_ONLY: frozenset[str] = frozenset({
     "arxiv_research", "arxiv_capabilities", "arxiv_radar", "arxiv_lab_watch", "arxiv_paper",
     # Context7 docs lookup runs on the owner's Keymaker key (CONTEXT7_API_KEY)
     "context7_search", "context7_resolve", "context7_docs", "context7_usage",
+    # Email templates are owner IP (house copy/voice) and render the
+    # owner's invite; tenants never render owner-branded mail.
+    "email_template_list", "email_template_render",
     "semantic_context_assemble", "context_task_checkpoint", "context_task_current",
     "context_feedback", "context_correct", "context_session_assemble",
     # host toolchains (lean, z3, benchmarks, RSI, control plane)

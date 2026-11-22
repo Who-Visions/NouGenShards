@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sqlite3
 from nougen_shards import agents
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 # Fallback wrapper for mcp dependency if missing
 class MockFastMCP:
@@ -1594,6 +1594,55 @@ def context7_usage() -> str:
     """
     from .context7 import usage
     return json.dumps(usage(), default=str, indent=2)
+
+
+# --- Email Templates (render-only) ---
+# DESIGN DECISION (2026-11-22): these tools RENDER email templates and
+# nothing else. There is no send tool on this surface, by design: sending
+# stays with the mail worker (Gmail / Muse Mail), which sends under
+# per-action approval from the operator. A fleet tool that could send
+# mail would bypass that approval and the CAN-SPAM checks that live at
+# send time ({{business_address}} replaced with a real postal address,
+# List-Unsubscribe headers, plain-text multipart). Rendering is safe to
+# expose; sending is not. See nougen_shards/email_templates.py and
+# docs/email-templates.md. Templates ship as data under
+# src/nougen_shards/email_templates/ (byte-identical copies of the
+# verified guest-pack templates); the canonical source is that
+# templates dir, and the copies must stay in sync.
+
+@mcp.tool()
+def email_template_list() -> str:
+    """
+    List the email templates shipped with the node and the variables
+    each one requires. Read-only; no rendering, no sending.
+
+    Returns JSON: {"status": "ok", "templates": [{"name", "parts",
+    "variables", "txt_missing"}]}.
+    """
+    from .email_templates import list_templates
+    return json.dumps(list_templates(), default=str, indent=2)
+
+
+@mcp.tool()
+def email_template_render(name: str, variables: Dict[str, str]) -> str:
+    """
+    Render one email template with the given variables, returning the
+    HTML and plain-text parts. Render-only: the result is text to hand
+    to the mail worker, never a sent email.
+
+    Args:
+        name: Template name (e.g. 'invite-tester').
+        variables: Variable names to string values. Every variable the
+            template uses is required; a missing variable is an error,
+            as is any {{placeholder}} left in the output. Pass
+            business_address as the literal string '{{business_address}}'
+            to preserve the address slot for verification — it is never
+            defaulted to a real address, and no send may happen until a
+            real postal address replaces it at send time.
+    """
+    from .email_templates import render_template
+    return json.dumps(render_template(name=name, variables=variables),
+                      default=str, indent=2)
 
 
 @mcp.tool()

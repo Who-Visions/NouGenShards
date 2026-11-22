@@ -1,0 +1,102 @@
+To: {{recipient_name}} <{{recipient_email}}>
+Subject: {{subject}}
+Preheader: {{preheader}}
+
+NOUGEN · HOTEL VISIONS
+Hotel Visions
+The house where NouGen's agents live, learn, and work.
+
+Welcome to the house.
+----------------------
+
+You're one of the testers now. The Nougen Tester folder is open to you
+as an editor — the prompts, the guides, the walkthroughs, and everything
+the house has learned so far. Your three agents — Claude, Antigravity,
+and Muse — can all learn from the same folder.
+
+Open my Tester folder:
+{{tester_folder_url}}
+
+You're an editor on the folder — everything inside is yours to read,
+use, and add to.
+
+Your first steps
+----------------
+Five small steps, in order. The first one takes about a minute.
+
+1. Open the Tester folder. That's where everything lives — the
+   channels, the trust docs, the Guest Pack.
+
+2. Sign in on the roll call sheet — the Sign-in (Private) tab, with
+   your name, email, phone, and lane.
+   Sign in on my roll call sheet:
+   {{roll_call_url}}
+
+3. Read the trust docs at the Tester root — FOR_NEW_AGENTS.md,
+   SECURITY.md, and README-Hotel-Visions-v2. They're the house rules.
+
+4. Read Guest Pack 01 — How the House Works. It's the short version
+   of everything below.
+
+5. Read Guest Pack 02 — The Keymaker — before touching any key.
+   The Keymaker guards every credential in the house. Knowing how it
+   works, and how to use it correctly, comes before everything else.
+
+The Guest Pack
+--------------
+Written for new agents arriving at the house — the last two days of
+learning, put down so the next team doesn't have to start from zero.
+
+01 — How the House Works
+   The lanes, the front desk, and how the house runs day to day.
+   Read Guest Pack 01:
+   {{guest_pack_01_url}}
+
+02 — The Keymaker (Atibon)
+   The keeper of the keys — what it is, and how to use it correctly.
+   Read Guest Pack 02:
+   {{guest_pack_02_url}}
+
+03 — Shards, SheetShards, Relays, and Memory
+   How the house remembers — and how a new agent reads and writes it.
+   Read Guest Pack 03:
+   {{guest_pack_03_url}}
+
+04 — The Research Tools
+   Exa, arXiv, Context7, and SERP — how to pull fresh research.
+   Read Guest Pack 04:
+   {{guest_pack_04_url}}
+
+05 — Fresh Findings, 2026-11-22
+   What the newest research turned up, pulled today for the team.
+   Read Guest Pack 05:
+   {{guest_pack_05_url}}
+
+The house already runs: {{sender_name}} keeps the front desk, with Unk,
+Claude, WhoArt, Duet, Nou, and Jeannie working the lanes. You're joining
+a working house, not an empty one.
+
+Questions?
+----------
+Just reply to this email — {{sender_name}} reads every reply. Or write to
+{{sender_email}}. I'm at the front desk if you need anything.
+
+Sign in on my roll call sheet:
+{{roll_call_url}}
+
+---
+Hotel Visions · NouGen
+
+Who Visions LLC — questions? Reply to this email or write to
+{{sender_email}}.
+{{business_address}}
+
+You're receiving this because Dave invited you to test NouGen as part
+of Hotel Visions. Your work stays yours; we never share your email or
+your work with anyone outside the Tester circle.
+
+If you'd rather not hear from us, reply with the word "unsubscribe"
+and we'll take you off the list. No login needed.
+
+© 2026 Who Visions LLC · {{sender_name}}, superintendent of Hotel Visions,
+for Dave
