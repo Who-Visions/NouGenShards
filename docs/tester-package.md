@@ -103,8 +103,11 @@ is installed. Provider code found elsewhere, to move behind Open:
 3. Msg, Relay, Tracker, Design, Code, Claude: replace printed identity with the
    mesh, add manifests.
 4. fleet-mcp: reads node lists and front-door hosts from config, not code.
-5. Bundle: one setup script that clones the ten repos side by side, runs
-   `nougen-mesh setup`, and a war-game that runs as a clean identity and fails
-   on any owner name in output.
+5. Bundle: `nougen mesh install` clones the ten repos side by side and
+   `nougen mesh setup` writes the tester's own identity. The war-game,
+   `python tools/tester_wargame.py --repos <dir>`, runs the package on a scratch
+   home as a made-up identity: setup, whoami, doctor, tools, a read-only call
+   in each repo that lists one, a remote call that must be refused with no
+   ingress, and status. It fails on any owner name in the output.
 
 No merges, deploys or node restarts without the GM's yes.
