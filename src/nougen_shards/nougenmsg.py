@@ -1053,7 +1053,10 @@ class AgentPinger:
 
     @staticmethod
     def _pick_file() -> Path:
-        return Path(os.environ.get("NOUGEN_HOME") or (Path.home() / ".nougen")) / "ollama_default_picks.json"
+        # Always the user's ~/.nougen, never NOUGEN_HOME: on some nodes that
+        # points at a repo checkout, and this file must not land in a tree.
+        override = os.environ.get("NOUGEN_OLLAMA_PICKS_FILE")
+        return Path(override) if override else Path.home() / ".nougen" / "ollama_default_picks.json"
 
     @staticmethod
     def _last_good_pick(key: str) -> Optional[str]:

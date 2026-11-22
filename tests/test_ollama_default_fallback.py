@@ -7,7 +7,7 @@ from nougen_shards.nougenmsg import AgentPinger
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    monkeypatch.setenv("NOUGEN_HOME", str(tmp_path))
+    monkeypatch.setenv("NOUGEN_OLLAMA_PICKS_FILE", str(tmp_path / "picks.json"))
     monkeypatch.delenv("NOUGEN_LOCAL_E2B_MODEL", raising=False)
     monkeypatch.setattr(nougenmsg, "get_current_node", lambda: "thisnode")
     monkeypatch.setattr(AgentPinger, "_PICK_CACHE", {})
