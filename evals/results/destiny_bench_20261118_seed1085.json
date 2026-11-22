@@ -1,0 +1,96 @@
+{
+  "schema": "destiny-bench/1",
+  "issue": 1085,
+  "seed": 1085,
+  "started_utc": "2026-11-18T16:33:01Z",
+  "lanes": {
+    "primary": "gemma4:e2b-qat",
+    "alternate": "gemma2:2b",
+    "endpoint": "http://localhost:11434/v1/chat/completions"
+  },
+  "world": {
+    "facts": 100,
+    "distractors": 75,
+    "tasks": 100
+  },
+  "claim_limits": "Measures one reconciler loop on small local models. Proves nothing about AGI or RSI.",
+  "arms": [
+    {
+      "arm": "prompt_only",
+      "tasks": 100,
+      "done": 100,
+      "success_rate": 1.0,
+      "states": {
+        "done": 100
+      },
+      "first_attempt_passes": 100,
+      "passes_by_strategy": {
+        "baseline": 100
+      },
+      "attempt_outcomes": {
+        "crashed": 10,
+        "passed": 100,
+        "route_timeout": 11
+      },
+      "tokens_total": 172875,
+      "prompt_tokens": 161010,
+      "lane_calls": 100,
+      "lane_errors": 0,
+      "tokens_per_success": 1729,
+      "faults_injected": {
+        "route_timeout": 11,
+        "crash": 10,
+        "crash_ticks": 10
+      },
+      "recovery_rate": 1.0,
+      "faulted_tasks": 21,
+      "faulted_done": 21,
+      "unfaulted_success_rate": 1.0,
+      "faulted_tasks_lost": 0,
+      "rollback_violations": 0,
+      "violation_samples": [],
+      "destiny_final_status": "fulfilled",
+      "ticks": 12,
+      "wall_s": 305.3
+    },
+    {
+      "arm": "shards_first",
+      "tasks": 100,
+      "done": 100,
+      "success_rate": 1.0,
+      "states": {
+        "done": 100
+      },
+      "first_attempt_passes": 100,
+      "passes_by_strategy": {
+        "baseline": 100
+      },
+      "attempt_outcomes": {
+        "crashed": 10,
+        "passed": 100,
+        "route_timeout": 11
+      },
+      "tokens_total": 33725,
+      "prompt_tokens": 15314,
+      "lane_calls": 100,
+      "lane_errors": 0,
+      "tokens_per_success": 337,
+      "faults_injected": {
+        "route_timeout": 11,
+        "crash": 10,
+        "crash_ticks": 10
+      },
+      "recovery_rate": 1.0,
+      "faulted_tasks": 21,
+      "faulted_done": 21,
+      "unfaulted_success_rate": 1.0,
+      "faulted_tasks_lost": 0,
+      "rollback_violations": 0,
+      "violation_samples": [],
+      "destiny_final_status": "fulfilled",
+      "ticks": 12,
+      "wall_s": 425.7
+    }
+  ],
+  "finished_utc": "2026-11-18T16:45:34Z"
+}

@@ -310,19 +310,20 @@ def main(argv=None) -> int:
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--arms", default="no_memory,prompt_only,shards_first")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--seed", type=int, default=1085, help="world seed; run several for a multi-seed result")
     a = ap.parse_args(argv)
-    facts, tasks = build_world()
+    facts, tasks = build_world(a.seed)
     tasks = tasks[: a.n]
     out_path = Path(a.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    report = {"schema": "destiny-bench/1", "issue": 1085, "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    report = {"schema": "destiny-bench/1", "issue": 1085, "seed": a.seed, "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "lanes": {"primary": PRIMARY, "alternate": ALTERNATE, "endpoint": OLLAMA},
               "world": {"facts": len(facts), "distractors": len(facts) - len(NOUNS), "tasks": len(tasks)},
               "claim_limits": "Measures one reconciler loop on small local models. Proves nothing about AGI or RSI.",
               "arms": []}
     for arm in a.arms.split(","):
         # each arm in its own process: the vault and destiny paths resolve at import time
-        sub = subprocess.run([sys.executable, __file__, "--_arm", arm, "--n", str(a.n)],
+        sub = subprocess.run([sys.executable, __file__, "--_arm", arm, "--n", str(a.n), "--seed", str(a.seed)],
                              capture_output=True, text=True, cwd=ROOT,
                              env={**os.environ, "PYTHONPATH": str(ROOT / "src"),
                                   "NOUGEN_VAULT_DIR": tempfile.mkdtemp(prefix=f"bench_vault_{arm}_")})
@@ -343,7 +344,8 @@ if __name__ == "__main__":
         arm = sys.argv[i + 1]
         n = int(sys.argv[sys.argv.index("--n") + 1])
         vault = os.environ.get("NOUGEN_VAULT_DIR")
-        facts, tasks = build_world()
+        seed = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 1085
+        facts, tasks = build_world(seed)
         try:
             res = run_arm(arm, facts, tasks[:n], log=lambda m: print(m, file=sys.stderr, flush=True))
         finally:

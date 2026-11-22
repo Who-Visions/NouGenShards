@@ -366,7 +366,20 @@ def _resolve_vault_dir() -> Path:
     explicit = os.environ.get("NOUGEN_VAULT_DIR")
     if explicit:
         VAULT_SOURCE = "NOUGEN_VAULT_DIR"
-        return Path(explicit).expanduser().resolve()
+        chosen = Path(explicit).expanduser().resolve()
+        # A node folder may point at the vault a local install already filled,
+        # so the node and the local tools use one vault (vault_unify.py).
+        from . import vault_unify as _vault_unify  # pylint: disable=import-outside-toplevel
+        # One hop only, for the whole process. When the package init has
+        # already followed a pointer, the variable names the target; following
+        # a pointer found there too would send core to a third folder while
+        # every reader of the variable stays on the second.
+        already_followed = bool(os.environ.get(_vault_unify.ENV_CONFIGURED, "").strip())
+        pointed = None if already_followed else _vault_unify.read_pointer(chosen)
+        if pointed is not None:
+            VAULT_SOURCE = "NOUGEN_VAULT_DIR -> VAULT_POINTER"
+            return pointed
+        return chosen
 
     # Opt-in only, and anchored to the package rather than to CWD, so the
     # answer does not change with the directory a process happens to start in.
@@ -600,6 +613,35 @@ def sqlite_timeout_s(default: float | None = None) -> float:
 
 # Persistent read-only connection pool keyed by thread ID and DB index/path
 _RO_POOL_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_LOCK = _threading.Lock()
+_SQLITE_HEAP_LIMIT_SET = False
+
+
+def _apply_sqlite_heap_limit(conn: sqlite3.Connection) -> None:
+    """Cap SQLite's process-wide heap once (NOUGEN_SQLITE_SOFT_HEAP_MB, default 512).
+
+    SQLite page caches, sorters and FTS buffers are native memory that Python's
+    allocator and tracemalloc never see. On the WhoArt node (2026-11-18) 240
+    recalls took commit from 2.2 to 7.4 GB (peak 8.7 GB) with flat Python object
+    counts; with this limit the same run held flat near 2.8 GB. soft_heap_limit
+    is process-wide: at the limit SQLite recycles cache pages instead of
+    allocating more. 0 disables it.
+    """
+    global _SQLITE_HEAP_LIMIT_SET  # pylint: disable=global-statement
+    if _SQLITE_HEAP_LIMIT_SET:
+        return
+    with _SQLITE_HEAP_LIMIT_LOCK:
+        if _SQLITE_HEAP_LIMIT_SET:
+            return
+        try:
+            mb = int(os.environ.get("NOUGEN_SQLITE_SOFT_HEAP_MB", "512"))
+        except ValueError:
+            mb = 512
+        try:
+            conn.execute(f"PRAGMA soft_heap_limit={max(0, mb) * 1024 * 1024};")
+        except sqlite3.DatabaseError:
+            pass
+        _SQLITE_HEAP_LIMIT_SET = True
 _RO_CONN_POOL: dict[tuple[int, str], sqlite3.Connection] = {}
 
 
@@ -637,6 +679,7 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
     conn.execute("PRAGMA query_only=ON;")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
 
     with _RO_POOL_LOCK:
         # Connections are keyed by thread id, but a thread-per-request server
@@ -731,6 +774,7 @@ def get_connection(index: int):
     cache_kb = get_scaled_sqlite_cache_size(64000)
     conn.execute(f"PRAGMA cache_size={cache_kb};")
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_heap_limit(conn)
     return conn
 
 
@@ -1581,6 +1625,15 @@ class CaptureResult(dict):
         return self.get("error")
 
 
+def _capture_machine() -> str:
+    """Machine stamped on a shard: the resolved node alias, not a raw hostname."""
+    try:
+        from .machine import sender_identity
+        return sender_identity()["node"]
+    except Exception:  # identity must never block a capture
+        return socket.gethostname()
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -1812,7 +1865,7 @@ def capture(event_type: str, title: str, content: str,
                     INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified, machine)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
-                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, socket.gethostname()))
+                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, _capture_machine()))
                 conn.commit()
 
                 # Log CREATED event
@@ -3640,7 +3693,11 @@ def _go_vector_rows(q_vec, limit: int, domain_key, excluded_types):
         answered = set(out.get("dbs") or ()) | set(out.get("skipped_dim_mismatch") or ())
         rows: dict = {}
         for r in out.get("rows") or ():
-            rows.setdefault(int(r["db"]), []).append((float(r["final_score"]), int(r["id"])))
+            # "sem" (raw cosine) is sent by fronts built after the recall
+            # evidence floor; an older front omits it and the row stays unjudged.
+            sem = r.get("sem")
+            rows.setdefault(int(r["db"]), []).append(
+                (float(r["final_score"]), int(r["id"]), None if sem is None else float(sem)))
         return {i: paths[i] for i in answered if i in paths}, rows
     except Exception as exc:  # pylint: disable=broad-except
         global _GO_LANE_WARNED  # pylint: disable=global-statement
@@ -3700,7 +3757,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             # file under the same index); anything else is scored here.
             delegated = go_lane is not None and go_lane[0].get(i) == str(get_db_path(i))
             cache = None if delegated else _vector_cache_entry(i, conn)
-            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id)
+            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id, sem|None)
             if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
                 # A 384-d query against a 768-d DB (or the reverse) is a provider
                 # switch without a backfill. Say so once per DB rather than
@@ -3741,7 +3798,8 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                         continue
                     decayed_utility = float(cache["util"][idx]) * _temporal_decay(cache["ts"][idx], query_now)
                     scored.append((float(sem_scores[idx]) * WEIGHT_LIKELIHOOD
-                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx])))
+                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx]),
+                                   float(sem_scores[idx])))
                 for sid, utility, ts, dom, etype, emb in cache["legacy"]:
                     if domain_key not in (None, "*") and dom != domain_key:
                         continue
@@ -3754,7 +3812,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     except Exception:  # pylint: disable=broad-except
                         sem = 0.0
                     decayed_utility = utility * _temporal_decay(ts, query_now)
-                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid))
+                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid, sem))
             elif cache and cache["dim"] not in (None, qdim):
                 logger.warning(
                     "vector lane skipped on DB %s: cached embedding dim %s != query dim %s "
@@ -3764,15 +3822,20 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             scored.sort(key=lambda t: (-t[0], t[1]))
             top = scored[:limit]
             placeholders = ",".join("?" for _ in top)
-            by_id = {sid: score for score, sid in top}
+            by_id = {t[1]: t[0] for t in top}
+            # Go-lane tuples are (final_score, id) with no cosine: None = unknown.
+            sim_by_id = {t[1]: (t[2] if len(t) > 2 else None) for t in top}
             cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                 FROM shards WHERE id IN ({placeholders})
-            """, [sid for _, sid in top])
+            """, [t[1] for t in top])
             for row in cursor:
                 item = hydrate(dict(row))
                 item["_db_index"] = i
                 item["final_score"] = by_id.get(item["id"], 0.0)
+                # Raw cosine, kept so recall can apply an ABSOLUTE floor after
+                # fusion (RRF and min-max normalisation are both relative).
+                item["_vec_sim"] = sim_by_id.get(item["id"])
                 db_rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
             _note_retrieval_db_failure(i, exc)
@@ -4042,6 +4105,93 @@ def _title_lane_enabled() -> bool:
     return os.environ.get("NOUGEN_TITLE_LANE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+#: Default per-lane RRF weights. Uniform weights are what weighted-RRF work
+#: (arXiv 2610.24341, 2610.30612) shows losing to tuned ones; values here
+#: must come from tools/recall_eval.py on a held-out split, never a guess.
+RRF_LANES = ("keyword", "vector", "exact", "title", "atoms", "graph")
+_RRF_DEFAULT_WEIGHTS = {lane: 1.0 for lane in RRF_LANES}
+_RRF_DEFAULT_K = 60
+
+
+def _rrf_lane_weights() -> dict:
+    """Per-lane fusion weights; NOUGEN_RRF_WEIGHTS="vector=1.5,title=2" overrides.
+
+    Malformed or unknown entries are ignored, so a bad env value falls back to
+    the defaults instead of breaking recall."""
+    weights = dict(_RRF_DEFAULT_WEIGHTS)
+    for part in os.environ.get("NOUGEN_RRF_WEIGHTS", "").split(","):
+        name, sep, raw = part.partition("=")
+        name = name.strip().lower()
+        if not sep or name not in weights:
+            continue
+        try:
+            val = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(val) and val >= 0:
+            weights[name] = val
+    return weights
+
+
+# Measured on a production vault (2026-11-21): real vector-only matches 0.58-0.84,
+# unrelated-topic neighbours 0.44-0.50, pure nonsense still reaches 0.55-0.59
+# on a couple of noise-attractor shards. So vector-only hits need 0.55 when the
+# query has lexical support elsewhere, and 0.65 when it has none at all.
+_RECALL_MIN_SIM_DEFAULT = 0.55
+_RECALL_MIN_SIM_ALONE_DEFAULT = 0.65
+
+
+def _env_floor(name: str, default: float) -> Optional[float]:
+    """Float floor from env; "off"/"none"/"" disables it (returns None)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if raw.strip().lower() in ("", "off", "none", "disabled"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+
+
+def _recall_min_sim() -> Optional[float]:
+    """Absolute vector-similarity floor for recall hits (NOUGEN_RECALL_MIN_SIM).
+
+    "off"/"none"/"" disables the floor (legacy: always return the top hit)."""
+    return _env_floor("NOUGEN_RECALL_MIN_SIM", _RECALL_MIN_SIM_DEFAULT)
+
+
+def _recall_min_sim_alone(base: float) -> float:
+    """Stricter floor when no candidate has lexical support (NOUGEN_RECALL_MIN_SIM_ALONE)."""
+    v = _env_floor("NOUGEN_RECALL_MIN_SIM_ALONE", _RECALL_MIN_SIM_ALONE_DEFAULT)
+    return base if v is None else max(v, base)
+
+
+def _has_match_evidence(item: dict, min_sim: float, query_has_lexical: bool) -> bool:
+    """True when a recall hit has an absolute signal, not just a relative rank."""
+    if item.get("_lex_hit") or item.get("_lex_partial") or item.get("_title_exact") or item.get("_token_exact"):
+        return True
+    if "_vec_sim" not in item:
+        # Never matched by the vector lane and no lexical hit: no evidence.
+        return False
+    sim = item["_vec_sim"]
+    if sim is None:
+        # Vector row with no cosine (a Go front older than the "sem" field):
+        # unjudgeable. Keep it only when the query has an all-terms lexical
+        # match, so pure nonsense cannot ride in on an unscored row.
+        return query_has_lexical
+    return sim >= min_sim
+
+
+def _rrf_k() -> int:
+    try:
+        k = int(os.environ.get("NOUGEN_RRF_K", _RRF_DEFAULT_K))
+    except ValueError:
+        return _RRF_DEFAULT_K
+    return k if k > 0 else _RRF_DEFAULT_K
+
+
 def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_research: bool) -> list:
     """Exact-title lane. Known-item lookups (a title from a handle, a relay leg, a
     [HELD] line) lost to OR-retry filler and the recency prior: 1 in 5 eligible
@@ -4269,33 +4419,53 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
-            
+        # Absolute-match evidence survives fusion (RRF fills missing keys):
+        # a lexical lane hit is a real match; vector rows carry _vec_sim.
+        # An all-terms match is full evidence (_lex_hit). A ranked-OR retry hit
+        # really contains a query token, and a fuzzy hit shares character
+        # trigrams with it, so both keep themselves (_lex_partial), but neither
+        # vouches for vector-only neighbours: those then need the stricter
+        # NOUGEN_RECALL_MIN_SIM_ALONE floor.
+        for it in keyword_results:
+            partial = it.get("_or_retry") or it.get("_fuzzy")
+            it["_lex_partial" if partial else "_lex_hit"] = True
+
         lanes = [keyword_results, vector_results]
         exact_token_results = [item for item in keyword_results
                                if _has_exact_query_tokens(query, item)]
-        lane_weights = [1.0, 1.0]
+        w = _rrf_lane_weights()
+        lane_weights = [w["keyword"], w["vector"]]
         if exact_token_results:
             # Literal all-token hits get an independent RRF vote. This prevents
             # semantic neighbours from displacing exact IDs while preserving
             # positional fusion within the keyword and vector lanes.
             lanes.append(exact_token_results)
-            lane_weights.append(1.0)
+            lane_weights.append(w["exact"])
         if _title_lane_enabled():
-            lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
-            lane_weights.append(1.0)
+            title_results = _title_retrieve(query, candidate_limit, active_domain, include_research)
+            for it in title_results:
+                it["_lex_hit"] = True
+            lanes.append(title_results)
+            lane_weights.append(w["title"])
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
             # distillation sidecar exists; before that this is a cheap stat().
             try:
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
-                    lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
-                    lane_weights.append(1.0)
+                    # The atoms lane is FTS over distilled facts: a real token
+                    # match, so partial evidence. The entity-graph lane matches
+                    # loosely and is not evidence; its rows must clear the floor.
+                    atoms = distill.atoms_lane(query, candidate_limit, include_research, active_domain)
+                    for it in atoms or []:
+                        it["_lex_partial"] = True
+                    lanes.append(atoms)
+                    lane_weights.append(w["atoms"])
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
-                    lane_weights.append(1.0)
+                    lane_weights.append(w["graph"])
             except Exception as exc:  # a derived index must never break recall
                 logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
-        return reciprocal_rank_fusion(lanes, k=60, weights=lane_weights)
+        return reciprocal_rank_fusion(lanes, k=_rrf_k(), weights=lane_weights)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
@@ -4403,14 +4573,30 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
-        if len(scored_results) > limit:
-            cutoff = len(scored_results) // 2
-            surviving = scored_results[:max(limit, cutoff)]
+        # Absolute relevance floor. Relevance above is min-max normalised inside
+        # the candidate set, so the best of an all-noise set always scored 1.0 and
+        # a gibberish query still returned the newest dense shards. Keep a hit only
+        # with real evidence: a lexical lane match, an exact title/token, or a
+        # vector cosine >= NOUGEN_RECALL_MIN_SIM. No evidence -> empty result.
+        # Applied BEFORE the bottom-half truncation: rejected noise must not use up
+        # the slots a genuine match needs (limit=1 with four dense weak rows ahead
+        # of a 0.90 cosine match returned [] otherwise).
+        min_sim = _recall_min_sim()
+        candidates = scored_results
+        if min_sim is not None:
+            lexical = any(it.get("_lex_hit") or it.get("_title_exact") or it.get("_token_exact")
+                          for it in scored_results)
+            floor = min_sim if lexical else _recall_min_sim_alone(min_sim)
+            candidates = [it for it in scored_results if _has_match_evidence(it, floor, lexical)]
+        if len(candidates) > limit:
+            cutoff = len(candidates) // 2
+            surviving = candidates[:max(limit, cutoff)]
         else:
-            surviving = scored_results
+            surviving = candidates
         # Filter anything below dynamic threshold (e.g. 0.01)
         surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
-        if not surviving and scored_results:
+        if min_sim is None and not surviving:
+            # Floor disabled: legacy behaviour, never return empty.
             surviving = [scored_results[0]]
     else:
         surviving = []
@@ -5073,9 +5259,15 @@ class SearchAdmission:
             self._local.stack = []
         self._local.stack.append(token)
 
-    def leave(self) -> None:
+    def pop_token(self) -> Optional[int]:
+        """Pop the current thread's admission token so another thread may release it."""
         stack = getattr(self._local, "stack", None)
-        token = stack.pop() if stack else None
+        return stack.pop() if stack else None
+
+    def leave(self, token: Optional[int] = None) -> None:
+        if token is None:
+            stack = getattr(self._local, "stack", None)
+            token = stack.pop() if stack else None
         with self._cond:
             if token is None or token not in self._start_times:
                 logger.warning("SearchAdmission.leave() called without matching enter()")

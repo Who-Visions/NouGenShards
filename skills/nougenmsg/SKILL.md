@@ -29,6 +29,17 @@ NouGenMsg operates with dynamic multi-tier transport resolution:
 
 ---
 
+## Claim before you act
+
+One broadcast reaches every live session, and without a claim most of them start the same work (PR 1148 was fixed twice, 46 s apart, on 2026-11-19). So before you act on a broadcast, an inbound ask, a relay leg or any shared work item, claim it:
+
+- `nougenmsg_claim(q_id=...)` for an ask, or `nougenmsg_claim(msg_id=...)` for a broadcast (the `[msg m-...]` footer).
+- `fleet_claim(key=...)` for anything else, e.g. `pr:<repo>#<n>`, `task:<slug>`, `leg:<id>`. `relay_ack` already claims `leg:<id>` and is first-ack-wins.
+- On `claimed:true`, do the work, then `fleet_release` when done. Claims expire after `ttl_s` (default 30 min); claim again to renew.
+- On `claimed:false`, **do not act**. At most reply "owned by X" once, or stay silent. Only the owner of an ask may answer it with `in_reply_to`.
+
+Until fleet-mcp PR 96 (FleetClaims Durable Object) is deployed, these tools answer "not bound". In the meantime, post a `CLAIM <item>` line on the bus before you start. The first CLAIM line wins, and everyone else treats the item as owned.
+
 ## 2. Universal Addressing & Dispatch Syntax
 
 Messages are addressed using universal URI-style destination tokens:

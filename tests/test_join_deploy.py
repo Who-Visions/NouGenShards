@@ -3,6 +3,12 @@ import importlib.util
 from pathlib import Path
 
 
+# A well-formed KV namespace id (32 hex characters) that is plainly not a
+# secret. Built from a repeated pair so a secret scanner does not read the
+# literal as a key; a namespace id is an identifier, not a credential.
+FAKE_KV_ID = "ab" * 16
+
+
 def _load_deploy():
     path = Path(__file__).resolve().parents[1] / "workers" / "join" / "deploy.py"
     spec = importlib.util.spec_from_file_location("join_deploy", path)
@@ -76,3 +82,32 @@ def test_newest_reads_secret_key_column_and_falls_back_when_scan_empty(monkeypat
     monkeypatch.setattr(deploy.keymaker, "resolve_secrets_store", lambda: {"active": empty_db, "live": []})
     monkeypatch.setattr(deploy.keymaker, "get_secret", lambda name: "fallback-found" if name == deploy.DEFAULT_JOIN_TOKEN_NAME else None)
     assert deploy.newest("CLOUDFLARE_JOIN_TOKEN_") == "fallback-found"
+
+
+def test_relay_bindings_are_off_unless_both_values_are_given():
+    deploy = _load_deploy()
+    assert deploy.relay_bindings({}) == []
+    assert deploy.relay_bindings({"NOUGEN_JOIN_RELAY_URL": "  ", "NOUGEN_JOIN_RELAY_AUTH_KV_ID": ""}) == []
+    got = deploy.relay_bindings({"NOUGEN_JOIN_RELAY_URL": "wss://relay.example.test/_relay/connect",
+                                 "NOUGEN_JOIN_RELAY_AUTH_KV_ID": FAKE_KV_ID})
+    assert got == [
+        {"type": "kv_namespace", "name": "RELAY_AUTH", "namespace_id": FAKE_KV_ID},
+        {"type": "plain_text", "name": "RELAY_URL", "text": "wss://relay.example.test/_relay/connect"},
+    ]
+
+
+def test_a_half_or_badly_configured_relay_stops_the_deploy():
+    import pytest
+    deploy = _load_deploy()
+    good_url, good_id = "wss://relay.example.test/_relay/connect", FAKE_KV_ID
+    for env in (
+        {"NOUGEN_JOIN_RELAY_URL": good_url},
+        {"NOUGEN_JOIN_RELAY_AUTH_KV_ID": good_id},
+        {"NOUGEN_JOIN_RELAY_URL": "ws://relay.example.test/x", "NOUGEN_JOIN_RELAY_AUTH_KV_ID": good_id},
+        {"NOUGEN_JOIN_RELAY_URL": "http://relay.example.test/x", "NOUGEN_JOIN_RELAY_AUTH_KV_ID": good_id},
+        {"NOUGEN_JOIN_RELAY_URL": "wss://relay.example.test/a b", "NOUGEN_JOIN_RELAY_AUTH_KV_ID": good_id},
+        {"NOUGEN_JOIN_RELAY_URL": good_url, "NOUGEN_JOIN_RELAY_AUTH_KV_ID": "not-an-id"},
+        {"NOUGEN_JOIN_RELAY_URL": good_url, "NOUGEN_JOIN_RELAY_AUTH_KV_ID": good_id.upper()},
+    ):
+        with pytest.raises(SystemExit, match="nothing deployed"):
+            deploy.relay_bindings(env)

@@ -48,6 +48,9 @@ type scoredRow struct {
 	DB         int     `json:"db"`
 	ID         int64   `json:"id"`
 	FinalScore float64 `json:"final_score"`
+	// Raw cosine behind FinalScore. Python's recall applies an absolute floor
+	// to it after fusion; without it, Go-lane rows could not be judged.
+	Sem float64 `json:"sem"`
 }
 
 type retrieveResult struct {
@@ -505,15 +508,17 @@ func scoreDB(m *dbMatrix, st *retrieveState, q []float32, limit int, domain stri
 	out := make([]scoredRow, 0, len(pool)+len(st.baseLegacy)+len(t.legacy))
 	for _, r := range pool {
 		out = append(out, scoredRow{m.db, r.id,
-			float64(r.sem)*weightLikelihood + float64(r.util)*temporalDecay(r.ts, now)*weightPrior})
+			float64(r.sem)*weightLikelihood + float64(r.util)*temporalDecay(r.ts, now)*weightPrior,
+			float64(r.sem)})
 	}
 	for _, rows := range [][]legacyRow{st.baseLegacy, t.legacy} {
 		for _, r := range rows {
 			if (filter && r.dom != domain) || excluded[r.typ] {
 				continue
 			}
+			sem := legacySem(r.emb, q)
 			out = append(out, scoredRow{m.db, r.id,
-				legacySem(r.emb, q)*weightLikelihood + r.util*temporalDecay(r.ts, now)*weightPrior})
+				sem*weightLikelihood + r.util*temporalDecay(r.ts, now)*weightPrior, sem})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
