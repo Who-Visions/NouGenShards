@@ -119,7 +119,8 @@ def test_fresh_tenant_node_works_with_zero_setup(tmp_path, monkeypatch):
     svc = WireService.from_env("roldo", str(db))
     code, info = svc.handle("GET", "/wire/info")
     assert code == 200 and info["receipt_scheme"] == "node" and info["signed_receipts"] is True
-    assert (db.parent / "wire-receipt.key").stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":  # NTFS has no POSIX mode bits
+        assert (db.parent / "wire-receipt.key").stat().st_mode & 0o777 == 0o600
     code, sent = svc.handle("POST", "/wire/send", {"from": "claude-code", "to": "claude-app", "text": "hello"})
     assert code == 200 and sent["receipts"][0]["scheme"] == "node"
     code, box = svc.handle("GET", "/wire/inbox?for=claude-app")
@@ -220,3 +221,26 @@ def test_guest_cannot_close_an_ask_it_was_never_sent(tmp_path):
                                                   "in_reply_to": ask["id"]}, caller=guest)
     assert code == 400 and "fix" in out
     assert svc.handle("GET", f"/wire/status/{ask['id']}")[1]["state"] == "accepted"
+
+
+def test_bad_token_on_an_open_dev_node_is_refused_not_relay(tmp_path):
+    book = access.GuestBook(str(tmp_path / "guests.json"))
+    expired = access.mint("tester-old", send_to=["tester"], days=1, path=str(tmp_path / "guests.json"))
+    later = time.time() + 3 * 86400  # the guest token is two days past its expiry
+    for tok in ("bogus", expired):
+        caller, why = access.authenticate(tok, "", book, now=later)
+        assert caller is None and why, (tok, why)
+    caller, _ = access.authenticate("", "", book)
+    assert caller is not None and caller.kind == "relay"  # no token at all on a dev node stays open
+
+
+def test_minting_a_lane_token_never_revokes_a_guest_of_the_same_name(tmp_path):
+    path = str(tmp_path / "guests.json")
+    guest = access.mint("same-name", send_to=["tester"], days=0, path=path)
+    with pytest.raises(ValueError):
+        access.mint("same-name", lane="codex", days=0, path=path)
+    caller, _ = access.authenticate(guest, "fleet", access.GuestBook(path))
+    assert caller is not None and caller.kind == "guest"
+    rotated = access.mint("same-name", send_to=["tester"], days=0, path=path)
+    assert access.authenticate(guest, "fleet", access.GuestBook(path))[0] is None
+    assert access.authenticate(rotated, "fleet", access.GuestBook(path))[0] is not None
