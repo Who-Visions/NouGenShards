@@ -23,7 +23,11 @@ from . import target_resolver
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-_SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
+# First match wins. Each coding agent sets its own id in its own process;
+# NOUGEN_SESSION / NOUGEN_SESSION_ID override for any other harness.
+_SESSION_VARS = ("NOUGEN_SESSION", "NOUGEN_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+                 "CODEX_SESSION_ID", "CODEX_THREAD_ID", "GEMINI_SESSION_ID",
+                 "ANTIGRAVITY_SESSION_ID")
 
 
 def resolve_session() -> str:
@@ -422,10 +426,16 @@ def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
     origin = origin or {}
     sender = str(origin.get("original_sender") or "").strip()
     machine = str(origin.get("machine") or "").strip()
+    if machine.lower() == "unknown":
+        # An unstamped machine is absence, not a name: never print it as a
+        # prefix ("unknown/claude-app/..."). The tag below says so instead.
+        machine = ""
     if sender and machine and machine not in sender:
         sender = f"{machine}/{sender}"
     label = sender or machine
     if label:
+        if not machine:
+            label = f"{label} (machine unstamped)"
         sid = str(origin.get("session_id") or "").strip()
         who = str(origin.get("session_title") or "").strip() or (sid[:8] if sid else "")
         if who:
