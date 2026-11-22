@@ -969,7 +969,8 @@ class AgentPinger:
                     data = json.loads(r.read().decode())
             else:
                 res = subprocess.run(
-                    ["ssh", "--", node, "curl -sS http://127.0.0.1:11434/api/tags"],
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                     "--", node, "curl -sS -m 5 http://127.0.0.1:11434/api/tags"],
                     creationflags=_NO_WINDOW,
                     capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=10,
@@ -1032,8 +1033,55 @@ class AgentPinger:
             if slot:
                 return slot
         machine = current if is_local else node
-        return (AgentPinger._discover_ollama_model(machine, is_local)
-                or AgentPinger._OLLAMA_FALLBACK)
+        key = str(machine or "local")
+        hit = AgentPinger._PICK_CACHE.get(key)
+        if hit and time.monotonic() - hit[1] < AgentPinger._PICK_TTL_S:
+            return hit[0]
+        picked = AgentPinger._discover_ollama_model(machine, is_local)
+        if picked:
+            AgentPinger._PICK_CACHE[key] = (picked, time.monotonic())
+            AgentPinger._remember_pick(key, picked)
+            return picked
+        # Discovery failed (ssh down, node asleep) or found no e2b tag. The
+        # last model this node actually served is still the right size for
+        # its card; the generic fallback is only for a node never reached.
+        return AgentPinger._last_good_pick(key) or AgentPinger._OLLAMA_FALLBACK
+
+    # A remote pick costs an ssh round trip; tags change rarely.
+    _PICK_TTL_S = 300.0
+    _PICK_CACHE: Dict[str, Tuple[str, float]] = {}
+
+    @staticmethod
+    def _pick_file() -> Path:
+        return Path(os.environ.get("NOUGEN_HOME") or (Path.home() / ".nougen")) / "ollama_default_picks.json"
+
+    @staticmethod
+    def _last_good_pick(key: str) -> Optional[str]:
+        try:
+            v = json.loads(AgentPinger._pick_file().read_text(encoding="utf-8")).get(key)
+            return v if isinstance(v, str) and v else None
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    @staticmethod
+    def _remember_pick(key: str, model: str) -> None:
+        try:
+            f = AgentPinger._pick_file()
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:  # pylint: disable=broad-except
+                data = {}
+            if data.get(key) == model:
+                return
+            data[key] = model
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_name(f"{f.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, f)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,

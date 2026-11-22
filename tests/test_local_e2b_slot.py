@@ -39,7 +39,9 @@ def test_chat_allows_configured_slot_model(monkeypatch):
     assert discover_chat_model(SLOT_MODEL) == SLOT_MODEL
 
 
-def test_nougenmsg_slot_applies_only_to_the_local_node(monkeypatch):
+def test_nougenmsg_slot_applies_only_to_the_local_node(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_HOME", str(tmp_path))
+    monkeypatch.setattr(nougenmsg.AgentPinger, "_PICK_CACHE", {})
     monkeypatch.setenv("NOUGEN_LOCAL_E2B_MODEL", SLOT_MODEL)
     monkeypatch.setattr(nougenmsg, "get_current_node", lambda: "thisnode")
     # Remote defaults are discovered from the target node's live /api/tags;
