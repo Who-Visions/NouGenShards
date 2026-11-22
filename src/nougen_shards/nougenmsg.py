@@ -74,8 +74,9 @@ def resolve_session_title(session_id: str = "") -> str:
     # session store this box actually has and read whichever title-shaped
     # field the record itself carries. No provider is named anywhere in the
     # discovery; see _discover_session_stores.
-    record, _path = _discover_session_record(sid)
-    if record:
+    # Keep looking past a matching record that carries no title: another
+    # store may hold the same session with one.
+    for record, _path in _discover_session_records(sid):
         name = _first_field(record, _TITLE_FIELDS)
         if name:
             return name
@@ -165,12 +166,15 @@ def _cc_registry_entries() -> List[Tuple[dict, str]]:
         return []
     sessions = reg.get("sessions") if isinstance(reg, dict) else None
     if isinstance(sessions, dict):
-        return [(entry, reg_path) for entry in sessions.values()
-                if isinstance(entry, dict)]
-    if isinstance(reg, dict):
-        return [(entry, reg_path) for entry in reg.values()
-                if isinstance(entry, dict)]
-    return []
+        source = sessions
+    elif isinstance(reg, dict):
+        source = reg
+    else:
+        return []
+    # A registry keyed by session id may not repeat the id inside the value;
+    # keep the key so _record_matches still finds the entry.
+    return [(dict(entry, session_id=entry.get("session_id") or str(key)), reg_path)
+            for key, entry in source.items() if isinstance(entry, dict)]
 
 
 def _record_matches(record: dict, sid: str) -> bool:
@@ -186,17 +190,31 @@ def _first_field(record: dict, fields) -> str:
 
 
 def _parse_time(value) -> Optional[float]:
-    """Epoch seconds from a number, a numeric string, or an ISO string."""
-    if isinstance(value, (int, float)) and value > 0:
-        return float(value)
+    """Epoch seconds from a number, a numeric string, or an ISO string.
+
+    Non-finite or non-positive values (nan, inf, overflow) are rejected: they
+    arrive from untrusted origins and must never reach the age formatter.
+    """
+    import math
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            out = float(value)
+        except OverflowError:
+            return None
+        return out if math.isfinite(out) and out > 0 else None
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
         try:
-            return float(text)
+            out = float(text)
         except ValueError:
             pass
+        else:
+            return out if math.isfinite(out) and out > 0 else None
         try:
             from datetime import datetime
 
@@ -205,6 +223,22 @@ def _parse_time(value) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _discover_session_records(session_id: str = ""):
+    """Every (record, path) matching `session_id`, across all stores, in order."""
+    if _tenant_scope():
+        return
+    sid = (session_id or resolve_session()).strip()
+    if not sid:
+        return
+    for store in _discover_session_stores():
+        for record, path in _iter_store_records(store):
+            if _record_matches(record, sid):
+                yield record, path
+    for entry, path in _cc_registry_entries():
+        if _record_matches(entry, sid):
+            yield entry, path
 
 
 def _discover_session_record(session_id: str = "") -> Tuple[dict, str]:
