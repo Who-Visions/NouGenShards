@@ -111,3 +111,28 @@ is installed. Provider code found elsewhere, to move behind Open:
    ingress, and status. It fails on any owner name in the output.
 
 No merges, deploys or node restarts without the GM's yes.
+
+## Before merging: settings an existing fleet box needs
+
+Every repo now resolves identity and hosts at runtime, so a fleet box keeps
+today's behaviour only once these are in its `~/.nougen/mesh.json` (or env):
+
+- `nodes.<n>.machine` when a node's machine name differs from the node name
+  (Tracker expected machines, relay routing).
+- `nodes.<n>.endpoints` for each front door (`shards`, `msg`, `health`, ...),
+  or the `ingress` URL; NouGenClaude reports `not_configured` without them.
+- `nodes.<n>.keywords`, `coach`, `aliases` for relay keyword and coach routing.
+- `relay_live.self`: extra legs the live relay daemon should not wake on
+  (for example a connector's own legs).
+- `models.code` / `NOUGEN_CODE_MODEL` to keep NouGenCode's local model;
+  `paths.edge_ai` / `EDGE_AI_DIR` for the edge-Ai source.
+- `NOUGEN_AGENT` in a lane's own MCP config where the lane name came from a plugin default.
+- `NOUGEN_NODE_<N>_IP` for `cc_msg` LAN dials, `NOUGEN_MSG_URL` for the Muse connector.
+- `NOUGEN_VAULT` for the vault folder (`NOUGEN_SHARDS_DIR` now means the Shards checkout).
+- fleet-mcp: the new `wrangler.jsonc` vars ship with its code; check
+  `wrangler secret list` for a clash with SHARD_PRIMARY_NAME, NOUGENMSG_APP_LANES
+  or APP_KEY_MSG_TARGET before deploying.
+
+Remote MCP tools (fleet-mcp's 58) are called with `"rpc": "tools/call"` over
+http: set `NOUGEN_FLEET_MCP_URL` and `NOUGEN_FLEET_MCP_TOKEN`, then
+`nougen call fleet-mcp.<tool> ...`.
