@@ -3038,7 +3038,7 @@ def get_parser():
     # The tester package, native to this CLI: every verb forwards to nougen_shards.mesh.
     p_mesh = subparsers.add_parser(
         "mesh", add_help=False,
-        help="Tester package: install | setup | whoami | doctor | up | down | status | tools | call",
+        help="Tester package: install | setup | whoami | doctor | up | down | status | tools | call | pack | publish | share | sync",
         description="Install, configure, run and call tools across the ten NouGen repos.")
     p_mesh.add_argument("mesh_args", nargs=argparse.REMAINDER)
     for verb, text in _MESH_ALIASES.items():
@@ -4700,7 +4700,9 @@ _MESH_ALIASES = {
 
 def cmd_mesh(argv):
     """nougen mesh <verb> ... and the short aliases (nougen call / tools / up / down / whoami)."""
-    from . import mesh
+    from . import mesh, package_r2
+    if argv and (argv[0] in package_r2.VERBS or (argv[0] == "install" and any(a == "--from" or a.startswith("--from=") for a in argv))):
+        return package_r2.main(argv)  # R2 distribution: pack, publish, share, sync, install --from
     return mesh.main(argv)
 
 

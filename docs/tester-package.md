@@ -110,6 +110,37 @@ is installed. Provider code found elsewhere, to move behind Open:
    in each repo that lists one, a remote call that must be refused with no
    ingress, and status. It fails on any owner name in the output.
 
+## Testers download from R2, not GitHub
+
+Testers never need access to the owner's GitHub. A fleet box packs each
+repo's committed tree (no git history) into a tarball, scans every file for
+leaked keys, and uploads the tarballs, a sha256 manifest and a standalone
+installer to a private R2 bucket. Testers get one expiring link.
+
+```
+nougen mesh sync --repos ~/nougen            # fetch, pack each default branch, scan, upload what changed
+nougen mesh share --days 7                   # prints one command for a tester, valid up to 7 days
+```
+
+The tester runs that one command; it downloads the installer, then each
+tarball, checks every sha256 and unpacks the ten repos side by side.
+
+- **Leak gate:** a repo with a secret-shaped value is refused and nothing of
+  it is uploaded; the finding names the file, line, kind and a value id,
+  never the value. Known fake keys in tests are listed by value id under
+  `scan_allow` in `nougen.package.json`, so any new value still blocks.
+- **Runtime data stays home:** per-repo `exclude` globs in
+  `nougen.package.json` (Relay's handoffs, claims, acks, logs, fleet logs).
+- **Settings, resolved at run time:** bucket `NOUGEN_R2_BUCKET` or
+  `package.r2.bucket` in mesh.json; prefix `NOUGEN_R2_PREFIX` (default
+  `packages/nougen-tester`); account `NOUGEN_R2_ACCOUNT_ID` or
+  `CLOUDFLARE_ACCOUNT_ID`; keys `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`
+  from the environment or Keymaker. A missing one is named exactly.
+- **Schedule, no paid CI:** run the sync from a fleet box. cron:
+  `*/30 * * * * cd ~/nougen/NouGenShards && .venv/bin/nougen mesh sync --repos ~/nougen >> ~/.nougen/sync.log 2>&1`;
+  on a Mac, a launchd agent with `StartInterval` 1800 running the same command.
+- Default branches ship, so a merge reaches testers on the next sync.
+
 No merges, deploys or node restarts without the GM's yes.
 
 ## Before merging: settings an existing fleet box needs

@@ -1,17 +1,67 @@
 {
   "schema": "nougen-package/1",
   "name": "nougen-tester",
-  "about": "The ten repos of the NouGen tester package. `nougen mesh install --dir <folder>` clones the missing ones side by side with the tester's own git access; `nougen mesh setup` then writes the tester's own identity.",
+  "about": "The ten repos of the NouGen tester package. Testers install from an expiring R2 link (`nougen mesh install --dir <folder> --from '<link>'`); fleet boxes can also clone with their own git access (`nougen mesh install --dir <folder>`). `nougen mesh setup` then writes the tester's own identity. `exclude` keeps runtime data out of the R2 tarballs. `scan_allow` holds the value ids (short sha256) of known fake keys in test fixtures, so the leak scan passes them and still blocks any new value.",
   "repos": {
-    "shards": {"clone": "https://github.com/Who-Visions/NouGenShards.git"},
-    "relay": {"clone": "https://github.com/Who-Visions/NouGenRelay.git"},
-    "msg": {"clone": "https://github.com/Who-Visions/NouGenMsg.git"},
-    "code": {"clone": "https://github.com/WhoVisions/NouGenCode.git"},
-    "design": {"clone": "https://github.com/Who-Visions/nougendesign.git"},
-    "tracker": {"clone": "https://github.com/Who-Visions/NouGenTracker.git"},
-    "open": {"clone": "https://github.com/Who-Visions/NouGenOpen.git"},
-    "fleet-mcp": {"clone": "https://github.com/Who-Visions/nougen-fleet-mcp.git"},
-    "claude": {"clone": "https://github.com/Who-Visions/NouGenClaude.git"},
-    "portable": {"clone": "https://github.com/Who-Visions/NouGenPortable.git"}
+    "shards": {
+      "clone": "https://github.com/Who-Visions/NouGenShards.git",
+      "scan_allow": [
+        "796b9e3f7add",
+        "fc7590612852",
+        "dfd44f8c067a",
+        "fcfe6d42eabc",
+        "588758d5c6b4",
+        "8c94bc9471df",
+        "37b3f835cd1f",
+        "c363c84107e7",
+        "2c84592c47bb",
+        "e1e3333c39dd"
+      ]
+    },
+    "relay": {
+      "clone": "https://github.com/Who-Visions/NouGenRelay.git",
+      "exclude": [
+        ".handoffs/**",
+        ".relay/**",
+        ".claims/**",
+        "acks/**",
+        "logs/**",
+        "docs/FLEET-LOG-*"
+      ],
+      "scan_allow": [
+        "2c18e1153f85",
+        "c10e7a6841aa",
+        "d67ee745ad52",
+        "03aafb028d53",
+        "d93ccc5f6287"
+      ]
+    },
+    "msg": {
+      "clone": "https://github.com/Who-Visions/NouGenMsg.git"
+    },
+    "code": {
+      "clone": "https://github.com/WhoVisions/NouGenCode.git",
+      "scan_allow": [
+        "55c2b7107838"
+      ]
+    },
+    "design": {
+      "clone": "https://github.com/Who-Visions/nougendesign.git"
+    },
+    "tracker": {
+      "clone": "https://github.com/Who-Visions/NouGenTracker.git"
+    },
+    "open": {
+      "clone": "https://github.com/Who-Visions/NouGenOpen.git"
+    },
+    "fleet-mcp": {
+      "clone": "https://github.com/Who-Visions/nougen-fleet-mcp.git"
+    },
+    "claude": {
+      "clone": "https://github.com/Who-Visions/NouGenClaude.git"
+    },
+    "portable": {
+      "clone": "https://github.com/Who-Visions/NouGenPortable.git"
+    }
   }
 }
