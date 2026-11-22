@@ -47,8 +47,9 @@ def owner_token() -> str:
 
 class WireService:
     def __init__(self, hub: Hub, owner: Optional[str] = None,
-                 guests: Optional[access.GuestBook] = None) -> None:
+                 guests: Optional[access.GuestBook] = None, relay: str = "") -> None:
         self.hub = hub
+        self._relay = relay
         self._owner = owner_token() if owner is None else owner
         self.guests = guests
         self.limiter = access.RateLimiter(hub.clock)
@@ -58,11 +59,14 @@ class WireService:
     @classmethod
     def from_env(cls, node: str, db_path: str) -> "WireService":
         key, scheme = receipts.resolve_key()
+        if scheme != "node":
+            # Never run on the shared /msg token or unsigned: make this node its own key.
+            key, scheme = receipts.node_key(os.path.join(os.path.dirname(os.path.abspath(db_path)), "wire-receipt.key")), "node"
         hub = Hub(WireStore(db_path), node, key, A.enabled(), key_scheme=scheme)
-        return cls(hub, guests=access.GuestBook())
+        return cls(hub, guests=access.GuestBook(), relay=access.relay_token())
 
     def authenticate(self, token: str, fleet_token: str) -> Tuple[Optional[Caller], str]:
-        return access.authenticate(token, fleet_token, self.guests, self.hub.clock())
+        return access.authenticate(token, fleet_token, self.guests, self.hub.clock(), relay=self._relay)
 
     # -- pump ----------------------------------------------------------------
     def start_pump(self, interval_s: float = 5.0) -> None:
@@ -84,7 +88,9 @@ class WireService:
 
     # -- requests ------------------------------------------------------------
     def is_owner(self, presented: str) -> bool:
-        return bool(self._owner) and hmac.compare_digest(self._owner, str(presented or ""))
+        if not self._owner or not presented:
+            return False
+        return hmac.compare_digest(self._owner.encode("utf-8"), str(presented).encode("utf-8", "replace"))
 
     def handle(self, method: str, path: str, body: Optional[Dict[str, Any]] = None,
                owner_header: str = "", caller: Caller = access.FLEET) -> Tuple[int, Dict[str, Any]]:
@@ -100,24 +106,24 @@ class WireService:
             if method == "POST" and route == "/wire/send":
                 return self._send(body, caller.fleet and self.is_owner(owner_header), caller)
             if method == "GET" and route == "/wire/inbox":
-                who = q.get("for") or ("" if caller.fleet else caller.address)
+                who = q.get("for") or caller.address
                 if not who:
                     return 400, {"error": "inbox needs for=<address>", "fix": "add ?for=lane/session"}
-                if not caller.fleet and not caller.owns(who):
-                    return 403, _forbidden(caller, f"a guest reads only {caller.address}")
+                if not caller.owns(who):
+                    return 403, _forbidden(caller, _read_scope(caller))
                 return 200, self.hub.inbox(who, int(q.get("after") or 0), int(q.get("limit") or 25))
             if method == "POST" and route == "/wire/ack":
-                by = str(body.get("by") or ("" if caller.fleet else caller.address))
+                by = str(body.get("by") or caller.address)
                 if not body.get("id") or not by:
                     return 400, {"error": "ack needs id and by", "fix": "send {\"id\": \"w-...\", \"by\": \"lane/session\"}"}
-                if not caller.fleet and not caller.owns(by):
-                    return 403, _forbidden(caller, f"a guest acks only as {caller.address}")
+                if not caller.owns(by):
+                    return 403, _forbidden(caller, _read_scope(caller, "acks"))
                 out = self.hub.ack(str(body["id"]), by)
                 code = 404 if out.get("state") == "unknown" else 409 if out.get("error") else 200
                 return code, out
             if method == "GET" and route.startswith("/wire/status/"):
                 env_id = route[len("/wire/status/"):]
-                if not caller.fleet and not self._guest_sees(caller, env_id):
+                if not self._sees(caller, env_id):
                     return 404, {"id": env_id, "state": "unknown", "receipts": []}
                 out = self.hub.status(env_id)
                 return (404 if out["state"] == "unknown" else 200), out
@@ -126,29 +132,38 @@ class WireService:
                         "push_lanes": sorted(self.hub.adapters),
                         "signed_receipts": bool(self.hub.key), "receipt_scheme": self.hub.key_scheme,
                         "owner_sign_off": bool(self._owner)}
-                if not caller.fleet:
+                info["caller"] = caller.kind
+                if caller.kind == "guest":
                     info.update(you=caller.address, may_message=sorted(caller.send_to),
                                 sends_per_minute=caller.limit("send"))
+                elif caller.kind == "lane":
+                    info["you"] = caller.address
                 return 200, info
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             return 400, {"error": str(exc)}
         return 404, {"error": "not found", "path": route,
                      "fix": "routes: POST /wire/send, GET /wire/inbox, POST /wire/ack, GET /wire/status/<id>, GET /wire/info"}
 
-    def _guest_sees(self, caller: Caller, env_id: str) -> bool:
+    def _sees(self, caller: Caller, env_id: str) -> bool:
         row = self.hub.store.get(env_id)
-        return bool(row) and (caller.owns(row["env"]["from"]) or caller.owns(row["env"]["to"]))
+        return bool(row) and caller.sees(row["env"])
 
     def _send(self, body: Dict[str, Any], owner: bool, caller: Caller = access.FLEET) -> Tuple[int, Dict[str, Any]]:
         if body.get("v") == 2:
             env = E.validate(dict(body))
-            if not caller.fleet and not caller.owns(env["from"]):
-                return 403, _forbidden(caller, f"a guest sends only as {caller.address}")
+            if not caller.may_send_as(env["from"]):
+                return 403, _forbidden(caller, f"this token sends only as {caller.address}")
         else:
-            for f in ("to", "text") if not caller.fleet else ("from", "to", "text"):
-                if not str(body.get(f) or "").strip():
+            named = str(body.get("from") or "").strip()
+            if caller.kind == "lane" and named and caller.owns(named):
+                sender = named
+            elif caller.kind in ("lane", "guest"):
+                sender = caller.address
+            else:
+                sender = named
+            for f, v in (("from", sender), ("to", body.get("to")), ("text", body.get("text"))):
+                if not str(v or "").strip():
                     raise ValueError(f"send needs {f}")
-            sender = str(body["from"]) if caller.fleet else caller.address
             env = E.make(sender, str(body["to"]), str(body["text"]),
                          kind=str(body.get("kind") or "msg"), in_reply_to=body.get("in_reply_to"),
                          priority=str(body.get("priority") or "normal"),
@@ -157,17 +172,24 @@ class WireService:
         if not allowed:
             return 403, _forbidden(caller, why)
         allow = bool(body.get("allow_actions")) and owner
-        out = self.hub.send(env, allow_actions=allow)
+        out = self.hub.send(env, allow_actions=allow, proof=caller.sender_proof)
         if out.get("conflict"):
             return 409, out
         if body.get("allow_actions") and not owner:
             out["note"] = "allow_actions ignored: it needs the owner token"
-        if not caller.fleet and body.get("from") and str(body["from"]) != caller.address and body.get("v") != 2:
-            out["note"] = f"from set to {caller.address}: a guest can't name another sender"
+        if body.get("v") != 2 and body.get("from") and str(body["from"]) != env["from"]:
+            out["note"] = f"from set to {env['from']}: this token can't name another sender"
         # A refusal is a 200 with state "refused" on purpose: older senders fall
         # through to another route on a 4xx, and a refused message must never
         # find a route around the guard.
         return 200, out
+
+
+def _read_scope(caller: Caller, verb: str = "reads") -> str:
+    if caller.kind == "shared":
+        return (f"the shared token can send but never {'read' if verb == 'reads' else 'ack'}: "
+                "use the connector or a lane token")
+    return f"this token {verb} only as {caller.address}"
 
 
 def _forbidden(caller: Caller, why: str) -> Dict[str, Any]:

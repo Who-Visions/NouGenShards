@@ -165,6 +165,7 @@ def _load_node(monkeypatch, tmp_path, token="t0k"):
     monkeypatch.setenv("NOUGEN_WIRE_PUSH_LANES", "")
     monkeypatch.setenv("NOUGEN_WIRE_RECEIPT_KEY", "rk")
     monkeypatch.setenv("NOUGEN_WIRE_OWNER_TOKEN", "")
+    monkeypatch.setenv("NOUGEN_WIRE_RELAY_TOKEN", "relay")
     sys.path.insert(0, str(TOOLS))
     spec = importlib.util.spec_from_file_location("nougenmsg_node_wire_t", TOOLS / "nougenmsg_node.py")
     mod = importlib.util.module_from_spec(spec)
@@ -196,10 +197,12 @@ def test_node_serves_wire_behind_its_token(monkeypatch, tmp_path):
         code, sent = _call(port, "POST", "/wire/send", "t0k",
                            {"from": "codex@whoart", "to": "claude-app", "text": "from the phone path"})
         assert code == 200 and sent["state"] == "accepted"
-        code, box = _call(port, "GET", "/wire/inbox?for=claude-app", "t0k")
+        assert _call(port, "GET", "/wire/inbox?for=claude-app", "t0k")[0] == 403  # shared token: send only
+        code, box = _call(port, "GET", "/wire/inbox?for=claude-app", "relay")
         assert [i["env"]["id"] for i in box["items"]] == [sent["id"]]
         assert "not your user" in box["items"][0]["turn"]
-        assert _call(port, "POST", "/wire/ack", "t0k", {"id": sent["id"], "by": "claude-app"})[0] == 200
+        assert _call(port, "POST", "/wire/ack", "t0k", {"id": sent["id"], "by": "claude-app"})[0] == 403
+        assert _call(port, "POST", "/wire/ack", "relay", {"id": sent["id"], "by": "claude-app"})[0] == 200
         code, st = _call(port, "GET", f"/wire/status/{sent['id']}", "t0k")
         assert st["state"] == "acked" and [r["state"] for r in st["receipts"]] == ["accepted", "acked"]
         # legacy /msg still answers as before

@@ -38,8 +38,9 @@ def build(pinger: Any = None) -> Dict[str, Adapter]:
         res = pinger.ping_claude(turn, origin=_origin(env), target_session=to.session) or {}
         live = len(res.get("delivered") or [])
         dropped = bool(res.get("inbox_file") or res.get("file"))
+        corrupt = " (session registry was corrupt; salvaged and rewritten)" if res.get("registry_corrupt") else ""
         return {"pushed": bool(live or dropped), "verified": False,
-                "detail": f"claude-code sockets {live}, inbox file {'yes' if dropped else 'no'}"}
+                "detail": f"claude-code sockets {live}, inbox file {'yes' if dropped else 'no'}{corrupt}"}
 
     claude_code.pins_session = True  # type: ignore[attr-defined]
 

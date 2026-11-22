@@ -47,7 +47,8 @@ class Hub:
         return r
 
     # -- ingest ------------------------------------------------------------
-    def send(self, env: Dict[str, Any], allow_actions: bool = False, push: bool = True) -> Dict[str, Any]:
+    def send(self, env: Dict[str, Any], allow_actions: bool = False, push: bool = True,
+             proof: str = "") -> Dict[str, Any]:
         E.validate(env)
         now = self.clock()
         if float(env["expires"]) <= now:
@@ -64,7 +65,7 @@ class Hub:
                 return {"id": env["id"], "state": state, "conflict": True,
                         "error": "this id was already used for a different message; send a new id"}
             return {"id": env["id"], "state": state, "duplicate": True, "receipts": self.store.receipts(env["id"])}
-        self._receipt(env, "accepted", f"guard {verdict.rule}")
+        self._receipt(env, "accepted", f"guard {verdict.rule}" + (f"; {proof}" if proof else ""))
         if env["kind"] == "answer":
             self._close_ask(env)
         if push:

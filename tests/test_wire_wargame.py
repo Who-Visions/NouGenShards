@@ -30,6 +30,7 @@ def live(monkeypatch, tmp_path):
     guests = tmp_path / "guests.json"
     monkeypatch.setenv("NOUGEN_AGY_INBOX", str(tmp_path / "inbox"))
     monkeypatch.setenv("NOUGEN_AGY_MSG_TOKEN", "fleet-tok")
+    monkeypatch.setenv("NOUGEN_WIRE_RELAY_TOKEN", "relay-tok")
     monkeypatch.setenv("NOUGEN_WIRE_DB", str(tmp_path / "wire.db"))
     monkeypatch.setenv("NOUGEN_WIRE_PUSH_LANES", "")
     monkeypatch.setenv("NOUGEN_WIRE_RECEIPT_KEY", "rk")
@@ -55,12 +56,12 @@ def live(monkeypatch, tmp_path):
 def test_external_war_game_passes_every_check(live):
     origin, guest, expired = live
     wg = _load("wire_wargame", TOOLS / "wire_wargame.py")
-    results = wg.run(wg.Node(origin, "fleet-tok"), guest, expired)
+    results = wg.run(wg.Node(origin, "fleet-tok", relay="relay-tok"), guest, expired)
     failed = [r for r in results if not r["ok"]]
     assert not failed, json.dumps(failed, indent=2)
     matrix = next(r for r in results if r["check"].startswith("any-to-any"))
     assert matrix["pairs"] == 81 and not matrix["failed_pairs"]
-    assert len(results) >= 34
+    assert len(results) >= 38
 
 
 # -- what only the inside can stage ---------------------------------------------
@@ -105,19 +106,63 @@ def test_lane_offline_then_back_gets_its_backlog(tmp_path):
     assert len(seen) == 3  # delivered once, never again
 
 
-def test_fresh_tenant_node_works_with_zero_setup(tmp_path):
+def test_fresh_tenant_node_works_with_zero_setup(tmp_path, monkeypatch):
     """A brand-new tenant: no db yet, no keys, no guests file. It must start,
-    say plainly that receipts are unsigned, and still move messages."""
-    svc = WireService(Hub(WireStore(str(tmp_path / "new" / "wire.db") if (tmp_path / "new").mkdir() is None else ""),
-                          "roldo", b""), owner="", guests=GuestBook(str(tmp_path / "missing.json")))
+    make its own receipt key, and move signed messages."""
+    import nougen_shards.keymaker as km
+    for var in ("NOUGEN_WIRE_RECEIPT_KEY", "NOUGEN_WIRE_RELAY_TOKEN", "NOUGEN_WIRE_OWNER_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NOUGEN_WIRE_GUESTS_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(km, "get_secret", lambda name: None)
+    db = tmp_path / "new" / "wire.db"
+    db.parent.mkdir()
+    svc = WireService.from_env("roldo", str(db))
     code, info = svc.handle("GET", "/wire/info")
-    assert code == 200 and info["receipt_scheme"] == "unsigned" and info["signed_receipts"] is False
+    assert code == 200 and info["receipt_scheme"] == "node" and info["signed_receipts"] is True
+    assert (db.parent / "wire-receipt.key").stat().st_mode & 0o777 == 0o600
     code, sent = svc.handle("POST", "/wire/send", {"from": "claude-code", "to": "claude-app", "text": "hello"})
-    assert code == 200 and sent["receipts"][0]["scheme"] == "unsigned"
+    assert code == 200 and sent["receipts"][0]["scheme"] == "node"
     code, box = svc.handle("GET", "/wire/inbox?for=claude-app")
     assert [i["env"]["id"] for i in box["items"]] == [sent["id"]]
     assert svc.handle("POST", "/wire/ack", {"id": sent["id"], "by": "claude-app"})[0] == 200
-    assert access.authenticate("", "", GuestBook(str(tmp_path / "missing.json")))[0] is access.FLEET
+    assert svc.hub.status(sent["id"])["receipts"][-1]["verified"] is True
+    again = WireService.from_env("roldo", str(db))  # restart keeps the same key
+    assert again.hub.status(sent["id"])["receipts"][0]["verified"] is True
+
+
+def test_shared_token_sends_but_never_reads_or_acks():
+    svc = WireService(Hub(WireStore(), "phoebus", b"k"), owner="")
+    code, sent = svc.handle("POST", "/wire/send", {"from": "codex", "to": "claude-code", "text": "x"},
+                            caller=access.SHARED)
+    assert code == 200 and "asserted" in sent["receipts"][0]["detail"]
+    assert svc.handle("GET", "/wire/inbox?for=claude-code", caller=access.SHARED)[0] == 403
+    assert svc.handle("POST", "/wire/ack", {"id": sent["id"], "by": "claude-code"}, caller=access.SHARED)[0] == 403
+    assert svc.handle("GET", "/wire/inbox?for=claude-code", caller=access.RELAY)[0] == 200
+
+
+def test_lane_token_reads_and_acks_only_its_own_lane(tmp_path):
+    path = str(tmp_path / "g.json")
+    tok = access.mint("codex-whoart", lane="codex", days=0, path=path)
+    book = GuestBook(path)
+    codex, _ = access.authenticate(tok, "fleet", book)
+    assert codex.kind == "lane" and codex.address == "codex"
+    svc = WireService(Hub(WireStore(), "whoart", b"k"), owner="", guests=book)
+    to_codex = svc.handle("POST", "/wire/send", {"from": "claude-app", "to": "codex/s1", "text": "hi"})[1]
+    to_claude = svc.handle("POST", "/wire/send", {"from": "codex", "to": "claude-code", "text": "hi"})[1]
+    assert svc.handle("GET", "/wire/inbox?for=codex/s1", caller=codex)[0] == 200
+    assert svc.handle("GET", "/wire/inbox?for=claude-code", caller=codex)[0] == 403
+    assert svc.handle("POST", "/wire/ack", {"id": to_claude["id"], "by": "claude-code"}, caller=codex)[0] == 403
+    assert svc.handle("POST", "/wire/ack", {"id": to_codex["id"], "by": "codex/s1"}, caller=codex)[0] == 200
+    code, out = svc.handle("POST", "/wire/send", {"from": "claude-code", "to": "claude-app", "text": "spoof"}, caller=codex)
+    assert code == 200 and out["receipts"] and "codex" in out["note"]
+
+
+def test_non_ascii_owner_header_is_not_a_crash():
+    svc = WireService(Hub(WireStore(), "phoebus", b"k"), owner="secret")
+    code, out = svc.handle("POST", "/wire/send", {"from": "claude-code", "to": "muse", "text": "buy it"},
+                           owner_header="caf\u00e9")
+    assert code == 200 and out["state"] == "refused"
+    assert svc.is_owner("secret") and not svc.is_owner("s\u00e9cret")
 
 
 def test_pinned_session_on_a_lane_that_cant_pin_never_wakes_the_lane():
@@ -133,7 +178,7 @@ def test_pinned_session_on_a_lane_that_cant_pin_never_wakes_the_lane():
 def test_rate_limiter_refills_and_tells_how_long_to_wait():
     t = [0.0]
     lim = RateLimiter(lambda: t[0])
-    guest = Caller("g", False, frozenset({"codex"}))
+    guest = Caller("g", "guest", frozenset({"codex"}))
     assert all(lim.take(guest, "send")[0] for _ in range(30))
     ok, wait = lim.take(guest, "send")
     assert not ok and 0 < wait <= 2

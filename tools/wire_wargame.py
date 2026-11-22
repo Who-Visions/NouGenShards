@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """War-game a NouGenMsg wire v2 node from the outside, the way a tester would.
 
-    NOUGEN_WIRE_ORIGIN=https://<node> NOUGEN_WIRE_FLEET_TOKEN=... \\
+    NOUGEN_WIRE_ORIGIN=https://<node> NOUGEN_WIRE_FLEET_TOKEN=... NOUGEN_WIRE_RELAY_TOKEN=... \\
     NOUGEN_WIRE_GUEST_TOKEN=... python tools/wire_wargame.py [--json] [--skip-matrix]
 
 Tokens come from the environment only, never arguments. Every message it sends
@@ -40,8 +40,11 @@ TTL = 600
 
 
 class Node:
-    def __init__(self, origin: str, token: str) -> None:
-        self.origin, self.token = origin.rstrip("/"), token
+    """``token`` is the shared /msg token (send only); ``relay`` is the
+    connector's relay token, which reads and acks for any lane."""
+
+    def __init__(self, origin: str, token: str, relay: str = "") -> None:
+        self.origin, self.token, self.relay = origin.rstrip("/"), token, relay or token
 
     def call(self, method: str, path: str, body: Any = None, token: Optional[str] = None,
              headers: Optional[Dict[str, str]] = None, raw: Optional[bytes] = None) -> Tuple[int, Dict[str, Any]]:
@@ -90,6 +93,7 @@ def run(n: Node, guest_token: str = "", expired_token: str = "", matrix: bool = 
     run_id = secrets.token_hex(3)
     me = f"claude-code/wg-{run_id}-s"
     R: List[Result] = []
+    rd = lambda m, p, b=None: n.call(m, p, b, token=n.relay)  # noqa: E731  reads and acks need the relay
 
     # -- auth --------------------------------------------------------------------
     check(R, "fleet token reaches /wire/info", lambda: (lambda c, b: (c == 200 and b.get("wire") == 2, f"{c} scheme={b.get('receipt_scheme')}"))(*n.call("GET", "/wire/info")))
@@ -121,15 +125,28 @@ def run(n: Node, guest_token: str = "", expired_token: str = "", matrix: bool = 
         return c1 == 200 and c2 == 200 and b2.get("duplicate") is True, f"second send duplicate={b2.get('duplicate')}"
     check(R, "same envelope twice is stored once", dup)
     def replay():
-        n.call("POST", "/wire/ack", {"id": env["id"], "by": f"claude-app/wg-{run_id}-dup"})
+        rd("POST", "/wire/ack", {"id": env["id"], "by": f"claude-app/wg-{run_id}-dup"})
         c, b = n.call("POST", "/wire/send", env)
-        box = n.call("GET", f"/wire/inbox?for=claude-app/wg-{run_id}-dup")[1]
+        box = rd("GET", f"/wire/inbox?for=claude-app/wg-{run_id}-dup")[1]
         return c == 200 and b.get("state") == "acked" and not box.get("items"), f"replay state={b.get('state')}, inbox {len(box.get('items', []))}"
     check(R, "replay after ack doesn't reopen it", replay)
     check(R, "same id with different text is 409", lambda: (lambda c, b: (c == 409 and b.get("conflict") is True, str(c)))(
         *n.call("POST", "/wire/send", dict(env, text="tampered"))))
     check(R, "ack by the wrong receiver is 409", lambda: (lambda sid: (lambda c, b: (c == 409, f"{c} {b.get('error')}"))(
-        *n.call("POST", "/wire/ack", {"id": sid, "by": "codex/someone-else"})))(send(n, me, f"claude-app/wg-{run_id}-w", "who acks")[1]["id"]))
+        *rd("POST", "/wire/ack", {"id": sid, "by": "codex/someone-else"})))(send(n, me, f"claude-app/wg-{run_id}-w", "who acks")[1]["id"]))
+
+    # -- identity: the shared token sends but can't read or ack -----------------------
+    if n.relay != n.token:
+        probe = send(n, "codex/wg-x", f"claude-code/wg-{run_id}-p", "private")[1].get("id", "")
+        check(R, "shared token can't read another lane's inbox", lambda: (lambda c, b: (c == 403, f"{c} {b.get('reason')}"))(
+            *n.call("GET", f"/wire/inbox?for=claude-code/wg-{run_id}-p")))
+        check(R, "shared token can't ack for another lane", lambda: (lambda c, b: (c == 403, str(c)))(
+            *n.call("POST", "/wire/ack", {"id": probe, "by": f"claude-code/wg-{run_id}-p"})))
+        check(R, "shared-token sender is marked asserted on its receipt", lambda: (lambda b: (
+            "asserted" in b["receipts"][0]["detail"], b["receipts"][0]["detail"]))(rd("GET", f"/wire/status/{probe}")[1]))
+    check(R, "non-ASCII owner header is a clean answer, not a crash", lambda: (lambda c, b: (c == 200 and b.get("state") == "refused", f"{c} {b.get('state')}"))(
+        *n.call("POST", "/wire/send", {"from": me, "to": f"muse/wg-{run_id}", "text": "buy it", "ttl_s": TTL},
+                headers={"X-NGS-Owner": "caf\u00e9".encode("utf-8").decode("latin-1")})))
 
     # -- guard ---------------------------------------------------------------------
     for lane in ACTUATORS:
@@ -155,7 +172,7 @@ def run(n: Node, guest_token: str = "", expired_token: str = "", matrix: bool = 
                 sent.append((s, r, b.get("id", "") if c == 200 else f"ERR {c} {b.get('error')}"))
         fails = []
         for r in LANES:
-            box = n.call("GET", f"/wire/inbox?for={r}/wg-{run_id}-to&limit=100")[1]
+            box = rd("GET", f"/wire/inbox?for={r}/wg-{run_id}-to&limit=100")[1]
             got = {it["env"]["id"] for it in box.get("items", [])}
             for s, r2, sid in sent:
                 if r2 != r:
@@ -163,7 +180,7 @@ def run(n: Node, guest_token: str = "", expired_token: str = "", matrix: bool = 
                 if sid not in got:
                     fails.append(f"{s}->{r} not in inbox ({sid})")
                     continue
-                c, a = n.call("POST", "/wire/ack", {"id": sid, "by": f"{r}/wg-{run_id}-to"})
+                c, a = rd("POST", "/wire/ack", {"id": sid, "by": f"{r}/wg-{run_id}-to"})
                 st = n.call("GET", f"/wire/status/{sid}")[1]
                 states = [x["state"] for x in st.get("receipts", [])]
                 if st.get("state") != "acked" or not all(x.get("verified") for x in st.get("receipts", [])) or "acked" not in states:
@@ -197,7 +214,7 @@ def run(n: Node, guest_token: str = "", expired_token: str = "", matrix: bool = 
                 c, b = g("POST", "/wire/send", {"to": f"{target}/wg-{run_id}-g", "text": "guest ask", "kind": "ask", "ttl_s": TTL})
                 if c != 200:
                     return False, f"send {c} {b}"
-                n.call("POST", "/wire/send", {"from": f"{target}/wg-{run_id}-g", "to": you, "text": "answer", "kind": "answer", "in_reply_to": b["id"], "ttl_s": TTL})
+                rd("POST", "/wire/send", {"from": f"{target}/wg-{run_id}-g", "to": you, "text": "answer", "kind": "answer", "in_reply_to": b["id"], "ttl_s": TTL})
                 box = g("GET", "/wire/inbox")[1]
                 ans = [i for i in box.get("items", []) if i["env"].get("in_reply_to") == b["id"]]
                 if not ans:
@@ -225,7 +242,8 @@ def main(argv=None) -> int:
     if not a.origin or not token:
         print("set NOUGEN_WIRE_ORIGIN (or --origin) and NOUGEN_WIRE_FLEET_TOKEN", file=sys.stderr)
         return 2
-    results = run(Node(a.origin, token), os.environ.get("NOUGEN_WIRE_GUEST_TOKEN", ""),
+    results = run(Node(a.origin, token, os.environ.get("NOUGEN_WIRE_RELAY_TOKEN", "")),
+                  os.environ.get("NOUGEN_WIRE_GUEST_TOKEN", ""),
                   os.environ.get("NOUGEN_WIRE_EXPIRED_TOKEN", ""), matrix=not a.skip_matrix)
     if a.json:
         print(json.dumps(results, indent=2))

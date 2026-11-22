@@ -131,12 +131,21 @@ adapter (`claude-app`, `meta-app`, the phone) are pull lanes.
 
 The node resolves every `/wire` request to a caller before anything else:
 
-- **fleet**: the node's X-NGS-Token. Names its own sender (the connector
-  derives it from the caller's key first). 600 sends a minute.
-- **guest**: a scoped token from `nougen_shards.wire.access mint`, stored as
-  a SHA-256 hash. Always sends as `tester/<name>`; reads, acks and sees status
-  for its own traffic only; reaches only the lanes its entry lists and never an
-  actuator; can't carry owner sign-off. 30 sends a minute.
+- **relay**: `NOUGEN_WIRE_RELAY_TOKEN`, held only by the connector Worker,
+  which authenticates its own callers and derives their lane. Full access.
+- **shared**: the /msg token every sender holds. Send and status only; never
+  reads or acks an inbox. Its `from` is asserted, and the accepted receipt says
+  "sender asserted (shared token)".
+- **lane**: a per-lane token (`access mint --lane codex`). Sends as, reads and
+  acks only that lane.
+- **guest**: a scoped tester token (`access mint --name ... --send-to ...`).
+  Always `tester/<name>`; its own traffic only; listed lanes only; never an
+  actuator; never owner sign-off. 30 sends a minute (fleet 600).
+
+Lane and guest tokens are stored as SHA-256 hashes and picked up without a
+restart. A node with no dedicated receipt key makes its own
+(`wire-receipt.key` beside the db, 0600) on first start, so it never signs
+with the shared token and never runs unsigned.
 
 Over the limit is a 429 with `retry_after_s`. Every 4xx carries a `reason` or
 `error` and a `fix`. An id reused for different content is a 409. A message

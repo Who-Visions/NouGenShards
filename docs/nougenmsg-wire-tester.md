@@ -78,15 +78,16 @@ no restart):
 python -m nougen_shards.wire.access mint --name harley --send-to codex,ollama --days 14
 python -m nougen_shards.wire.access list
 python -m nougen_shards.wire.access revoke --name harley
+python -m nougen_shards.wire.access mint --lane codex --name codex-whoart --days 0   # an agent's own inbox token
 ```
 
 War-game the node from outside before handing it over:
 
 ```sh
-NOUGEN_WIRE_ORIGIN=$NODE NOUGEN_WIRE_FLEET_TOKEN=... NOUGEN_WIRE_GUEST_TOKEN=... \
+NOUGEN_WIRE_ORIGIN=$NODE NOUGEN_WIRE_FLEET_TOKEN=... NOUGEN_WIRE_RELAY_TOKEN=... NOUGEN_WIRE_GUEST_TOKEN=... \
   python tools/wire_wargame.py
 ```
 
-It runs 34 checks (auth, malformed input, replays, the guard against reworded
+It runs 39 checks (auth, identity, malformed input, replays, the guard against reworded
 asks, the 9 by 9 lane matrix, guest scoping, the flood limit) on throwaway
 pinned sessions that expire in ten minutes, and exits 1 on any failure.
