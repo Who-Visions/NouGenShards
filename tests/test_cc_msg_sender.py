@@ -3,7 +3,6 @@
 import importlib.util
 import pathlib
 
-import pytest
 
 _TOOL = pathlib.Path(__file__).resolve().parent.parent / "tools" / "cc_msg.py"
 
