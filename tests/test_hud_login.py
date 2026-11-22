@@ -55,7 +55,7 @@ def test_bad_tickets_are_refused(tenant_env, kwargs):
 
 
 def test_garbage_never_raises(tenant_env):
-    for junk in ["", ".", "a.b", "a.b.c", "x" * 5000, "%%%.%%%", "eyJ9.sig"]:
+    for junk in ["", ".", "a.b", "a.b.c", "x" * 5000, "%%%.%%%", "eyJ9.sig", "é.sig", "abc.\u00e9", "\u2603.\u2603"]:
         assert hud_login.redeem_ticket(junk) is None
         assert hud_login.session_user(junk) is None
 
@@ -154,6 +154,12 @@ def test_replayed_or_foreign_ticket_does_not_open_the_hud(client):
     assert client.get("/hud/ticket", params={"t": t}, follow_redirects=False).status_code == 401
     assert client.get("/hud/ticket", params={"t": _ticket(secret="x")}, follow_redirects=False).status_code == 401
     assert client.get("/", follow_redirects=False).status_code == 303
+
+
+def test_non_ascii_ticket_or_cookie_is_refused_not_a_500(client):
+    assert client.get("/hud/ticket", params={"t": "\u00e9.sig"}, follow_redirects=False).status_code == 401
+    # Cookie headers arrive latin-1 decoded; session_user() gets the same guard
+    # (covered in test_garbage_never_raises), the client here cannot send one.
 
 
 def test_password_form_still_works(client):

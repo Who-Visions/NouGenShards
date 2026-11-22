@@ -64,7 +64,8 @@ def mint(secret: str, purpose: str, claims: dict) -> str:
 
 def verify(secret: str, purpose: str, token: str, now: Optional[float] = None) -> Optional[dict]:
     """Claims of a well-signed, unexpired token, else None. Never raises."""
-    if not secret or not token or token.count(".") != 1 or len(token) > 2048:
+    if (not secret or not token or not token.isascii() or token.count(".") != 1
+            or len(token) > 2048):
         return None
     body, sig = token.split(".")
     if not hmac.compare_digest(sig.encode("ascii", "replace"),
