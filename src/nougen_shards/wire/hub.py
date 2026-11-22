@@ -189,6 +189,9 @@ class Hub:
         rs = self.store.receipts(env_id)
         canon = E.canonical(row["env"])
         for r in rs:
-            r["verified"] = receipts.verify(self.key, canon, r)
+            # A receipt's scheme is inside the MAC but chosen by whoever signed it.
+            # Only this hub's own scheme counts, so a shared-key holder can't sign
+            # a receipt that claims "node" and have it verify.
+            r["verified"] = r.get("scheme") == self.key_scheme and receipts.verify(self.key, canon, r)
         return {"id": env_id, "state": row["state"], "attempts": row["attempts"],
                 "acked_by": row["acked_by"], "receipts": rs}
