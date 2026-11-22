@@ -1653,7 +1653,7 @@ class NouGenMsgBus:
 
     _REMOTE_SCRIPTS = {
         "blade": "python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py",
-        "whoart": "python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py",
+        "whoart": "python %USERPROFILE%/.nougen/src/nougenshards/tools/nougenmsg.py",
     }
     # A bare `python3` is a coin flip on a box with more than one interpreter.
     # phoebus has /usr/bin/python3 (3.9, numpy present) and
