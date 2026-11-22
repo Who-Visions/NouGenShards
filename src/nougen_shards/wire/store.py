@@ -2,9 +2,11 @@
 
 One row per envelope id, so a retry, a second route or a re-send is the same
 message. State moves accepted -> pushed -> delivered -> acked (or answered),
-or to failed/expired. A push that is not verified is retried with backoff
-until the receiver acks or the envelope expires; a pull lane (one with no push
-adapter, e.g. a phone app) just keeps the message in its inbox until it acks.
+or to failed/expired. A push that reached nobody is retried with backoff. A
+push that reached the receiver's transport without a confirmation (a Claude
+Code socket write) is never re-pushed, because the receiver would see it twice;
+it waits for the ack. A pull lane (no push adapter, e.g. a phone app) keeps the
+message in its inbox until it acks.
 """
 from __future__ import annotations
 
@@ -85,10 +87,12 @@ class WireStore:
                 return state  # acked/answered meanwhile: never move it back
             if verified:
                 new = "delivered"
+            elif pushed:
+                new = "pushed"  # it reached the receiver's transport: wait for the ack, never re-push
             elif attempts >= MAX_ATTEMPTS:
                 new = "failed"
             else:
-                new = "pushed" if pushed else "accepted"
+                new = "accepted"  # reached nobody: retry with backoff
             self._db.execute("UPDATE messages SET state=?, attempts=?, next_attempt=?, updated=? WHERE id=?",
                              (new, attempts, now + backoff_s(attempts), now, env_id))
             return new
@@ -142,6 +146,6 @@ class WireStore:
         marks = ",".join("?" * len(lanes))
         with self._lock:
             rows = self._db.execute(
-                "SELECT env FROM messages WHERE state IN ('accepted','pushed') AND next_attempt<=? AND expires>? "
+                "SELECT env FROM messages WHERE state='accepted' AND next_attempt<=? AND expires>? "
                 f"AND to_lane IN ({marks}) ORDER BY next_attempt LIMIT ?", (now, now, *lanes, int(limit))).fetchall()
         return [json.loads(r[0]) for r in rows]

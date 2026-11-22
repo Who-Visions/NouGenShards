@@ -8,8 +8,10 @@ and the same receipts.
 Push adapters wake a receiver as a new turn. Each one is a callable
 ``adapter(env, turn_text) -> {"pushed": bool, "verified": bool, "detail": str}``
 keyed by lane. ``verified`` means the receiver confirmed it (Antigravity's
-socket ack, a bridge reply); a bare socket write is ``pushed`` only. A lane
-with no adapter is a pull lane: its receiver reads the inbox and acks.
+socket ack, a bridge reply); a bare socket write is ``pushed`` only. A model
+lane that answers in the same call returns ``reply``, and the hub routes it back
+to the sender as an answer. A lane with no adapter is a pull lane: its receiver
+reads the inbox and acks.
 """
 from __future__ import annotations
 
@@ -76,10 +78,28 @@ class Hub:
             res = {"pushed": False, "verified": False, "detail": f"{type(exc).__name__}: {exc}"}
         pushed, verified = bool(res.get("pushed")), bool(res.get("verified"))
         state = self.store.record_push(env["id"], pushed, verified, self.clock())
-        receipt_state = {"delivered": "delivered", "pushed": "pushed"}.get(state, "failed" if state == "failed" else None)
-        if receipt_state:
-            self._receipt(env, receipt_state, str(res.get("detail", ""))[:300])
+        if state in ("delivered", "pushed", "failed"):
+            self._receipt(env, state, str(res.get("detail", ""))[:300])
+        reply = str(res.get("reply") or "").strip()
+        if reply and verified and not env.get("in_reply_to"):
+            state = self._model_reply(env, reply)
         return state
+
+    def _model_reply(self, env: Dict[str, Any], reply: str) -> str:
+        """A model lane answered in the same call: route its reply back as an envelope.
+
+        Only for a first message (no in_reply_to), so two model lanes can never
+        answer each other forever.
+        """
+        kind = "answer" if env["kind"] == "ask" else "msg"
+        back = E.make(env["to"], env["from"], reply[:E.MAX_TEXT], kind=kind, in_reply_to=env["id"],
+                      now=self.clock())
+        self.send(back)
+        if kind == "msg":
+            self.store.set_state(env["id"], "acked", self.clock(), acked_by=env["to"])
+            self._receipt(env, "acked", f"model replied in {back['id']}")
+            return "acked"
+        return "answered"
 
     def pump(self) -> Dict[str, int]:
         """One retry pass: expire old envelopes, re-push what is due."""

@@ -188,12 +188,12 @@ def test_verified_push_is_delivered_and_receiver_sees_a_turn():
     assert turns and "not your user" in turns[0]
 
 
-def test_unverified_push_retries_with_backoff_then_fails():
+def test_push_that_reached_nobody_retries_with_backoff_then_fails():
     clock = Clock()
     calls = []
-    hub = _hub({"claude-code": lambda env, turn: calls.append(1) or {"pushed": True, "verified": False}}, clock)
-    env = make("codex", "claude-code", "socket write, no ack", now=clock())
-    assert hub.send(env)["state"] == "pushed"
+    hub = _hub({"codex": lambda env, turn: calls.append(1) or {"pushed": False, "verified": False}}, clock)
+    env = make("claude-app", "codex", "pipe down", now=clock())
+    assert hub.send(env)["state"] == "accepted"
     assert hub.pump()["retried"] == 0  # not due yet
     for _ in range(MAX_ATTEMPTS + 2):
         clock.t += 601
@@ -202,10 +202,23 @@ def test_unverified_push_retries_with_backoff_then_fails():
     assert hub.status(env["id"])["state"] == "failed"
 
 
+def test_unconfirmed_socket_write_is_never_pushed_twice():
+    clock = Clock()
+    calls = []
+    hub = _hub({"claude-code": lambda env, turn: calls.append(1) or {"pushed": True, "verified": False}}, clock)
+    env = make("codex", "claude-code", "socket write, no ack", now=clock())
+    assert hub.send(env)["state"] == "pushed"
+    for _ in range(5):
+        clock.t += 601
+        hub.pump()
+    assert len(calls) == 1 and hub.status(env["id"])["state"] == "pushed"
+    assert hub.ack(env["id"], "claude-code")["state"] == "acked"
+
+
 def test_ack_stops_retries():
     clock = Clock()
     calls = []
-    hub = _hub({"codex": lambda env, turn: calls.append(1) or {"pushed": True, "verified": False}}, clock)
+    hub = _hub({"codex": lambda env, turn: calls.append(1) or {"pushed": False, "verified": False}}, clock)
     env = make("claude-app", "codex", "read me", now=clock())
     hub.send(env)
     hub.ack(env["id"], "codex")
@@ -217,7 +230,7 @@ def test_ack_stops_retries():
 def test_pull_lane_backlog_never_starves_push_retries():
     clock = Clock()
     calls = []
-    hub = _hub({"codex": lambda env, turn: calls.append(1) or {"pushed": True, "verified": False}}, clock)
+    hub = _hub({"codex": lambda env, turn: calls.append(1) or {"pushed": False, "verified": False}}, clock)
     for i in range(60):
         hub.send(make("codex", "claude-app", f"pull {i}", now=clock()))
     hub.send(make("claude-app", "codex", "push me", now=clock()))
@@ -272,3 +285,21 @@ def test_cross_provider_ask_answer_round_trip():
     back = hub.inbox("claude-code/4936@phoebus")["items"]
     assert back[0]["env"]["in_reply_to"] == ask["id"]
     assert "answering " + ask["id"] in back[0]["turn"]
+
+
+def test_model_lane_reply_comes_back_as_an_answer_and_never_loops():
+    calls = []
+
+    def model(env, turn):
+        calls.append(env["id"])
+        return {"pushed": True, "verified": True, "reply": "pong from gemma"}
+    hub = _hub({"ollama": model, "codex": model})
+    ask = make("claude-app", "ollama:gemma4:e2b@blade", "ping", kind="ask", now=hub.clock())
+    out = hub.send(ask)
+    assert out["state"] == "answered"
+    back = hub.inbox("claude-app")["items"]
+    assert back[0]["env"]["kind"] == "answer" and back[0]["env"]["text"] == "pong from gemma"
+    assert back[0]["env"]["from"] == "ollama:gemma4:e2b@blade"
+    # model to model: the reply is pushed once and never answered again
+    hub.send(make("ollama", "codex", "hello", now=hub.clock()))
+    assert len(calls) == 3
