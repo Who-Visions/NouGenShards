@@ -154,7 +154,11 @@ def test_origin_envelope_preserves_session_identity_and_machine_conflict(monkeyp
     }]
 
 
-def test_missing_session_identity_is_explicitly_unknown():
+def test_missing_session_identity_is_explicitly_unknown(monkeypatch, tmp_path):
+    # Runtime resolution now fills the session from env, so "nothing knows" needs a clean env.
+    for var in ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID", "NOUGEN_SESSION_TITLE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NOUGEN_CLAUDE_SESSIONS_DIR", str(tmp_path))
     origin = NouGenMsgBus._origin_envelope({})
     assert origin["session_id"] is None
     assert origin["provenance_state"] == "unknown"

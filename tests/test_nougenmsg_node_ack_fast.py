@@ -44,7 +44,7 @@ def test_reply_does_not_wait_for_the_gate_and_the_receipt_reports_it(monkeypatch
     release = threading.Event()
     calls = []
 
-    def slow_gate(text, sender, message_id=None, origin="peer", origin_proof=None):
+    def slow_gate(text, sender, message_id=None, origin="peer", origin_proof=None, label=None):
         calls.append((text, sender, message_id))
         release.wait(5)
         return {"attempted": True, "kaedra_approved": False, "reason_code": "test"}
