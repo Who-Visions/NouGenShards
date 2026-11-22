@@ -740,10 +740,27 @@ def elevated_state(message_id: str) -> "dict | None":
         return dict(outcome) if outcome is not None else None
 
 
+def _delivery_label(msg: dict) -> str:
+    """The banner label for a delivered message, via display_sender.
+
+    Resolves from the sender's origin envelope (machine, lane, session, machine
+    id) so a session reads who actually wrote it, not a bare sender string a
+    bridge typed. Falls back to the raw sender only if the import fails.
+    """
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
+    try:
+        from nougen_shards.nougenmsg import display_sender  # noqa: E402
+        return display_sender(origin)
+    except Exception:
+        return str(msg.get("sender", "unknown"))
+
+
 def _run_elevated(msg: dict) -> None:
     try:
         verdict = gate_and_deliver(
-            str(msg.get("text", "")), str(msg.get("sender", "unknown")),
+            str(msg.get("text", "")), _delivery_label(msg),
             message_id=msg.get("message_id"),  # honored if the sender provides one
             origin=str(msg.get("origin", "peer")),
             origin_proof=msg.get("origin_proof"))

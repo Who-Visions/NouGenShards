@@ -49,6 +49,49 @@ def resolve_session() -> str:
     return ""
 
 
+def resolve_session_title(session_id: str = "") -> str:
+    """The human title of this session, or "" when nothing knows it.
+
+    Order: NOUGEN_SESSION_TITLE, then the Claude Code session registry entry
+    for `session_id` (~/.claude/sessions/*.json, field "name"), then the
+    NouGen cc_sessions registry entry (field "title" or "name"). Never invents
+    a title: an unknown session stays "" so the label falls back to sid8.
+    """
+    env = os.environ.get("NOUGEN_SESSION_TITLE", "").strip()
+    if env:
+        return env
+    sid = (session_id or resolve_session()).strip()
+    if not sid:
+        return ""
+    base = os.environ.get("NOUGEN_CLAUDE_SESSIONS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude", "sessions")
+    for path in sorted(glob.glob(os.path.join(base, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and str(data.get("sessionId") or "") == sid:
+            name = str(data.get("name") or data.get("title") or "").strip()
+            if name:
+                return name
+    try:
+        reg_path = os.environ.get("NOUGEN_CC_SESSIONS") or os.path.join(_home(), "cc_sessions.json")
+        with open(reg_path, encoding="utf-8") as fh:
+            reg = json.load(fh)
+        sessions = reg.get("sessions") if isinstance(reg.get("sessions"), dict) else reg
+        for key, entry in (sessions or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            if sid in (key, str(entry.get("session_id") or ""), str(entry.get("sessionId") or "")):
+                name = str(entry.get("title") or entry.get("name") or "").strip()
+                if name:
+                    return name
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ""
+
+
 def resolve_origin_host() -> str:
     """The physical box this message was written on, regardless of its label.
 
@@ -379,9 +422,13 @@ def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
         sender = f"{machine}/{sender}"
     label = sender or machine
     if label:
+        sid = str(origin.get("session_id") or "").strip()
+        who = str(origin.get("session_title") or "").strip() or (sid[:8] if sid else "")
+        if who:
+            label = f"{label} · {who}"
         mid = str(origin.get("machine_id") or "").strip()
         if mid and mid != "unknown":
-            label = f"{label} [{mid}]"
+            label = f"{label} [{mid[:8]}]"
         # Envelopes are unsigned: only a sender this process stamped itself is
         # shown as fact. Everything else is a claim and says so, until a
         # signature check can mark it verified.
@@ -1289,7 +1336,10 @@ class NouGenMsgBus:
         return path
 
     # Short lane names for sender labels ("blade-agy", not "blade-antigravity").
-    _LANE_ALIASES = {"antigravity": "agy", "claude-code": "claude", "claude-cli": "claude"}
+    _LANE_ALIASES = {"antigravity": "agy", "claude-code": "claude"}
+    # Claude Code reports which surface it runs on; the lane keeps the split so a
+    # desktop-app session and a terminal session on one box stay distinguishable.
+    _ENTRYPOINT_LANES = (("desktop", "claude-app"), ("cli", "claude-cli"), ("sdk", "claude-sdk"))
 
     @classmethod
     def _sender_lane(cls, supplied: Dict[str, Any]) -> Optional[str]:
@@ -1300,7 +1350,8 @@ class NouGenMsgBus:
         Claude session as agy. No API-key guessing -- an unknown lane stays None."""
         lane = (supplied.get("lane") or os.environ.get("NOUGEN_LANE") or "").strip().lower()
         if not lane and (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT")):
-            lane = "claude"
+            entry = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip().lower()
+            lane = next((name for key, name in cls._ENTRYPOINT_LANES if key in entry), "claude")
         lane = lane or (os.environ.get("NOUGEN_AGENT") or "").strip().lower()
         if lane.startswith("nougen-"):
             lane = lane[len("nougen-"):]
@@ -1376,10 +1427,17 @@ class NouGenMsgBus:
                 conflicts.append({"field": "machine", "claimed": claimed_machine,
                                   "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
+        session_title = supplied.get("session_title")
+        if not forwarded:
+            # This process is the origin: discover who is speaking instead of
+            # waiting to be told. A forwarded envelope keeps its upstream
+            # session fields untouched; the receiver never stamps its own.
+            session_id = session_id or resolve_session() or None
+            session_title = session_title or (resolve_session_title(session_id or "") or None)
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
-            "session_title": supplied.get("session_title"),
+            "session_title": session_title,
             "machine": sender_machine,
             "machine_id": sender_id,
             "node_source": None if forwarded else ident["node_source"],
