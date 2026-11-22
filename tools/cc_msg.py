@@ -127,17 +127,29 @@ def send_claude_live_socket(content: str, target_session: Optional[str] = None) 
     return AgentPinger.ping_claude(content, target_session=target_session)
 
 
+def default_sender() -> str:
+    """This node's label, resolved at call time (env -> machine label -> hostname)."""
+    try:
+        from nougen_shards.locator import current_node
+
+        return current_node()
+    except Exception:
+        return "unknown"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Universal 1:1 cc-msg / nougenmsg parity dispatcher.")
     parser.add_argument("args", nargs="*", help="Target (@node/session) and message text, or bare message text")
     parser.add_argument("--to", help="Explicit target node or session")
-    parser.add_argument("--sender", "-s", default="Apollo-AGY", help="Sender signature")
+    parser.add_argument("--sender", "-s", default=None, help="Sender signature (default: this node, resolved at runtime)")
     parser.add_argument("--summary", "-m", help="Explicit first-line summary preview")
     parser.add_argument("--priority", "-p", choices=["low", "normal", "high"], default="normal", help="Message priority")
     parser.add_argument("--type", "-t", default="live_message", help="Message classification type")
     parser.add_argument("--inbox", action="store_true", help="Read local inbox directly")
     parser.add_argument("--drain", action="store_true", help="Pop and drain pending messages")
     parsed = parser.parse_args()
+    if not parsed.sender:
+        parsed.sender = default_sender()
 
     if parsed.inbox or parsed.drain:
         endpoint = "/pop" if parsed.drain else "/"
