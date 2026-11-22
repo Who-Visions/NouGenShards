@@ -56,7 +56,8 @@ def _msg_token() -> str:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
         from nougen_shards.keymaker import get_secret
         return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"cc_msg: no /msg token from keymaker ({type(exc).__name__}); sending without X-NGS-Token", file=sys.stderr)
         return ""
 
 

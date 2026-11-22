@@ -1098,10 +1098,13 @@ class AgentPinger:
 def delivery_status(res: Dict[str, Any]) -> str:
     """One honest word for a send_resolved() result.
 
-    "delivered" only when every route answered without an error; "queued"
-    when a route was handed to a background SSH send; "partial" when some
-    routes failed; "failed" when all did; the refusal status when the target
-    did not resolve. A tool must never say delivered for a queued send.
+    "delivered" only when every route answered without an error and none said
+    its delivery was unverified; "unverified" when a route took the message but
+    reported delivery_verified:false (Claude pipes, by design); "queued" when a
+    route was handed to a background send or only an inbox file was dropped;
+    "partial" when some routes failed; "failed" when all did; the refusal
+    status when the target did not resolve. A tool must never say delivered
+    for a queued or unverified send.
     """
     if not isinstance(res, dict):
         return "failed"
@@ -1112,11 +1115,18 @@ def delivery_status(res: Dict[str, Any]) -> str:
     if not values:
         return "failed"
 
+    def _reached_nobody(v: Dict[str, Any]) -> bool:
+        # Claude pipes report delivered as the list of sessions written to;
+        # an empty list (registered:0) reached no one.
+        return isinstance(v.get("delivered"), list) and not v["delivered"]
+
     def _bad(v: Any) -> bool:
         if isinstance(v, str):
-            return v.startswith("Error")
+            return v.startswith(("Error:", "Error "))
         if isinstance(v, dict):
-            return v.get("delivered") is False or str(v.get("status", "")).lower() in {"failed", "error"}
+            if v.get("delivered") is False or str(v.get("status", "")).lower() in {"failed", "error"}:
+                return True
+            return _reached_nobody(v) and not v.get("inbox_file")
         return False
 
     bad = sum(1 for v in values if _bad(v))
@@ -1124,8 +1134,11 @@ def delivery_status(res: Dict[str, Any]) -> str:
         return "failed"
     if bad:
         return "partial"
-    if any(isinstance(v, dict) and v.get("queued") for v in values):
+    dicts = [v for v in values if isinstance(v, dict)]
+    if any(v.get("queued") or _reached_nobody(v) for v in dicts):
         return "queued"
+    if any(v.get("delivery_verified") is False for v in dicts):
+        return "unverified"
     return "delivered"
 
 

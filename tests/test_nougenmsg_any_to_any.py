@@ -33,6 +33,34 @@ def test_delivery_status_is_honest():
     assert delivery_status(None) == "failed"
 
 
+def test_delivery_status_never_says_delivered_for_an_unverified_or_empty_route():
+    sent = {"delivered": ["s1"], "registered": 1, "delivery_verified": False, "errors": []}
+    assert delivery_status({"results": {"claude": sent}}) == "unverified"
+    assert delivery_status({"results": {"claude": sent, "codex": "ok"}}) == "unverified"
+    nobody = {"delivered": [], "registered": 0, "delivery_verified": False, "inbox_file": None}
+    assert delivery_status({"results": {"claude": nobody}}) == "failed"
+    assert delivery_status({"results": {"claude": nobody, "codex": "ok"}}) == "partial"
+    dropped = dict(nobody, inbox_file="/tmp/inbox/m.json")
+    assert delivery_status({"results": {"claude": dropped}}) == "queued"
+    assert delivery_status({"results": {"codex": "Errored jobs: 0, all clear"}}) == "delivered"
+
+
+def test_keymaker_failure_is_logged_not_silent(monkeypatch, caplog):
+    import sys as _sys
+    import types as _types
+    monkeypatch.delenv("NOUGEN_AGY_MSG_TOKEN", raising=False)
+    boom = _types.ModuleType("nougen_shards.keymaker")
+
+    def _get_secret(_name):
+        raise OSError("DPAPI 0x8009000B")
+
+    boom.get_secret = _get_secret
+    monkeypatch.setitem(_sys.modules, "nougen_shards.keymaker", boom)
+    with caplog.at_level("WARNING", logger=agy_msg.__name__):
+        assert agy_msg.msg_token() == ""
+    assert "no /msg token from keymaker" in caplog.text
+
+
 def test_node_tool_uses_delivery_status():
     src = (ROOT / "app.py").read_text(encoding="utf-8")
     body = src[src.index("def nougenmsg(message: str"):]

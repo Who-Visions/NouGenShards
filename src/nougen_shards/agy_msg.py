@@ -57,7 +57,10 @@ def msg_token() -> str:
     try:
         from nougen_shards.keymaker import get_secret  # lazy: keymaker is heavy
         return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        # A keymaker failure (e.g. DPAPI 0x8009000B under another logon) must not
+        # pass silently: the send goes out unauthenticated and the node answers 401.
+        log.warning("nougenmsg: no /msg token from keymaker (%s); sending without X-NGS-Token", type(exc).__name__)
         return ""
 
 
