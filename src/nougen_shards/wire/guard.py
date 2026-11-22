@@ -1,6 +1,6 @@
 """The action guard, enforced at the hub so every route gets it.
 
-Before v2 the only guard lived in the Phoebus app bridge, so a message that
+Before v2 the only guard lived in one node's app bridge, so a message that
 fell back to an app's own node or its mailbox skipped it. Here the hub checks
 every envelope on ingest, before any route is chosen.
 
