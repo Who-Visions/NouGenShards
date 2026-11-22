@@ -14,6 +14,11 @@ class _Steady:
     pass
 
 
+class _LeakyStable:
+    """Only the fingerprint test makes these, so no earlier test's instances
+    (rootless once their fake module leaves sys.modules) can be picked as targets."""
+
+
 def _fake_module(name):
     mod = types.ModuleType(name)
     mod.REQUEST_LOG = []          # the classic leak: a module-level list nobody trims
@@ -46,15 +51,15 @@ def test_growing_type_is_retained_and_traced_to_its_module_global():
 def test_fingerprint_is_stable_across_instances_of_the_same_bug():
     mod = _fake_module("lw_fake_server2")
     try:
-        # A generous time budget: on a full CI run the heap holds every test's
-        # objects, and gc.get_referrers() on it can outrun the 8 s default,
-        # which returned a rootless trace and failed this test on 3.11.
-        w = leakwatch.LeakWatch(window=2, min_growth=10, trace_depth=6, log_path=None,
-                                trace_budget_s=120.0)
-        mod.REQUEST_LOG.extend(_Leaky() for _ in range(20))
-        a = w.leak_trace(f"{__name__}._Leaky")
-        mod.REQUEST_LOG.extend(_Leaky() for _ in range(20))
-        b = w.leak_trace(f"{__name__}._Leaky")
+        # Its own class: gc.get_objects() lists the oldest generation last, so
+        # with a shared class leak_trace's last-N targets could be the previous
+        # test's _Leaky, whose module is gone (no root, fingerprint None on 3.11).
+        w = leakwatch.LeakWatch(window=2, min_growth=10, trace_depth=6, log_path=None)
+        mod.REQUEST_LOG.extend(_LeakyStable() for _ in range(20))
+        a = w.leak_trace(f"{__name__}._LeakyStable")
+        mod.REQUEST_LOG.extend(_LeakyStable() for _ in range(20))
+        b = w.leak_trace(f"{__name__}._LeakyStable")
+        assert a["fingerprint"]
         assert a["fingerprint"] == b["fingerprint"]
     finally:
         sys.modules.pop("lw_fake_server2", None)
