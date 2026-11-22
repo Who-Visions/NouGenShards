@@ -5,6 +5,7 @@ from nougen_shards import recall_hook as rh
 
 def _state(tmp_path, monkeypatch, samples=None):
     monkeypatch.setenv("NOUGEN_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("NOUGEN_RECALL_HOOK_BUDGET_STATE", raising=False)
     monkeypatch.delenv("NOUGEN_RECALL_HOOK_BUDGET_MS", raising=False)
     monkeypatch.delenv("NOUGEN_RECALL_HOOK_BUDGET_MAX_MS", raising=False)
     if samples is not None:
@@ -50,3 +51,9 @@ def test_corrupt_state_falls_back(tmp_path, monkeypatch):
     _state(tmp_path, monkeypatch)
     (tmp_path / "recall_hook_budget.json").write_text("not json")
     assert rh._env_budget_ms() == rh.DEFAULT_BUDGET_MS
+
+
+def test_p90_is_nearest_rank_not_max(tmp_path, monkeypatch):
+    _state(tmp_path, monkeypatch, [1000] * 9 + [4000])
+    # p90 of ten samples is the 9th value (1000), not the outlier (4000).
+    assert rh._env_budget_ms() == 1500

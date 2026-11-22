@@ -236,6 +236,9 @@ _LEARN_MAX_MS_DEFAULT = 5000
 
 
 def _budget_state_path() -> str:
+    explicit = os.environ.get("NOUGEN_RECALL_HOOK_BUDGET_STATE", "").strip()
+    if explicit:
+        return explicit
     base = os.environ.get("NOUGEN_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".nougen", "state")
     return os.path.join(base, "recall_hook_budget.json")
 
@@ -263,7 +266,8 @@ def _learned_budget_ms() -> int:
     if not samples:
         return DEFAULT_BUDGET_MS
     samples.sort()
-    p90 = samples[min(len(samples) - 1, int(len(samples) * 0.9))]
+    # Nearest-rank p90: ceil(0.9 n) - 1. int(0.9 n) picked the max for n = 10.
+    p90 = samples[max(0, -(-len(samples) * 9 // 10) - 1)]
     return max(DEFAULT_BUDGET_MS, min(_learn_max_ms(), int(p90 * 1.5)))
 
 
