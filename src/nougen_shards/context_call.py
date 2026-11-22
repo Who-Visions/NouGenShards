@@ -87,7 +87,17 @@ def _int_env(name: str, default: int) -> int:
 
 
 def budget_ms() -> int:
-    return _int_env("NOUGEN_CONTEXT_CALL_BUDGET_MS", DEFAULT_BUDGET_MS)
+    """The call's wall: NOUGEN_CONTEXT_CALL_BUDGET_MS, else the recall hook's own budget
+    (env, or learned from this host's recall times where that exists) plus the reserve,
+    never under the default."""
+    raw = os.environ.get("NOUGEN_CONTEXT_CALL_BUDGET_MS", "").strip()
+    if raw:
+        return _int_env("NOUGEN_CONTEXT_CALL_BUDGET_MS", DEFAULT_BUDGET_MS)
+    try:
+        from . import recall_hook  # pylint: disable=import-outside-toplevel
+        return max(DEFAULT_BUDGET_MS, int(recall_hook._env_budget_ms()) + RESERVE_MS)  # pylint: disable=protected-access
+    except Exception:  # pylint: disable=broad-except
+        return DEFAULT_BUDGET_MS
 
 
 def state_dir() -> Path:
@@ -517,6 +527,10 @@ def context_call(prompt: str, session_id: str = "", *, budget: Optional[int] = N
                   "reason": f"recall raised {type(exc).__name__}: {exc}"[:200], "errors": {"recall": str(exc)[:200]},
                   "mark": dict(recall_hook.MARK_CONTRACT)}
     out["recall"] = recall
+    learn = getattr(recall_hook, "record_budget_sample", None)  # learned budget, where the host has it
+    if learn:
+        with contextlib.suppress(Exception):
+            learn(recall)
     remaining = wall / 1000.0 - (time.monotonic() - t0)
     t_local.join(max(0.0, min(remaining, 0.2)) if remaining > 0 else 0.0)
     out["local"] = dict(local) if not t_local.is_alive() else {"timed_out": True}
