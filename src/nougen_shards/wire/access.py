@@ -183,9 +183,11 @@ def authenticate(token: str, fleet_token: str, book: Optional[GuestBook], now: O
         found, why = book.lookup(token, time.time() if now is None else now)
     if found is not None:
         return found, ""
+    if token:
+        return None, why  # a token was presented and didn't match: never fall through to open access
     if not fleet_token:
-        return RELAY, ""  # open dev node: no fleet token configured, no latch
-    return None, why if token else "missing X-NGS-Token header"
+        return RELAY, ""  # open dev node: no fleet token configured and no token presented
+    return None, "missing X-NGS-Token header"
 
 
 class RateLimiter:
@@ -236,7 +238,11 @@ def mint(name: str, send_to=(), days: float = 14, path: Optional[str] = None, la
         Address.parse(one)
     path = path or guests_file()
     data = _read(path)
-    data["guests"] = [g for g in data.get("guests", []) if g.get("name") != name]
+    kind = "lane" if lane else "guest"
+    clash = [g for g in data.get("guests", []) if g.get("name") == name and g.get("kind", "guest") != kind]
+    if clash:
+        raise ValueError(f"name {name!r} is already a {clash[0].get('kind', 'guest')} token; revoke it first or pick another name")
+    data["guests"] = [g for g in data.get("guests", []) if g.get("name") != name]  # same name and kind: rotate
     token = "ngw_" + secrets.token_urlsafe(24)
     row = {"name": name, "token_sha256": _hash(token), "send_to": lanes,
            "expires": round(time.time() + days * 86400) if days else None, "created": round(time.time())}
