@@ -100,3 +100,5 @@ and we'll take you off the list. No login needed.
 
 © 2026 Who Visions LLC · {{sender_name}}, superintendent of Hotel Visions,
 for Dave
+
+Powered by NouGen AI.
