@@ -8,6 +8,7 @@ Computed by `evals/destiny10_audit.py` from `evals/results/destiny_bench_*.json`
 |---|---|---|---|---|---|---|---|
 | no_memory | 1085 | 0/100 | 304,328 | n/a | 0/30 | 0 | `destiny_bench_20261117.json` |
 | no_memory | 1086 | 0/100 | 320,495 | n/a | 0/30 | 0 | `destiny_bench_nomem_seed1086.json` |
+| no_memory | 1087 | 0/100 | 315,929 | n/a | 0/30 | 0 | `destiny_bench_nomem_seed1087.json` |
 | prompt_only | 1085 | 100/100 | 172,875 | 1729 | 21/21 | 0 | `destiny_bench_20261118_seed1085.json` |
 | prompt_only | 1086 | 100/100 | 173,158 | 1732 | 21/21 | 0 | `destiny_bench_20261118_seed1086.json` |
 | prompt_only | 1087 | 100/100 | 173,245 | 1732 | 21/21 | 0 | `destiny_bench_20261118_seed1087.json` |
@@ -19,7 +20,7 @@ Computed by `evals/destiny10_audit.py` from `evals/results/destiny_bench_*.json`
 
 | Arm | Seeds | Done band | Tokens/success band |
 |---|---|---|---|
-| no_memory | 2 | 0-0 | n/a |
+| no_memory | 3 | 0-0 | n/a |
 | prompt_only | 3 | 100-100 | 1729-1732 |
 | shards_first | 3 | 100-100 | 337-343 |
 
@@ -33,6 +34,7 @@ Counts are derived from done totals because both controls and shards_first run t
 | 1085 | prompt_only | at least 0 | at least 0 |
 | 1086 | no_memory | at least 100 | at least 0 |
 | 1086 | prompt_only | at least 0 | at least 0 |
+| 1087 | no_memory | at least 100 | at least 0 |
 | 1087 | prompt_only | at least 0 | at least 0 |
 
 Per-task outcomes were not stored, so these are lower bounds from totals. Equal totals do not rule out offsetting rescue and harm.
@@ -44,14 +46,14 @@ Per-task outcomes were not stored, so these are lower bounds from totals. Equal 
 | 3 arms: no_memory, prompt_only, shards_first | MET | arms present: no_memory, prompt_only, shards_first |
 | same tasks and token budget | MET | one world per seed, `task_token_budget` 60,000 per task in every arm |
 | hidden held-out tasks never seen by the improver | NOT MET | the harness has no improver; there is nothing to hold tasks out from. Satisfying this needs a benchmark where a lane changes between runs |
-| >=3 seeds per arm with a seed band reported | NOT MET | seeds per arm: no_memory 2, prompt_only 3, shards_first 3 |
+| >=3 seeds per arm with a seed band reported | MET | seeds per arm: no_memory 3, prompt_only 3, shards_first 3 |
 | hidden unit tests grade success | MET | `hidden_verify` runs each answer in an isolated subprocess against an assert the executor never sees |
 
 ## Forbidden outcomes
 
 | Outcome | Status |
 |---|---|
-| endpoint gain without seed-band control | AT RISK: bands reported above |
+| endpoint gain without seed-band control | AVOIDED: bands reported above |
 | held-out ids reaching the update | N/A: no update step exists |
 | self-graded success | AVOIDED: success is the hidden assert, rollback violations are 0 in every run |
 | claiming AGI or RSI proven | AVOIDED: not claimed |
