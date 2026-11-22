@@ -183,8 +183,8 @@ def authenticate(token: str, fleet_token: str, book: Optional[GuestBook], now: O
         found, why = book.lookup(token, time.time() if now is None else now)
     if found is not None:
         return found, ""
-    if not fleet_token:
-        return RELAY, ""  # open dev node: no fleet token configured, no latch
+    if not fleet_token and not token:
+        return RELAY, ""  # open dev node: no fleet token configured and no token presented
     return None, why if token else "missing X-NGS-Token header"
 
 
@@ -236,6 +236,11 @@ def mint(name: str, send_to=(), days: float = 14, path: Optional[str] = None, la
         Address.parse(one)
     path = path or guests_file()
     data = _read(path)
+    kind = "lane" if lane else "guest"
+    clash = [g for g in data.get("guests", []) if g.get("name") == name and g.get("kind", "guest") != kind]
+    if clash:
+        raise ValueError(f"name {name!r} is already a {clash[0].get('kind', 'guest')} token; "
+                         "pick another name or revoke it first")
     data["guests"] = [g for g in data.get("guests", []) if g.get("name") != name]
     token = "ngw_" + secrets.token_urlsafe(24)
     row = {"name": name, "token_sha256": _hash(token), "send_to": lanes,

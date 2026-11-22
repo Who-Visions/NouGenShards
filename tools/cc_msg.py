@@ -224,6 +224,11 @@ def main() -> int:
             status += " (socket accepted; Claude provides no delivery acknowledgement)"
         print(f"Delivered to {target_raw} [{host}] -> {status}")
         return 0
+    elif result.get("routed") and result.get("status") == "unverified":
+        # The node accepted and routed it; no lane confirmed. Not a failure:
+        # retrying would send a duplicate.
+        print(f"Routed to {target_raw} [{host}], delivery not verified (left for the drain)")
+        return 0
     else:
         print(f"Failed to deliver message to {target_raw} [{host}]", file=sys.stderr)
         return 1

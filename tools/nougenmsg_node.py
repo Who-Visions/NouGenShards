@@ -191,9 +191,64 @@ def _dispatch_routes(msg: dict, routes: list) -> "tuple[int, dict]":
                      "error": "no resolved node accepted the message", "node": NODE,
                      "target": msg["target"], "message_id": msg["message_id"],
                      "results": results, "failed": failed}
-    return 200, {"delivered": True, "routed": True, "duplicate": False, "method": "fleet_bus",
-                 "node": NODE, "target": msg["target"], "message_id": msg["message_id"],
-                 "build": build_id(), "results": results, "failed": failed}
+    return 200, _receipt({"delivered": True, "routed": True, "duplicate": False,
+                          "method": "fleet_bus", "node": NODE, "target": msg["target"],
+                          "message_id": msg["message_id"], "build": build_id(),
+                          "results": results, "failed": failed})
+
+
+def _lanes_verified(results: object) -> "bool | None":
+    """Did any receiving lane confirm delivery?
+
+    True when at least one lane reports a verified hand-off, False when lanes
+    reported and none verified, None when the result carries no lane reports
+    (for example a background fan-out that has not answered yet).
+    """
+    seen = False
+
+    def walk(node: object) -> bool:
+        nonlocal seen
+        if isinstance(node, dict):
+            if "delivery_verified" in node:
+                seen = True
+                if node.get("delivery_verified") is True:
+                    return True
+            if "pipe_delivered" in node:
+                seen = True
+                if node.get("pipe_delivered") is True:
+                    return True
+            if "queue_accepted" in node:
+                # Accepted into a queue is not a receiver confirmation.
+                seen = True
+            if isinstance(node.get("delivered"), list):
+                seen = True
+                if node["delivered"]:
+                    return True
+            return any(walk(v) for v in node.values() if isinstance(v, (dict, list)))
+        if isinstance(node, list):
+            return any(walk(v) for v in node)
+        return False
+
+    if walk(results):
+        return True
+    return False if seen else None
+
+
+def _receipt(body: dict) -> dict:
+    """Make the top-level flag honest: routed is not delivered.
+
+    ``delivered`` stays True only when some lane verified the hand-off or no lane
+    reported at all; when every reporting lane is unverified it becomes False with
+    status ``unverified`` (the message was still routed, and left for the drain).
+    """
+    verified = _lanes_verified(body.get("results"))
+    body["delivery_verified"] = verified
+    if verified is False:
+        body["delivered"] = False
+        body["status"] = "unverified"
+    elif verified is None:
+        body.setdefault("status", "queued")
+    return body
 
 
 def _get_fleet_bus():
@@ -232,7 +287,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
         peers = {"nodes": list(dest[2])} if len(dest) > 2 else {}
         res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True,
                              forwarded=True, **peers)
-        return 200, {
+        return 200, _receipt({
             "delivered": True,
             "routed": True,
             "duplicate": False,
@@ -242,7 +297,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "message_id": msg["message_id"],
             "build": build_id(),
             "results": res,
-        }
+        })
     res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin,
                         forwarded=True)
     node_res = res.get(dest_node) if isinstance(res, dict) else res
@@ -257,7 +312,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
             "message_id": msg["message_id"],
             "results": res,
         }
-    return 200, {
+    return 200, _receipt({
         "delivered": True,
         "routed": True,
         "duplicate": False,
@@ -267,7 +322,7 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
         "message_id": msg["message_id"],
         "build": build_id(),
         "results": res,
-    }
+    })
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
