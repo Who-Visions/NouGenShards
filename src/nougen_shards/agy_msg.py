@@ -45,6 +45,31 @@ def _http_url() -> str:
     return os.environ.get("NOUGEN_AGY_MSG_URL") or DEFAULT_HTTP_URL
 
 
+def msg_token() -> str:
+    """The node's /msg token (Keymaker NOUGEN_AGY_MSG_TOKEN), or "" if none.
+
+    Once a node latches /msg auth, an unauthenticated POST gets 401, so every
+    local sender carries the token when the box has one.
+    """
+    tok = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        from nougen_shards.keymaker import get_secret  # lazy: keymaker is heavy
+        return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
+def msg_headers(token: Optional[str] = None) -> Dict[str, str]:
+    """JSON headers for POST /msg, with X-NGS-Token when a token exists."""
+    headers = {"Content-Type": "application/json"}
+    tok = msg_token() if token is None else token
+    if tok:
+        headers["X-NGS-Token"] = tok
+    return headers
+
+
 def _http_timeout() -> float:
     raw = os.environ.get("NOUGEN_AGY_MSG_TIMEOUT_S")
     if raw is None:
@@ -152,7 +177,7 @@ class AgyMsgBus:
             req = urllib.request.Request(
                 _http_url(),
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=msg_headers(),
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=_http_timeout()) as resp:

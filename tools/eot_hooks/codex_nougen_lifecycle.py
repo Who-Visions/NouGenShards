@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -301,6 +302,21 @@ CODEX_INBOXES = [Path.home() / ".codex" / "inbox", Path.home() / ".nougen" / "co
 CODEX_EOT_CURSOR = Path.home() / ".nougen" / "state" / "codex_eot_cursor.json"
 
 
+LANE_WIDE_MAX_AGE_S = 6 * 3600
+
+
+def _lane_wide_fresh(body: dict, path: Path, now: float | None = None) -> bool:
+    """A thread-less message for the Codex lane, sent in the last few hours."""
+    if str(body.get("target") or "codex").lstrip("@").lower() not in {"codex", "all"}:
+        return False
+    stamp = body.get("timestamp")
+    try:
+        sent = float(stamp) if stamp is not None else path.stat().st_mtime
+    except (TypeError, ValueError, OSError):
+        return False
+    return ((now if now is not None else time.time()) - sent) <= LANE_WIDE_MAX_AGE_S
+
+
 def unread_codex_inbox(limit: int = 5, thread_id: str | None = None) -> list[str]:
     """Present only this thread's messages; retain durable inbox and execution state."""
     thread = str(thread_id or os.environ.get("CODEX_THREAD_ID") or os.environ.get("NOUGEN_CODEX_THREAD") or "").strip()
@@ -325,7 +341,13 @@ def unread_codex_inbox(limit: int = 5, thread_id: str | None = None) -> list[str
                 try:
                     body = json.loads(path.read_text())
                     destination = body.get("thread") or body.get("thread_id") or body.get("target_thread")
-                    if str(destination or "") != thread:
+                    if destination:
+                        if str(destination) != thread:
+                            continue
+                    elif not _lane_wide_fresh(body, path):
+                        # Thread-less drops (the node's fallback inbox writes none) are
+                        # addressed to the Codex lane: show recent ones to every thread
+                        # once, but never replay an old backlog into a new thread.
                         continue
                     identity = str(body.get("message_id") or path.resolve())
                     if identity in seen:

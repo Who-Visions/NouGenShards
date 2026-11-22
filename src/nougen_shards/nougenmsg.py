@@ -1095,6 +1095,40 @@ class AgentPinger:
 
 
 
+def delivery_status(res: Dict[str, Any]) -> str:
+    """One honest word for a send_resolved() result.
+
+    "delivered" only when every route answered without an error; "queued"
+    when a route was handed to a background SSH send; "partial" when some
+    routes failed; "failed" when all did; the refusal status when the target
+    did not resolve. A tool must never say delivered for a queued send.
+    """
+    if not isinstance(res, dict):
+        return "failed"
+    if res.get("delivered") is False:
+        return str(res.get("status") or "failed")
+    results = res.get("results")
+    values = list(results.values()) if isinstance(results, dict) else []
+    if not values:
+        return "failed"
+
+    def _bad(v: Any) -> bool:
+        if isinstance(v, str):
+            return v.startswith("Error")
+        if isinstance(v, dict):
+            return v.get("delivered") is False or str(v.get("status", "")).lower() in {"failed", "error"}
+        return False
+
+    bad = sum(1 for v in values if _bad(v))
+    if bad == len(values):
+        return "failed"
+    if bad:
+        return "partial"
+    if any(isinstance(v, dict) and v.get("queued") for v in values):
+        return "queued"
+    return "delivered"
+
+
 class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
 
