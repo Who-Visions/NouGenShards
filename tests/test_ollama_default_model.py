@@ -97,3 +97,9 @@ def test_explicit_model_argument_still_wins(monkeypatch):
 def test_unknown_node_falls_back_to_the_widely_present_tag(monkeypatch):
     monkeypatch.setattr("nougen_shards.nougenmsg.get_current_node", lambda: "whoart")
     assert AgentPinger._default_ollama_model("some-new-node") == "gemma4:e2b"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pick_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_OLLAMA_PICKS_FILE", str(tmp_path / "picks.json"))
+    monkeypatch.setattr(nougenmsg.AgentPinger, "_PICK_CACHE", {})
