@@ -6,7 +6,7 @@
 #>
 [CmdletBinding()]
 param (
-    [string]$RepoPath = "$env:USERPROFILE\Outpost\NouGen",
+    [string]$RepoPath = $(if ($env:NOUGEN_SHARDS_REPO) { $env:NOUGEN_SHARDS_REPO } else { Split-Path -Parent $PSScriptRoot }),
     [string]$Remote = "origin",
     [int]$FetchTimeoutSec = 8,
     [switch]$NoUpdate = $false
@@ -30,13 +30,12 @@ if (Test-Path $cfgPath) {
     } catch {}
 }
 
-Set-Location -Path $RepoPath
-
-# 1. Verify this is a valid Git directory
+# 1. Verify this is a valid Git directory BEFORE Set-Location
 if (-not (Test-Path "$RepoPath\.git")) {
     Write-Warning "[NouGen Sync] '$RepoPath' is not a git repository. Skipping."
     exit 0
 }
+Set-Location -Path $RepoPath
 
 # 2. Check for uncommitted, staged, or untracked changes
 $dirty = git status --porcelain
@@ -48,7 +47,8 @@ if ($dirty) {
 # 3. Non-blocking fetch with quick timeout
 Write-Host "[NouGen Sync] Checking remote for updates ($Remote)..." -ForegroundColor Cyan
 try {
-    $fetchJob = Start-Job -ScriptBlock { param($r) git fetch $r --quiet } -ArgumentList $Remote
+    # Pass $RepoPath explicitly: Start-Job does NOT inherit Set-Location cwd.
+    $fetchJob = Start-Job -ScriptBlock { param($repo, $r) git -C $repo fetch $r --quiet } -ArgumentList $RepoPath, $Remote
     $completed = Wait-Job $fetchJob -Timeout $FetchTimeoutSec
     if (-not $completed) {
         Stop-Job $fetchJob | Out-Null

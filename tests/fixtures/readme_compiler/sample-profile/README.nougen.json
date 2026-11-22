@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json",
+  "badges": [],
+  "flagships": [
+    {
+      "description": "One compiler for every README.",
+      "repo": "nougen-readme",
+      "role": "COMPILE"
+    }
+  ],
+  "identity": {
+    "headline": "BUILDER OF SYSTEMS",
+    "name": "Sample Person",
+    "tagline": "Owned intelligence, local memory, no cloud required."
+  },
+  "kind": "profile",
+  "layers": [
+    {
+      "description": "The primary execution surface",
+      "name": "DIRECT",
+      "project": "nougen-readme"
+    }
+  ],
+  "links": [
+    {
+      "label": "GitHub",
+      "url": "https://github.com/example"
+    }
+  ],
+  "project": {
+    "description": "",
+    "emoji": "",
+    "title": "Sample Person"
+  },
+  "schema_version": 1,
+  "sections": [
+    {
+      "content": "A short profile bio.",
+      "title": "About"
+    }
+  ],
+  "table_of_contents": true,
+  "theme": {
+    "preset": "editorial",
+    "primary": "#00A7D1",
+    "secondary": "#E84A8A"
+  }
+}

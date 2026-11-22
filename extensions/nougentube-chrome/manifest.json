@@ -22,6 +22,7 @@
     "http://localhost:11434/*",
     "http://127.0.0.1:11434/*",
     "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8767/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",

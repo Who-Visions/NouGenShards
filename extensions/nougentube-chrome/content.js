@@ -220,6 +220,15 @@
   .ln{display:flex;gap:10px;padding:7px 10px;border-radius:8px;cursor:pointer;position:relative}
   .ln:hover{background:var(--card)}.ln.now{background:color-mix(in srgb,var(--ac) 16%,transparent)}
   .ln.hl{box-shadow:inset 3px 0 var(--ac2)}
+  /* YouTube red & gold (Figma: NouGenTube — YouTube Red & Gold) */
+  .p[data-theme=youtube] .lg{background:var(--ac);border-radius:8px}
+  .p[data-theme=youtube] .ti small{color:var(--ac2);font-weight:500}
+  .p[data-theme=youtube] #hs{background:var(--ac);border-color:var(--ac);color:var(--ink);font-weight:600}
+  .p[data-theme=youtube] .tabs button.on{border-bottom-color:transparent;border-image:linear-gradient(90deg,var(--ac),var(--ac2)) 1;font-weight:700}
+  .p[data-theme=youtube] .chip.on{border-color:var(--ac2);color:var(--ac2)}
+  .p[data-theme=youtube] .ts{font-weight:500}
+  .p[data-theme=youtube] .ln.now{background:var(--raised);box-shadow:inset 3px 0 var(--ac)}
+  .p[data-theme=youtube] .ln.hl{background:color-mix(in srgb,var(--ac2) 12%,transparent);box-shadow:inset 3px 0 var(--ac2)}
   .ts{color:var(--ac2);font-variant-numeric:tabular-nums;font-size:12px;min-width:42px;padding-top:2px;cursor:pointer;background:none;border:0;text-align:left}
   .st{position:absolute;right:6px;top:6px;opacity:0}.ln:hover .st{opacity:1}
   mark{background:var(--warn);color:var(--ink);border-radius:2px}
@@ -310,8 +319,8 @@
   }
   const $ = id => root.getElementById(id);
   // Mono Violet colorways. Auto follows YouTube's own light or dark setting.
-  const THEMES = ["auto", "dark", "light", "arcade", "hardcade"];
-  const THEME_NAMES = { auto: "Auto (matches YouTube)", dark: "Mono Violet dark", light: "Mono Violet light", arcade: "Arcade", hardcade: "Hardcade" };
+  const THEMES = ["auto", "dark", "light", "arcade", "hardcade", "youtube"];
+  const THEME_NAMES = { auto: "Auto (matches YouTube)", dark: "Mono Violet dark", light: "Mono Violet light", arcade: "Arcade", hardcade: "Hardcade", youtube: "YouTube red & gold" };
   function applyTheme() { const p = root && root.querySelector(".p"); if (!p) return; const t = S.theme || "auto";
     p.dataset.theme = t === "auto" ? NGT_THEME.resolveAuto({ ytBackground: getComputedStyle(document.documentElement).getPropertyValue("--yt-spec-base-background"), ytDarkAttr: document.documentElement.hasAttribute("dark"), osDark: matchMedia("(prefers-color-scheme: dark)").matches }) : t;
     const b = root.getElementById("th"); if (b) b.title = "Theme: " + THEME_NAMES[t] + " (click to change)"; }
@@ -481,17 +490,28 @@
     // Only bound (per-video summary/chat) streams share S.port; unbound jobs
     // (morph, batch) keep isolated ports so concurrent streams never cancel each other.
     if (bound && S.port) { S.port.cancel?.(); try { S.port.disconnect(); } catch {} }
-    const port = chrome.runtime.connect({ name: "chat" });
-    port.bound = !!bound;
-    if (bound) S.port = port;
-    let fin = false;
-    // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
-    const ka = setInterval(() => { try { port.postMessage({ ping: 1 }); } catch {} }, 15000);
+    let fin = false, port = null, ka = null, retried = false, got = false;
     const end = (e, m) => { if (fin) return; fin = true; clearInterval(ka); if (bound && S.port === port) S.port = null; onDone(e, m); };
-    port.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
-    port.onMessage.addListener(m => { if (m.stage && onStage) onStage(m.stage); if (m.reset && onReset) onReset(); if (m.delta) onDelta(m.delta); if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
-    port.onDisconnect.addListener(() => end("\n\n⚠ The extension's background page stopped before the answer arrived. Press Regenerate."));
-    port.postMessage({ messages });
+    // If Chrome stops the background worker mid-answer (a slow local model can run for minutes), reconnect once
+    // and ask again from the start, dropping the partial text, before telling the user anything.
+    const open = () => {
+      const p = port = chrome.runtime.connect({ name: "chat" });
+      p.bound = !!bound;
+      if (bound) S.port = p;
+      // Chrome stops an idle background page after ~30s even mid-request; a message every 15s keeps it up.
+      clearInterval(ka); ka = setInterval(() => { try { p.postMessage({ ping: 1 }); } catch {} }, 15000);
+      p.cancel = () => end("\n\n⚠ Cancelled: another request took over.");   // our own disconnect fires no onDisconnect here
+      p.onMessage.addListener(m => { if (port !== p) return; if (m.stage && onStage) onStage(m.stage); if (m.reset && onReset) onReset(); if (m.delta) { got = true; onDelta(m.delta); } if (m.error) end("\n\n⚠ " + m.error); if (m.done) end("", m); });
+      p.onDisconnect.addListener(() => {
+        if (fin || port !== p) return;
+        // Unbound jobs (batch, morph) have no reset hook of their own and S.onReset belongs to the open video, so
+        // they retry only while nothing has been written yet; bound streams reset their own view and start over.
+        if (!retried && (bound ? mine() : !got)) { retried = true; if (bound && onStage) onStage("The background page restarted; asking again"); if (bound && onReset) onReset(); return open(); }
+        end("\n\n⚠ The extension's background page stopped " + (retried ? "twice " : "") + "before the answer arrived. Press Regenerate, or pick a faster model.");
+      });
+      p.postMessage({ messages });
+    };
+    open();
   }
   // Split on topic boundaries: a >=3s silence gap or a transition phrase, near a target size.
   const TRANS = /\b(moving on|let'?s talk about|next up|now let'?s|the next (thing|step|part)|another thing|so that'?s it|in conclusion|to sum up|first of all|secondly|finally)\b/i;
@@ -586,7 +606,10 @@
     const once = () => new Promise(res => { const p = chrome.runtime.connect({ name: "shard" }); const ka = setInterval(() => { try { p.postMessage({ ping: 1 }); } catch {} }, 15000);
       const fin = v => { clearInterval(ka); res(v); try { p.disconnect(); } catch {} };
       p.onMessage.addListener(fin); p.onDisconnect.addListener(() => fin(null)); p.postMessage({ doc }); });
-    let r = await once(); if (!r) r = await once();
+    // The bridge or its node can blip for a few seconds (a restart, a sleeping service worker):
+    // retry with short pauses before calling it down. Repeats are safe; the vault dedupes by content.
+    let r = null;
+    for (const wait of [0, 1500, 4000, 8000]) { if (wait) await new Promise(res => setTimeout(res, wait)); r = await once(); if (r) break; }
     if (b.isConnected) { delete b.dataset.busy; b.textContent = label; }
     if (S.vid !== v0) return;   // navigated away while saving: do not overwrite the new video's state
     S.shardMsg = r?.ok ? `Saved to NouGenShards: ${r.parts.length} shard${r.parts.length === 1 ? "" : "s"} (${r.parts.map(p => p.shard_id != null ? `${p.shard_id}@db${p.db_index}` : (p.captured ? "new" : "already stored")).join(", ")}).`
@@ -969,7 +992,7 @@
 
   // ---------- persistence / export ----------
   const key = () => "v:" + S.vid;
-  function save() { chrome.storage.local.set({ [key()]: { summary: S.summary, chat: S.chat, hl: S.hl, shardMsg: S.shardMsg || "", morph: S.morph && !S.morph.busy ? S.morph : null, tr: S.tr && !S.tr.busy && !S.tr.err ? { lang: S.tr.lang, out: S.tr.out, done: S.tr.out.length } : null } }); }
+  function save() { chrome.storage.local.set({ [key()]: { summary: S.summary, chat: S.chat, hl: S.hl, shardMsg: /^(Could not|Nothing)/.test(S.shardMsg || "") ? "" : (S.shardMsg || ""), morph: S.morph && !S.morph.busy ? S.morph : null, tr: S.tr && !S.tr.busy && !S.tr.err ? { lang: S.tr.lang, out: S.tr.out, done: S.tr.out.length } : null } }); }
   const saveHl = save;
   // Copy format: "<title> - YouTube\n<url>\n\nTranscript:\n(mm:ss) paragraph"
   const pad = t => { t = Math.floor(t); const h = t / 3600 | 0, m = String((t % 3600) / 60 | 0).padStart(2, "0"), x = String(t % 60).padStart(2, "0"); return h ? `${h}:${m}:${x}` : `${m}:${x}`; };

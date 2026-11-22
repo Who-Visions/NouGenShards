@@ -226,6 +226,170 @@ def coach_for_machine(value: str) -> str:
     return fleet_identity_maps()[1].get(normalized, normalized)
 
 
+def _ping_dedupe_ttl_s() -> float:
+    """Window in which an identical Claude ping is delivered only once.
+
+    NOUGEN_PING_DEDUPE_S overrides; 0 disables. The default is a logged
+    fallback, sized to cover the minutes-long gap seen between the direct
+    route and the ssh hop route delivering the same message.
+    """
+    raw = os.environ.get("NOUGEN_PING_DEDUPE_S", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else 600.0
+    except ValueError:
+        print(f"[nougenmsg] bad NOUGEN_PING_DEDUPE_S={raw!r}; using 600", file=sys.stderr)
+        return 600.0
+
+
+_MSG_ID_RE = re.compile(r"\[msg (m-[0-9a-f]{8,})\]")
+
+
+def _ping_key(prompt: str, target_session: Optional[str],
+              origin: Optional[Dict[str, Any]] = None) -> str:
+    """Identity of one delivery: the bus msg_id when the message carries one
+    (footer "[msg m-...]" or origin.message_id), else a hash of the text.
+
+    Keying on the id means two deliberate identical messages (two "ping"s,
+    two roll calls) are two messages; only the same message arriving over two
+    routes collapses. The target session is part of the key, so a targeted
+    copy and a broadcast copy are separate audiences.
+    """
+    mid = str((origin or {}).get("message_id") or "").strip()
+    if not mid:
+        m = _MSG_ID_RE.search(prompt or "")
+        mid = m.group(1) if m else ""
+    import hashlib
+    basis = f"id:{mid}" if mid else f"text:{prompt}"
+    return hashlib.sha256(f"{target_session or '*'}|{basis}".encode("utf-8", "replace")).hexdigest()[:32]
+
+
+class _PingLedger:
+    """Seen-message ledger beside the Claude inbox, serialized by a lock file.
+
+    Concurrent senders (direct route and hop route land within the same
+    second) would otherwise each read an empty ledger and both deliver. The
+    lock is held only for one read-modify-write, waits a bounded time, breaks
+    a stale lock, and on any failure the caller delivers (fail open).
+    """
+
+    def __init__(self) -> None:
+        state_dir = os.path.join(os.path.dirname(AgentPinger._claude_inbox_dir()), "state")
+        os.makedirs(state_dir, exist_ok=True)
+        self.path = os.path.join(state_dir, "claude_ping_seen.json")
+        self.lock = self.path + ".lock"
+
+    def _acquire(self) -> bool:
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return True
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(self.lock) > 10:
+                        os.remove(self.lock)  # holder died mid-write
+                        continue
+                except OSError:
+                    pass
+                time.sleep(0.02)
+            except OSError:
+                return False
+        return False
+
+    def _release(self) -> None:
+        try:
+            os.remove(self.lock)
+        except OSError:
+            pass
+
+    def _load(self, ttl: float) -> Dict[str, float]:
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        now = time.time()
+        if not isinstance(seen, dict):
+            return {}
+        return {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < ttl}
+
+    def update(self, key: str, ttl: float, mark: bool) -> bool:
+        """Return True if key is already recorded; when mark, record it."""
+        if not self._acquire():
+            return False
+        try:
+            seen = self._load(ttl)
+            if key in seen:
+                return True
+            if mark:
+                seen[key] = time.time()
+                tmp = self.path + f".{os.getpid()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(seen, f)
+                os.replace(tmp, self.path)
+            return False
+        finally:
+            self._release()
+
+
+def _ping_seen_before(prompt: str, target_session: Optional[str],
+                      origin: Optional[Dict[str, Any]] = None) -> bool:
+    """True when this message already reached this box's Claude sessions.
+
+    A message can reach a box twice: over the direct route and over the ssh
+    hop (tools/nougenmsg.py --local --origin-b64). Read-only check; the key is
+    recorded by _ping_mark_delivered only after a delivery succeeds, so a
+    failed first attempt never suppresses the retry. Fails open.
+    """
+    ttl = _ping_dedupe_ttl_s()
+    if ttl <= 0:
+        return False
+    try:
+        return _PingLedger().update(_ping_key(prompt, target_session, origin), ttl, mark=False)
+    except OSError:
+        return False
+
+
+def _ping_mark_delivered(prompt: str, target_session: Optional[str],
+                         origin: Optional[Dict[str, Any]] = None) -> None:
+    ttl = _ping_dedupe_ttl_s()
+    if ttl <= 0:
+        return
+    try:
+        _PingLedger().update(_ping_key(prompt, target_session, origin), ttl, mark=True)
+    except OSError:
+        pass
+
+
+def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
+    """The label a receiving session shows for a message.
+
+    It names the machine and lane that WROTE the message (stamped at the
+    origin), not the bridge that delivered it. Before this, every message a
+    Blade session received read "NouGenMsg-blade" even when WhoArt sent it.
+    Falls back to the local bridge only when the envelope carries no origin.
+    """
+    origin = origin or {}
+    sender = str(origin.get("original_sender") or "").strip()
+    machine = str(origin.get("machine") or "").strip()
+    if sender and machine and machine not in sender:
+        sender = f"{machine}/{sender}"
+    label = sender or machine
+    if label:
+        mid = str(origin.get("machine_id") or "").strip()
+        if mid and mid != "unknown":
+            label = f"{label} [{mid}]"
+        # Envelopes are unsigned: only a sender this process stamped itself is
+        # shown as fact. Everything else is a claim and says so, until a
+        # signature check can mark it verified.
+        trust = origin.get("origin_trust")
+        if trust not in ("stamped", "verified"):
+            label = f"{label} (asserted)"
+        return label
+    return f"NouGenMsg-{current_machine_id()} (origin unstamped)"
+
+
 def get_current_node() -> str:
     """Which fleet node this box is, or "standalone".
 
@@ -438,12 +602,9 @@ class AgentPinger:
         name to recognise, and a live flag. Newest registration first."""
         if _tenant_scope():
             return []
-        try:
-            with open(AgentPinger._cc_registry_path(), "r", encoding="utf-8") as f:
-                registry = json.load(f)
-        except (OSError, ValueError):
-            return []
-        if not isinstance(registry, dict):
+        from . import cc_registry
+        registry, _corrupt = cc_registry.read(AgentPinger._cc_registry_path())
+        if not registry:
             return []
         entries: Dict[str, Dict[str, Any]] = {}
         nested = registry.get("sessions")
@@ -471,7 +632,7 @@ class AgentPinger:
             out.append({
                 "session_id": sid,
                 "project": project or cwd,
-                "machine": str(entry.get("machine") or get_current_node()),
+                "machine": str(entry.get("machine") or current_machine_id()),
                 "agent": str(entry.get("agent") or "claude"),
                 "registered_utc": str(entry.get("registered_utc") or ""),
                 "live": _base(sock) in live,
@@ -501,14 +662,16 @@ class AgentPinger:
                 json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
             return {"status": "saved", "file": fp, "pipe_delivered": False,
                     "tenant_scope": "file-inbox-only"}
-        source = f"NouGenMsg-{get_current_node()}"
+        if _ping_seen_before(prompt, target_session, origin):
+            return {"delivered": [], "pruned": [], "registered": 0, "inbox_file": None,
+                    "delivery_verified": False, "errors": [], "target_session": target_session,
+                    "duplicate": True,
+                    "note": "identical message already delivered to this box within NOUGEN_PING_DEDUPE_S; skipped"}
+        source = display_sender(origin)
         text = f"NouGenMsg from {source}: {prompt}"
+        from . import cc_registry
         reg_path = AgentPinger._cc_registry_path()
-        try:
-            with open(reg_path, "r", encoding="utf-8") as f:
-                registry = json.load(f)
-        except (OSError, ValueError):
-            registry = {}
+        registry, registry_corrupt = cc_registry.read(reg_path)  # salvages a corrupt file
         # Both registry shapes can coexist in one file: blade nests {"sessions":
         # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
         # top level. An EMPTY nested "sessions" key used to mask every top-level
@@ -587,13 +750,19 @@ class AgentPinger:
                     print(f"[nougenmsg] pruned unreachable Claude endpoint {sock}: {last_exc}", file=sys.stderr, flush=True)
                 else:
                     print(f"[nougenmsg] delivery error on Claude endpoint {sock} (retained): {last_exc}", file=sys.stderr, flush=True)
-        if pruned:
+        if pruned or registry_corrupt:
+            gone = set(pruned)
+
+            def _prune(reg: Dict[str, Any]) -> None:
+                nested = reg.get("sessions")
+                if isinstance(nested, dict):
+                    for sock in gone:
+                        nested.pop(sock, None)
+                for sid in [k for k, v in reg.items()
+                            if k != "sessions" and isinstance(v, dict) and str(v.get("socket")) in gone]:
+                    reg.pop(sid, None)
             try:
-                registry["sessions"] = sessions
-                tmp = reg_path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(registry, f, indent=1)
-                os.replace(tmp, reg_path)
+                cc_registry.update(reg_path, _prune)  # locked; also rewrites a corrupt file clean
             except OSError:
                 pass
         # A targeted delivery must never leave a second copy in the shared
@@ -615,6 +784,8 @@ class AgentPinger:
                                **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
             except OSError:
                 inbox_file = None
+        if delivered or inbox_file:
+            _ping_mark_delivered(prompt, target_session, origin)
         if not sessions and not delivered:
             note = ("no registered live Claude Code session (SessionStart hook (nougenmsg_register.py on blade, nougenmsg_wake.py on phoebus) has not run, "
                     "or every registered session is gone); inbox file dropped for the drain hook")
@@ -622,7 +793,8 @@ class AgentPinger:
             note = (f"socket write accepted by {len(delivered)} live session(s); the harness writes no ack, "
                     "the receiver's context is the proof")
         return {"delivered": delivered, "pruned": pruned, "registered": registered_count, "inbox_file": inbox_file,
-                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note}
+                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note,
+                "registry_corrupt": registry_corrupt}
 
     @staticmethod
     def ping_antigravity(
@@ -645,8 +817,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -741,8 +913,8 @@ class AgentPinger:
             # re-dropped by the pipe server, so without an id a reader cannot
             # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
             "message_id": uuid.uuid4().hex,
-            "source": f"nougen-{get_current_node()}",
-            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "source": f"nougen-{current_machine_id()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{current_machine_id()}",
             "origin": origin,
             **({"session": _msg_session} if _msg_session else {}),
             **({"origin_host": _msg_host} if _msg_host else {}),
@@ -1009,29 +1181,83 @@ class NouGenMsgBus:
         """'<node>-<lane>' when the lane is known, else the legacy 'nougen-<node>'."""
         return f"{machine}-{lane}" if lane else f"nougen-{machine}"
 
+    @staticmethod
+    def _is_genuine_forward(supplied: Dict[str, Any], local_node: str, current: str) -> bool:
+        """True only when the envelope plausibly arrived from another machine.
+
+        A bare non-empty relay_path is not enough: any local caller can type
+        one and claim to be any machine. A real hop shows the claimed origin as
+        the first entry and a previous hop that is not this machine as the
+        last. Anything else is re-stamped here and the claim kept as a
+        conflict. Envelopes are unsigned, so this blocks casual and accidental
+        spoofing, not a deliberate forger.
+        """
+        path = [str(p).strip().lower() for p in (supplied.get("relay_path") or []) if str(p).strip()]
+        claimed = str(supplied.get("machine") or supplied.get("node") or "").strip().lower()
+        if not path or not claimed or path[0] != claimed:
+            return False
+        local = {local_node.lower(), str(current or "").lower()}
+        return path[-1] not in local
+
     @classmethod
-    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None,
+                         forwarded: bool = False) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
-        current = get_current_node()
+        current = current_machine_id()
         lane = cls._sender_lane(supplied)
         if lane:
             # Bookkeeping only: record that this lane spoke, for reply routing.
             # Nothing here changes where a message is delivered.
             from .lane_presence import default_presence
             default_presence().heartbeat(lane, time.time())
-        claimed_machine = supplied.get("machine")
+        from .machine import check_asserted_node, sender_identity
+        ident = sender_identity()
+        claimed_machine = supplied.get("machine") or supplied.get("node")
         conflicts = list(supplied.get("conflicts") or [])
-        if claimed_machine and claimed_machine != current:
-            conflicts.append({"field": "machine", "claimed": claimed_machine,
-                              "transport_observed": current})
+        # A forwarded envelope already carries a relay_path stamped by the
+        # origin box; only then is its machine/original_sender the truth.
+        # Otherwise this process IS the origin, and a caller-typed node is a
+        # claim: logged as a conflict, never used as the sender.
+        # Only the receiving end of a NouGenMsg hop (tools/nougenmsg.py decoding
+        # --origin-b64) passes forwarded=True. MCP tools, kaedra and other local
+        # callers hand in origin dicts directly and are always re-stamped,
+        # whatever relay_path they carry.
+        # forwarded=True only comes from a receiver that got this envelope from
+        # another box (the ssh hop CLI, or the node's authenticated HTTP
+        # receiver). Such a message is never this box's own: keep the sender's
+        # claim, marked unverified, and never stamp the receiver onto it.
+        # Before this, a peer message reaching blade via HTTP was labelled
+        # "blade-claude", hiding every sender behind the receiving box.
+        forwarded = bool(forwarded)
+        if forwarded:
+            path = [str(x).strip().lower() for x in (supplied.get("relay_path") or []) if str(x).strip()]
+            sender_machine = claimed_machine or (path[0] if path else "") or "unknown"
+            sender_id = supplied.get("machine_id") or "unknown"
+            if path and claimed_machine and not cls._is_genuine_forward(supplied, ident["node"], current):
+                conflicts.append({"field": "relay_path", "claimed": claimed_machine,
+                                  "relay_path": path})
+        else:
+            sender_machine = ident["node"]
+            sender_id = ident["machine_id"]
+            if check_asserted_node(claimed_machine):
+                # Same record shape consumers already read; the resolved
+                # sender is what goes in "machine", never the claim.
+                conflicts.append({"field": "machine", "claimed": claimed_machine,
+                                  "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
-            "machine": claimed_machine or current,
-            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
+            "machine": sender_machine,
+            "machine_id": sender_id,
+            "node_source": None if forwarded else ident["node_source"],
+            # "stamped": this process resolved the sender itself.
+            # "forwarded-unverified": kept from an upstream hop; envelopes are
+            # not signed, so a forward is plausible, never proven.
+            "origin_trust": "forwarded-unverified" if forwarded else "stamped",
+            "coach": supplied.get("coach") or coach_for_machine(sender_machine),
             "transport_machine": current,
             "lane": lane,
             "transport": supplied.get("transport") or "nougenmsg",
@@ -1042,7 +1268,10 @@ class NouGenMsgBus:
             # traffic reaching phoebus read as nougen-phoebus, origin.machine
             # phoebus. The content carried the origin; the envelope did not,
             # so cross-machine provenance was unrecoverable after one hop.
-            "original_sender": supplied.get("original_sender") or cls.sender_label(current, lane),
+            # A caller-chosen label (e.g. "codex-mac-mini") is kept as a label,
+            # but "machine"/"machine_id" above are always the stamp, and
+            # display_sender() shows both when they disagree.
+            "original_sender": supplied.get("original_sender") or cls.sender_label(sender_machine, lane),
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
             "correlation_id": supplied.get("correlation_id"),
@@ -1058,10 +1287,11 @@ class NouGenMsgBus:
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
                   origin: Optional[Dict[str, Any]] = None,
-                  models_async: bool = False) -> Dict[str, Any]:
+                  models_async: bool = False,
+                  forwarded: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
-        envelope = cls._origin_envelope(origin)
+        envelope = cls._origin_envelope(origin, forwarded=forwarded)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)
@@ -1151,7 +1381,7 @@ class NouGenMsgBus:
                     """, (
                         msg_id,
                         envelope.get("timestamp") or time.time(),
-                        envelope.get("machine") or get_current_node(),
+                        envelope.get("machine") or current_machine_id(),
                         envelope.get("original_sender") or envelope.get("lane") or "agent",
                         node or get_current_node(),
                         target,
@@ -1312,8 +1542,10 @@ class NouGenMsgBus:
     @classmethod
     def emit_node(cls, node: str, target: str, text: str,
                   origin: Optional[Dict[str, Any]] = None,
-                  audience: Optional[str] = None) -> Dict[str, Any]:
+                  audience: Optional[str] = None,
+                  forwarded: bool = False) -> Dict[str, Any]:
         """Dispatches message specifically to a target node.
+        forwarded: True only when this box received the message from another box.
         audience: persona scope; when resolvable, a one-line contract header prefixes the body."""
         header = cls.persona_header(audience)
         if header and not text.startswith("[persona "):
@@ -1326,9 +1558,10 @@ class NouGenMsgBus:
         if node in ["local", curr]:
             # No shell is involved locally, so the body needs no encoding or
             # shipping — deliver it verbatim.
-            return {curr: cls.live_ping(target=target, text=text, origin=origin)}
+            return {curr: cls.live_ping(target=target, text=text, origin=origin,
+                                        forwarded=forwarded)}
 
-        envelope = cls._origin_envelope(origin)
+        envelope = cls._origin_envelope(origin, forwarded=forwarded)
         origin_b64 = base64.urlsafe_b64encode(
             json.dumps(envelope, separators=(",", ":")).encode("utf-8")
         ).decode("ascii").rstrip("=")
@@ -1374,7 +1607,8 @@ class NouGenMsgBus:
                    origin: Optional[Dict[str, Any]] = None,
                    audience: Optional[str] = None,
                    background: bool = False,
-                   nodes: Optional[List[str]] = None) -> Dict[str, Any]:
+                   nodes: Optional[List[str]] = None,
+                   forwarded: bool = False) -> Dict[str, Any]:
         """Dispatches message across all nodes in the fleet (persona header applied once, here).
 
         nodes: the peers to reach, when the caller resolved the group from the live
@@ -1391,7 +1625,7 @@ class NouGenMsgBus:
             text = header + "\n" + text
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin,
-                                       models_async=background)}
+                                       models_async=background, forwarded=forwarded)}
         fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
@@ -1403,7 +1637,7 @@ class NouGenMsgBus:
             def _fan_out(peers=tuple(nodes)):
                 for n in peers:
                     try:
-                        res = cls.emit_node(n, target, text, origin=origin)
+                        res = cls.emit_node(n, target, text, origin=origin, forwarded=forwarded)
                         bad = {k: v for k, v in (res or {}).items() if isinstance(v, str) and v.startswith("Error")}
                         if bad:
                             print(f"[nougenmsg] background fan-out to {n} failed: {bad}", file=sys.stderr, flush=True)
@@ -1418,7 +1652,7 @@ class NouGenMsgBus:
         if len(nodes) > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=len(nodes)) as pool:
-                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin): n for n in nodes}
+                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin, forwarded=forwarded): n for n in nodes}
                 for fut in as_completed(futures):
                     n = futures[fut]
                     try:
@@ -1429,7 +1663,7 @@ class NouGenMsgBus:
         else:
             for n in nodes:
                 try:
-                    res = cls.emit_node(n, target, text, origin=origin)
+                    res = cls.emit_node(n, target, text, origin=origin, forwarded=forwarded)
                     results.update(res)
                 except Exception as e:
                     results[n] = f"Error: {e}"
@@ -1440,7 +1674,8 @@ class NouGenMsgBus:
     def send_resolved(cls, target: str, text: str,
                       origin: Optional[Dict[str, Any]] = None,
                       audience: Optional[str] = None,
-                      background: bool = False) -> Dict[str, Any]:
+                      background: bool = False,
+                      forwarded: bool = False) -> Dict[str, Any]:
         """Resolve ``target`` against the live table and send to exactly what it names.
 
         The one dispatch for the CLI, the MCP tools and app.py. An unknown or
@@ -1448,6 +1683,8 @@ class NouGenMsgBus:
         only fan-out; every other delivery goes to its own (node, lane) once, so a
         lane resolved to another node is never re-read as "everyone here".
         """
+        # Only pass the flag when set, so callers/fakes predating it keep working.
+        fwd = {"forwarded": True} if forwarded else {}
         res = resolve_target(target)
         if not res.ok:
             return {"delivered": False, "status": "not_resolvable", "reason": res.reason,
@@ -1458,7 +1695,7 @@ class NouGenMsgBus:
         if res.kind == "group":
             peers = sorted({d.node for d in res.deliveries} - here)
             results = cls.emit_fleet(text=text, target="all", origin=origin, audience=audience,
-                                     background=background, nodes=peers)
+                                     background=background, nodes=peers, **fwd)
             return {"resolution": res.as_dict(), "results": results}
         routes, seen = [], set()
         for d in res.deliveries:
@@ -1473,14 +1710,14 @@ class NouGenMsgBus:
         remote = [r for r in routes if r[0] != curr]
         for node, agent in routes:
             if node == curr:
-                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd))
         if background and remote:
             def _fan_out(todo=tuple(remote)):
                 # Same contract as emit_fleet's background fan-out: a failed or raising
                 # send is reported on stderr (the node's err log), never swallowed.
                 for node, agent in todo:
                     try:
-                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience)
+                        res = cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd)
                         bad = {k: v for k, v in (res or {}).items()
                                if isinstance(v, str) and v.startswith("Error")}
                         if bad:
@@ -1497,7 +1734,7 @@ class NouGenMsgBus:
                                  "failure_report": "stderr of the sending process"}
         else:
             for node, agent in remote:
-                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience))
+                results.update(cls.emit_node(node, agent, text, origin=origin, audience=audience, **fwd))
         return {"resolution": res.as_dict(), "results": results}
 
     @classmethod
@@ -2160,9 +2397,89 @@ def _registry_node_names() -> set:
     return _full_registry_node_names()
 
 
-def _self_node_name() -> str:
+def _nodes_registry_path() -> Path:
+    override = os.environ.get("NOUGEN_NODES_CONFIG", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip():
+        return fleet_hosts_path().parent / "nodes.json"
+    return Path.home() / ".nougen" / "nodes.json"
+
+
+def _name_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def registry_node_for(*names: str) -> str:
+    """The transport node nodes.json files a hostname or alias under, or "".
+
+    A box whose hostname is only an alias of a fleet node (a Mac Mini reporting
+    "kushboygroups-mac-mini" that the registry files under "phoebus") must stamp
+    the registry's name, not the raw hostname. Names compare case-insensitively
+    and ignoring punctuation.
+
+    Two passes, so one entry can never steal another's identity:
+    1. the name IS a transport node (hostname "phoebus" is phoebus, even if some
+       earlier entry lists "phoebus" as an alias);
+    2. the name is an entry's machine, one of its aliases, or the first label of
+       its hostname-style ``ip`` or ``host``.
+    Coach names (``name``, ``coach``, the registry key) are deliberately not
+    machine identities: "Apollo" is a coach, and a box called apollo is not blade.
+    Malformed entries are skipped, never raised.
+    """
+    wanted = {_name_key(n) for n in names if n}
+    wanted.discard("")
+    if not wanted:
+        return ""
+    try:
+        configured = json.loads(_nodes_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    entries = []
+    for cfg in (configured.values() if isinstance(configured, dict) else ()):
+        if not isinstance(cfg, dict):
+            continue
+        transport = _name_key(cfg.get("transport_node"))
+        if transport:
+            entries.append((transport, cfg))
+    for transport, _cfg in entries:
+        if transport in wanted:
+            return transport
+    for transport, cfg in entries:
+        candidates = {_name_key(cfg.get("machine"))}
+        aliases = cfg.get("aliases")
+        if isinstance(aliases, (list, tuple)):
+            candidates.update(_name_key(a) for a in aliases if isinstance(a, str))
+        for field in ("ip", "host"):
+            value = cfg.get(field)
+            if isinstance(value, str) and value and not re.fullmatch(r"[0-9.:]+", value):
+                candidates.add(_name_key(value.split(".")[0]))
+        candidates.discard("")
+        if wanted & candidates:
+            return transport
+    return ""
+
+
+def current_machine_id() -> str:
+    """The name this box stamps on what it sends, on any computer or device.
+
+    A box listed in fleet_hosts.json keeps its fleet node name. Otherwise the
+    node registry (nodes.json) is asked whether this hostname is an alias of a
+    fleet node, so an aliased box keeps the fleet's name. Every other box (a new
+    laptop, a phone, a tenant's PC) is named at runtime from its own hostname or
+    a persisted device id, never the literal "standalone", so a reply always says
+    which machine it came from. Routing decisions still use get_current_node(),
+    whose "standalone" means "no fleet configured here".
+    """
     n = get_current_node()
-    return local_node() if not n or n == "standalone" else n
+    if n and n != "standalone":
+        return n
+    runtime = local_node()
+    return registry_node_for(runtime, resolve_origin_host()) or runtime
+
+
+def _self_node_name() -> str:
+    return current_machine_id()
 
 
 def note_lane_seen(lane: str, node: str, now: Optional[float] = None) -> bool:

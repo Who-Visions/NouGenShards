@@ -5,7 +5,32 @@
 importScripts("providers.js", "power-core.js");
 
 const DEF = { host: "http://localhost:11434", model: "auto", localModel: "gemma4:e2b-qat", autoOrder: "free" };
-const NGO = "http://127.0.0.1:8765";   // nougen-open serve
+// nougen-open serve. 8765 is the default; a machine where 8765 is taken (Phoebus runs
+// mesh_registry there) serves the bridge on 8767. Find the one that is really the bridge
+// (its /health lists "lanes"), remember it, and look again whenever a call fails.
+let NGO = "http://127.0.0.1:8765";
+const NGO_CANDIDATES = ["http://127.0.0.1:8765", "http://127.0.0.1:8767"];
+async function findBridge() {
+  for (const c of NGO_CANDIDATES) {
+    try {
+      const r = await fetch(c + "/health", { signal: AbortSignal.timeout(1500) });
+      const j = await r.json();
+      if (r.ok && j && Array.isArray(j.lanes)) { NGO = c; chrome.storage.local.set({ ngo: c }); return c; }
+    } catch {}
+  }
+  return null;
+}
+// One bridge call that survives a wrong port: if the request fails outright, or the port
+// answers 404/405 (another service holds it, e.g. mesh_registry on Phoebus 8765), look for
+// the real bridge and retry once there.
+async function bridgeFetch(path, init) {
+  let r;
+  try { r = await fetch(NGO + path, init); if (r.status !== 404 && r.status !== 405) return r; } catch (e) { if (init && init.signal && init.signal.aborted) throw e; }
+  const before = NGO;
+  if (!(await findBridge()) || (NGO === before && r)) { if (r) return r; throw new Error("bridge not found"); }
+  return fetch(NGO + path, init);
+}
+chrome.storage.local.get("ngo").then(v => { if (v && NGO_CANDIDATES.includes(v.ngo)) NGO = v.ngo; }).catch(() => {});
 const IDLE_MS = globalThis.NG_IDLE_MS ?? 90000;   // max silence between chunks once text has started
 // Long jobs in the panel (a batch, a Morph, a translation, audio transcription) keep the computer awake, never the screen.
 const blocker = createPowerBlocker(chrome.power);
@@ -14,8 +39,12 @@ blocker.reset();   // a worker that starts holds nothing, so let go of anything 
 // backgroundThrottling), so a worker that lives on the page's pings can die mid-job. Any extension API call restarts its idle timer.
 const jobs = new Map();   // awake port -> { id: blocker id or null, text: progress shown on the toolbar button }
 let selfPing = null;
+// Answers in flight (chat streams, bridge calls). A slow local model can take minutes, and the page's own pings
+// are throttled when Chrome slows the tab, so the worker keeps itself alive from its side while any answer is pending.
+let inflight = 0;
+const busy = d => { inflight = Math.max(0, inflight + d); syncJobs(); };
 function syncJobs() {
-  const holding = [...jobs.values()].some(j => j.id !== null);
+  const holding = inflight > 0 || [...jobs.values()].some(j => j.id !== null);
   if (holding && !selfPing) selfPing = setInterval(() => { try { chrome.runtime.getPlatformInfo(); } catch { /* worker is going away anyway */ } }, 20000);
   if (!holding && selfPing) { clearInterval(selfPing); selfPing = null; }
 }
@@ -79,7 +108,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   if (msg.type === "provModels") { listModels(msg.id, msg.key, msg.base).then(models => reply({ ok: true, models }), e => reply({ ok: false, error: String(e.message || e) })); return true; }
   if (msg.type === "openOptions") { chrome.runtime.openOptionsPage(); reply({ ok: true }); return; }
   if (msg.type === "shard") {
-    fetch(NGO + "/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
+    bridgeFetch("/v1/nougen/shard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg.doc) })
       .then(async r => { const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
         if (!r.ok) reply({ ok: false, error: j?.error?.message || ("bridge said " + r.status) });
         else if (!j || typeof j !== "object") reply({ ok: false, error: "the bridge answered " + r.status + " but not with JSON" });
@@ -198,8 +227,9 @@ chrome.runtime.onConnect.addListener(port => {
       const c = ctrl = new AbortController(), ms = bridge.timeoutOf ? bridge.timeoutOf(msg) : bridge.timeout;
       let timedOut = false;
       const timer = ms ? setTimeout(() => { timedOut = true; c.abort(); }, ms) : null;
+      busy(1);
       try {
-        const r = await fetch(NGO + "/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
+        const r = await bridgeFetch("/v1/nougen/" + bridge.path(msg), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bridge.body(msg)), signal: c.signal });
         // Read text and parse safely: a reachable bridge that answers with HTML or an empty body is reported as
         // what it is, never as "not running" (that message is only for fetch itself failing).
         const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
@@ -208,8 +238,9 @@ chrome.runtime.onConnect.addListener(port => {
         else send(bridge.ok(j));
       } catch (e) {
         if (closed) return;
+        if (!timedOut) findBridge();
         send({ ok: false, error: timedOut ? "the bridge took too long" : "the NouGenOpen bridge is not running (nougen-open serve)" });
-      } finally { clearTimeout(timer); }
+      } finally { clearTimeout(timer); busy(-1); }
     });
     return;
   }
@@ -219,6 +250,10 @@ chrome.runtime.onConnect.addListener(port => {
   const send = m => { if (!closed) try { port.postMessage(m); } catch {} };
   port.onMessage.addListener(async ({ messages, ping }) => {
     if (ping) return;   // keepalive only
+    busy(1);
+    try { await answer(messages); } finally { busy(-1); }
+  });
+  async function answer(messages) {
     const c = await cfg();
     const routes = c.model === "auto" ? await autoRoutes(c) : [routeFor(c, c.model)];
     if (!routes.length) return send({ error: "No model route is available. Start Ollama or the NouGenOpen bridge, or add a provider key in ⚙ settings." });
@@ -241,5 +276,5 @@ chrome.runtime.onConnect.addListener(port => {
       } finally { clearTimeout(timer); }
     }
     send({ error: (routes.length > 1 ? "Every route failed. " : "") + failed.join(" · ") });
-  });
+  }
 });

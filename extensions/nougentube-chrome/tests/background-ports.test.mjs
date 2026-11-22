@@ -28,7 +28,7 @@ function load(fetchImpl) {
     storage: { sync: { get: async () => ({}) }, local: { get: async () => ({}), set: async () => {} } },
     sidePanel: { setPanelBehavior: async () => {} },
   };
-  const ctx = { chrome, fetch: fetchImpl, AbortController, AbortSignal, TextDecoder, setTimeout: fast, clearTimeout, console, URL };
+  const ctx = { chrome, fetch: fetchImpl, AbortController, AbortSignal, TextDecoder, setTimeout: fast, clearTimeout, console, URL, setInterval: (fn, ms) => setInterval(fn, ms).unref(), clearInterval };
   ctx.globalThis = ctx;
   ctx.importScripts = (...names) => { for (const n of names) vm.runInContext(readFileSync(new URL(n, dir), 'utf8'), ctx); };
   vm.createContext(ctx);
@@ -146,4 +146,18 @@ test('a reachable bridge that answers HTML is not reported as "not running"', T,
   assert.equal(odd.posted[0].ok, false);
   assert.match(odd.posted[0].error, /not with JSON/);
   assert.doesNotMatch(odd.posted[0].error, /not running/);
+});
+
+test('recall finds the bridge on 8767 when 8765 is another service answering 404', T, async () => {
+  const urls = [];
+  const p = load(async (u) => {
+    urls.push(String(u));
+    if (String(u).startsWith('http://127.0.0.1:8765')) return { ok: false, status: 404, json: async () => ({}), text: async () => 'not found' };
+    if (String(u).endsWith('/health')) return reply({ ok: true, lanes: [] });
+    return reply({ shards: [{ id: 7 }], failed: [] });
+  }).open('recall');
+  await p.send({ body: { queries: ['x'] } });
+  assert.deepEqual(plain(p.posted), [{ ok: true, shards: [{ id: 7 }], failed: [] }]);
+  assert.ok(urls.some(u => u === 'http://127.0.0.1:8767/health'));
+  assert.ok(urls.some(u => u.startsWith('http://127.0.0.1:8767/v1/nougen/')));
 });

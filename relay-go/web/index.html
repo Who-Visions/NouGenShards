@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>NouGen Relay</title>
+<meta name="description" content="Reach your node from anywhere without opening any ports. Your computer dials out to the relay once and stays connected.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2308060f'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23a855f7'/%3E%3C/svg%3E">
+<style>
+/* Brand: NouGen Shards "Obsidian Violet" (NouGen/skills/design/brands/nougen-shards).
+   Tokens are defined on bare :root (dark, the brand default); light only redefines them.
+   No script, no webfonts, no inline style attributes: the page ships under a hash-pinned CSP. */
+:root {
+  --night: #08060f; --night-2: #0c0a18; --panel: #110c22; --line: #221a3d;
+  --ink: #e9e5f6; --muted: #a79fc4;
+  --brand: #a855f7; --brand-deep: #7c3aed; --brand-light: #c084fc; --brand-fill: #6d28d9; --on-brand: #ffffff;
+  --pass: #34d399; --fail: #fb7185;
+  --focus: #c084fc; --ring-gap: #08060f;
+  --glow: 0 0 0 1px rgba(168,85,247,.18), 0 18px 48px -20px rgba(124,58,237,.45);
+  --wash-a: rgba(124,58,237,.16); --wash-b: rgba(168,85,247,.08); --grid: rgba(168,85,247,.06);
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem; --s6: 1.5rem; --s8: 2rem; --s12: 3rem; --s16: 4rem;
+  --r1: .25rem; --r2: .75rem; --r3: 1rem; --r-full: 9999px;
+  --measure: 62rem;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --night: #f7f4ff; --night-2: #efeaff; --panel: #ffffff; --line: #d9cff5;
+    --ink: #1b1233; --muted: #5b4f80;
+    --brand: #6d28d9; --brand-deep: #5b21b6; --brand-light: #7c3aed; --brand-fill: #6d28d9;
+    --pass: #047857; --fail: #be123c;
+    --focus: #6d28d9; --ring-gap: #f7f4ff;
+    --glow: 0 0 0 1px rgba(109,40,217,.16), 0 14px 36px -22px rgba(91,33,182,.35);
+    --wash-a: rgba(124,58,237,.10); --wash-b: rgba(168,85,247,.06); --grid: rgba(109,40,217,.07);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--night); color: var(--ink); font-family: var(--sans); line-height: 1.6;
+  background-image:
+    radial-gradient(60rem 36rem at 12% -8%, var(--wash-a), transparent 70%),
+    radial-gradient(48rem 30rem at 92% 4%, var(--wash-b), transparent 70%),
+    linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: auto, auto, 44px 44px, 44px 44px;
+  background-attachment: fixed;
+}
+:where(a, button, [tabindex]):focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ring-gap), 0 0 0 4px var(--focus); border-radius: var(--r1); }
+a { color: var(--brand); text-decoration-thickness: 1px; text-underline-offset: .2em; }
+a:hover { color: var(--brand-light); }
+.skip { position: absolute; left: var(--s4); top: -4rem; background: var(--brand-fill); color: var(--on-brand); padding: var(--s2) var(--s4); border-radius: var(--r2); z-index: 10; }
+.skip:focus-visible { top: var(--s4); }
+.wrap { max-width: var(--measure); margin: 0 auto; padding: 0 var(--s6); }
+header.top { border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; justify-content: space-between; min-height: 4rem; }
+.mark { display: inline-flex; align-items: center; gap: var(--s3); font-family: var(--mono); font-size: .8125rem; letter-spacing: .14em; text-transform: uppercase; color: var(--ink); text-decoration: none; }
+.mark i { width: .625rem; height: .625rem; border-radius: var(--r-full); background: var(--brand); box-shadow: 0 0 12px 1px var(--brand); display: inline-block; }
+nav a { font-family: var(--mono); font-size: .8125rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); text-decoration: none; padding: var(--s2) var(--s3); }
+nav a:hover { color: var(--ink); }
+.hero { padding: var(--s16) 0 var(--s12); }
+.tag { display: inline-block; font-family: var(--mono); font-size: .75rem; letter-spacing: .14em; text-transform: uppercase; color: var(--brand); border: 1px solid var(--line); background: var(--panel); padding: var(--s1) var(--s3); border-radius: var(--r1); }
+h1 { font-size: clamp(2.25rem, 6vw, 3.75rem); line-height: 1.08; letter-spacing: -.02em; margin: var(--s6) 0 var(--s6); font-weight: 700; max-width: 18ch; }
+h1 em { font-style: normal; color: var(--brand-light); }
+.lede { font-size: 1.125rem; color: var(--muted); max-width: 40rem; margin: 0 0 var(--s8); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--s3); }
+.btn { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 var(--s6); border-radius: var(--r2); font-weight: 600; font-size: .9375rem; text-decoration: none; border: 1px solid transparent; }
+.btn.primary { background: var(--brand-fill); color: var(--on-brand); box-shadow: var(--glow); }
+.btn.primary:hover { background: var(--brand-deep); color: var(--on-brand); }
+.btn.ghost { border-color: var(--line); color: var(--ink); background: var(--panel); }
+.btn.ghost:hover { border-color: var(--brand); color: var(--ink); }
+section { padding: var(--s12) 0; border-top: 1px solid var(--line); }
+.eyebrow { font-family: var(--mono); font-size: .75rem; letter-spacing: .16em; text-transform: uppercase; color: var(--brand); margin: 0 0 var(--s2); }
+h2 { font-size: 1.875rem; line-height: 1.2; letter-spacing: -.01em; margin: 0 0 var(--s8); }
+.steps { display: grid; gap: var(--s4); grid-template-columns: repeat(3, minmax(0, 1fr)); list-style: none; margin: 0 0 var(--s8); padding: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r3); padding: var(--s6); box-shadow: var(--glow); }
+.step-n { font-family: var(--mono); font-size: .75rem; letter-spacing: .12em; color: var(--brand); border: 1px solid var(--line); border-radius: var(--r1); padding: 2px var(--s2); display: inline-block; margin-bottom: var(--s4); }
+.card p { margin: 0; }
+.topo { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: var(--s3); }
+.node { background: var(--night-2); border: 1px solid var(--line); border-radius: var(--r2); padding: var(--s4); text-align: center; }
+.node b { display: block; font-size: 1.0625rem; }
+.node small { font-family: var(--mono); font-size: .75rem; color: var(--muted); letter-spacing: .06em; }
+.node.relay { border-color: var(--brand); box-shadow: var(--glow); }
+.link { text-align: center; font-family: var(--mono); font-size: .75rem; color: var(--brand); letter-spacing: .04em; min-width: 7rem; }
+.link span { display: block; border-top: 1px solid var(--brand); margin-top: var(--s2); position: relative; }
+.link span::after { content: ""; position: absolute; right: -1px; top: -4px; width: 7px; height: 7px; border-top: 1px solid var(--brand); border-right: 1px solid var(--brand); transform: rotate(45deg); }
+.link.back span::after { right: auto; left: -1px; transform: rotate(-135deg); }
+.note { color: var(--muted); font-size: .9375rem; margin: var(--s6) 0 0; }
+.grid2 { display: grid; gap: var(--s4); grid-template-columns: repeat(2, minmax(0, 1fr)); list-style: none; margin: 0; padding: 0; }
+.fact-n { font-family: var(--mono); font-size: .75rem; letter-spacing: .12em; color: var(--brand); display: block; margin-bottom: var(--s2); }
+.fact h3 { margin: 0 0 var(--s2); font-size: 1rem; }
+.fact p { margin: 0; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r3); overflow: hidden; box-shadow: var(--glow); }
+caption { text-align: left; color: var(--muted); font-size: .9375rem; padding-bottom: var(--s3); }
+th, td { text-align: left; padding: var(--s4) var(--s6); border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--mono); font-size: .75rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+td code { font-family: var(--mono); color: var(--brand-light); font-size: .9375rem; }
+.pill { font-family: var(--mono); font-size: .75rem; border: 1px solid var(--line); border-radius: var(--r-full); padding: 2px var(--s3); white-space: nowrap; display: inline-block; }
+.pill.open { color: var(--pass); }
+.pill.token { color: var(--brand); }
+.limits { display: grid; gap: var(--s4); grid-template-columns: repeat(4, minmax(0, 1fr)); margin: var(--s3) 0 0; padding: 0; list-style: none; }
+.limits li { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: var(--s4); }
+.limits b { display: block; font-family: var(--mono); font-size: 1.25rem; color: var(--ink); }
+.limits span { color: var(--muted); font-size: .875rem; }
+footer { border-top: 1px solid var(--line); padding: var(--s8) 0; color: var(--muted); font-size: .9375rem; }
+footer .wrap { display: flex; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
+@media (max-width: 52rem) {
+  .steps, .grid2, .limits { grid-template-columns: 1fr; }
+  .topo { grid-template-columns: 1fr; }
+  .link { min-width: 0; padding: var(--s2) 0; }
+  .link span { border-top: 0; border-left: 1px solid var(--brand); height: 1.5rem; width: 0; margin: var(--s2) auto 0; }
+  .link span::after { display: none; }
+  th, td { padding: var(--s3) var(--s4); }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#how">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="/"><i aria-hidden="true"></i>NouGen Relay</a>
+    <nav aria-label="Primary"><a href="https://github.com/Who-Visions/NouGenShards/blob/main/docs/relay-go-spec.md">Docs</a></nav>
+  </div>
+</header>
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <span class="tag">Outbound-only relay</span>
+      <h1>Reach your node from anywhere. <em>Open no ports.</em></h1>
+      <p class="lede">Your computer dials out to the relay once and stays connected. The relay forwards web requests to it, and nothing else gets in.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/Who-Visions/NouGenShards/blob/main/docs/relay-go-spec.md">Read the spec</a>
+        <a class="btn ghost" href="#how">How it connects</a>
+      </div>
+    </div>
+  </div>
+
+  <section id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h2 id="how-h">Three steps, one open socket</h2>
+      <ol class="steps">
+        <li class="card"><span class="step-n">STEP 01</span><p>Your node connects out over a WebSocket and authenticates with its token.</p></li>
+        <li class="card"><span class="step-n">STEP 02</span><p>A visitor requests your node&rsquo;s address.</p></li>
+        <li class="card"><span class="step-n">STEP 03</span><p>The relay hands the request down the open socket and returns the answer.</p></li>
+      </ol>
+      <div class="card" role="group" aria-label="Request path">
+        <div class="topo">
+          <div class="node"><small>Browser or client</small><b>Visitor</b></div>
+          <div class="link"><div>HTTPS request</div><span aria-hidden="true"></span></div>
+          <div class="node relay"><small>Forwards frames</small><b>Relay</b></div>
+          <div class="link back"><div>socket your node opened</div><span aria-hidden="true"></span></div>
+          <div class="node"><small>Behind your firewall</small><b>Your node</b></div>
+        </div>
+      </div>
+      <p class="note">Nothing connects inward to your computer. The socket is always opened from your side.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="trust-h">
+    <div class="wrap">
+      <p class="eyebrow">Defense in depth</p>
+      <h2 id="trust-h">Built to distrust</h2>
+      <ul class="grid2">
+        <li class="card fact"><span class="fact-n">01</span><h3>Hashed credentials</h3><p>The relay stores only a hash of each node&rsquo;s token.</p></li>
+        <li class="card fact"><span class="fact-n">02</span><h3>Checked responses</h3><p>Everything a node sends back is checked before it reaches the visitor.</p></li>
+        <li class="card fact"><span class="fact-n">03</span><h3>Capped sizes</h3><p>Request and response size are capped.</p></li>
+        <li class="card fact"><span class="fact-n">04</span><h3>No roll call</h3><p>A node must prove its token even to ask its own status, so nobody can list who is online.</p></li>
+      </ul>
+      <p class="note">By default:</p>
+      <ul class="limits" aria-label="Default limits">
+        <li><b>8 MiB</b><span>body cap, request and response</span></li>
+        <li><b>30 s</b><span>wait for a node&rsquo;s answer</span></li>
+        <li><b>20 s</b><span>node heartbeat</span></li>
+        <li><b>90 s</b><span>silent node is dropped</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="api-h">
+    <div class="wrap">
+      <p class="eyebrow">API surface</p>
+      <h2 id="api-h">Endpoints</h2>
+      <table>
+        <caption>Every relay endpoint other than visitor traffic.</caption>
+        <thead><tr><th scope="col">Path</th><th scope="col">Access</th><th scope="col">What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>/_relay/health</code></td><td><span class="pill open">public</span></td><td>Liveness probe. Returns <code>ok</code>.</td></tr>
+          <tr><td><code>/_relay/connect</code></td><td><span class="pill token">node token</span></td><td>The node&rsquo;s WebSocket.</td></tr>
+          <tr><td><code>/_relay/status</code></td><td><span class="pill token">node token</span></td><td>Node-only. Needs the node token.</td></tr>
+        </tbody>
+      </table>
+      <p class="note">Tokens are sent as <code>Authorization: Bearer</code>. A missing or wrong token gets <code>401</code>.</p>
+    </div>
+  </section>
+</main>
+<footer>
+  <div class="wrap">
+    <span>NouGen Relay is part of NouGen Shards.</span>
+    <a href="https://github.com/Who-Visions/NouGenShards/tree/main/relay-go">Source</a>
+  </div>
+</footer>
+</body>
+</html>

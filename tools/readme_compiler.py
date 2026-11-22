@@ -1,5 +1,50 @@
 #!/usr/bin/env python3
-"""Compile a structured JSON manifest into a polished GitHub README."""
+"""Compile a structured JSON manifest into a polished GitHub README.
+
+NouGen's README compiler: a manifest (`README.nougen.json`, schema v1)
+declares the project, sections, badges, and links; the compiler renders a
+deterministic, fail-closed README.md — same inputs, byte-identical output.
+Stdlib only, no network except the loopback Ollama draft endpoint.
+
+Commands: init / draft / compile / check / history / restore, plus ask.
+
+The manifest is explicit by design: section order, badges, links, and
+Markdown bodies stay in the manifest; the compiler adds consistent
+headings, a table of contents, and deterministic section emoji.
+
+Extensions (all optional fields; a plain v1 manifest compiles exactly as
+before):
+- `#include "path"` directives inside any section body, resolved
+  project-relative with a depth cap and cycle rejection.
+- Section `"merge": [...]`: ordered multi-file merge into one section.
+- `"footer"`: a text or file footer appended after Links.
+- `"kind": "profile"`: a profile README from identity / layers /
+  flagships / theme, in one of four deterministic layout presets.
+- `compile --recurse`: also compile child dirs with their own manifest.
+- `ask`: an interactive questionnaire that drafts a manifest
+  (`--answers FILE` for deterministic, non-interactive runs).
+- `init --auto`: heuristic prefill; every guess is labelled `[guess]`
+  and `compile` warns about guess sections instead of failing.
+- `init --from-readme`: prefill title, description, and sections from
+  the project's existing README.md (first H1 verbatim, first paragraph
+  after it, H2 sections verbatim), recording `source_readme_sha256`.
+- Optional `banner` (verbatim block after the title), `subtitle`, and
+  `status` fields, rendered under the title.
+- Compile/check report dropped empty sections (sorted, on stderr) and
+  warn (stderr, not a failure) when a section title already starts with
+  its emoji. Badge links may be in-page anchors (`#...`); relative
+  badge links are left as-is.
+- Section content passes through verbatim: the compiler never rewrites
+  body Markdown (it only trims surrounding whitespace).
+- Baseline truth store: `compile --write-baseline` records SHA-256
+  hashes of the manifest, output, and section files; `check --baseline`
+  verifies them.
+
+Design rules: one config-driven ruleset that works everywhere, dynamic
+(adapts without code changes), deterministic (byte-identical outputs),
+hierarchical (layers with roll-ups), heuristic (guesses labelled),
+grounded in truth (baseline hashes; check verifies stored provenance).
+"""
 
 from __future__ import annotations
 
@@ -75,13 +120,20 @@ EMOJI_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("overview", "about", "introduction", "summary"), "🧠"),
 )
 MANAGED_MARKER = "<!-- nougen-readme-compiler: v1 -->"
+EXTENSIONS_MARKER_PREFIX = "<!-- nougen-readme-compiler: extensions: "
 MAX_MANIFEST_BYTES = 2_000_000
 MAX_SECTION_FILE_BYTES = 1_000_000
 MAX_OUTPUT_BYTES = 5_000_000
 MAX_ARCHIVE_BYTES = 20_000_000
 MAX_DRAFT_SOURCE_BYTES = 16_000
 MAX_DRAFT_RESPONSE_BYTES = 512_000
+MAX_INCLUDE_DEPTH = 5
 DEFAULT_OLLAMA_MODEL = "gemma4:e2b-qat"
+BASELINE_FILENAME = ".readme-baseline.json"
+GUESS_MARKER = "[guess]"
+
+# Profile layouts: small, deterministic layout variants. SVG artwork is out of scope.
+PROFILE_PRESETS = ("control-plane", "editorial", "terminal", "minimal")
 
 
 class ReadmeError(ValueError):
@@ -171,6 +223,14 @@ def _keys(value: dict[str, Any], allowed: set[str], required: set[str], where: s
 def _url(value: str, where: str, *, image: bool = False) -> str:
     if any(char.isspace() or ord(char) < 32 or char in "<>\\" for char in value):
         raise ReadmeError(f"{where} must not contain whitespace, control characters, angle brackets, or backslashes")
+    if value.startswith("#"):
+        # In-page anchor link (e.g. a badge pointing at a section).
+        # Validated for form only; the anchor target is not resolved.
+        if image:
+            raise ReadmeError(f"{where} must be an absolute HTTP(S) image URL, not an anchor")
+        if not re.fullmatch(r"#[A-Za-z0-9_.\-]*[A-Za-z0-9][A-Za-z0-9_.\-]*", value):
+            raise ReadmeError(f"{where} is not a valid in-page anchor: {value!r}")
+        return value
     try:
         parsed = urlsplit(value)
     except ValueError as exc:
@@ -226,7 +286,16 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 
 def _archive_directory(root: Path, output: Path, archive_root: Path) -> Path:
-    relative_parent = output.parent.relative_to(root)
+    try:
+        relative_parent = output.parent.relative_to(root)
+    except ValueError:
+        # Absolute output outside the project: archive under the project
+        # archive root, named by the output file, instead of failing.
+        try:
+            relative_archive = (archive_root / output.name).relative_to(root)
+        except ValueError as exc:
+            raise ReadmeError("archive directory must stay inside the project directory") from exc
+        return _inside(root, str(relative_archive), "archive directory")
     archive_dir = archive_root / relative_parent / output.name
     return _inside(root, str(archive_dir.relative_to(root)), "archive directory")
 
@@ -303,16 +372,142 @@ def _slug(title: str) -> str:
         raise ReadmeError(f"section title has no usable table-of-contents anchor: {title!r}")
     return slug
 
+# ---------------------------------------------------------------------------
+# Fragment includes, multi-file merge, and footer blocks
+# ---------------------------------------------------------------------------
 
-def _render_section(section: Any, index: int, root: Path) -> tuple[str, str, str]:
+_INCLUDE_RE = re.compile(r"""^#include\s+"([^"]+)"\s*$""", re.MULTILINE)
+_INCLUDE_LINE_RE = re.compile(r"""^#include\s+"([^"]+)"\s*$""")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _include_lines(body: str) -> list[tuple[str, str | None]]:
+    """Split body into lines, tagging `#include` directives outside code fences.
+
+    Lines inside a Markdown fenced code block (``` or ~~~) are never
+    treated as directives, so C/C++ examples pass through unchanged.
+    """
+    tagged: list[tuple[str, str | None]] = []
+    fence: str | None = None
+    for line in body.split("\n"):
+        marker = _FENCE_RE.match(line)
+        if fence is None:
+            if marker:
+                fence = marker.group(1)
+                tagged.append((line, None))
+                continue
+            directive = _INCLUDE_LINE_RE.match(line)
+            tagged.append((line, directive.group(1) if directive else None))
+        else:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) and not line.strip()[len(marker.group(1)):].strip():
+                fence = None
+            tagged.append((line, None))
+    return tagged
+
+
+def _has_include(body: str) -> bool:
+    return any(target is not None for _, target in _include_lines(body))
+
+
+def _read_include(root: Path, relative: str, where: str, seen: frozenset[str]) -> tuple[Path, str]:
+    path = _inside(root, relative, f"{where} include")
+    if str(path) in seen:
+        raise ReadmeError(f"{where}: include cycle at {relative}")
+    if not path.is_file():
+        raise ReadmeError(f"{where}: include file is not a regular file: {relative}")
+    try:
+        included = _read_bounded(path, MAX_SECTION_FILE_BYTES, f"{where} include").decode("utf-8")
+    except UnicodeError as exc:
+        raise ReadmeError(f"{where}: include file is not valid UTF-8: {relative}") from exc
+    return path, included.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _resolve_includes(body: str, root: Path, where: str, *, depth: int = 0, seen: frozenset[str] | None = None) -> str:
+    """Resolve `#include "path"` directives outside fenced code blocks.
+
+    Includes are project-relative, confined to the project root, and
+    resolved recursively up to MAX_INCLUDE_DEPTH. A cycle or a missing
+    file is a fail-closed error, never a silent skip.
+    """
+    if depth > MAX_INCLUDE_DEPTH:
+        raise ReadmeError(f"{where}: include depth exceeds {MAX_INCLUDE_DEPTH}")
+    seen = seen or frozenset()
+    out: list[str] = []
+    for line, target in _include_lines(body):
+        if target is None:
+            out.append(line)
+            continue
+        path, included = _read_include(root, target, where, seen)
+        out.append(_resolve_includes(included, root, where, depth=depth + 1, seen=seen | {str(path)}))
+    return "\n".join(out)
+
+
+def _include_paths(body: str, root: Path, where: str, *, depth: int = 0, seen: frozenset[str] | None = None) -> list[Path]:
+    """Every file transitively pulled in by `#include` directives in body."""
+    if depth > MAX_INCLUDE_DEPTH:
+        raise ReadmeError(f"{where}: include depth exceeds {MAX_INCLUDE_DEPTH}")
+    seen = seen or frozenset()
+    found: list[Path] = []
+    for _, target in _include_lines(body):
+        if target is None:
+            continue
+        path, included = _read_include(root, target, where, seen)
+        found.append(path)
+        found.extend(_include_paths(included, root, where, depth=depth + 1, seen=seen | {str(path)}))
+    return found
+
+
+def _merge_files(paths: list[str], root: Path, where: str) -> str:
+    """Concatenate an ordered list of project-relative files."""
+    if not paths:
+        raise ReadmeError(f"{where} must list at least one file")
+    bodies: list[str] = []
+    for relative in paths:
+        if not isinstance(relative, str) or not relative.strip():
+            raise ReadmeError(f"{where} entries must be non-empty strings")
+        path = _inside(root, relative.strip(), where)
+        if not path.is_file():
+            raise ReadmeError(f"{where}: merge file is not a regular file: {relative}")
+        try:
+            body = _read_bounded(path, MAX_SECTION_FILE_BYTES, where).decode("utf-8")
+        except UnicodeError as exc:
+            raise ReadmeError(f"{where}: merge file is not valid UTF-8: {relative}") from exc
+        bodies.append(_resolve_includes(body.replace("\r\n", "\n").replace("\r", "\n"), root, where))
+    return "\n\n".join(part.strip() for part in bodies if part.strip())
+
+
+def _render_footer(manifest: dict[str, Any], root: Path) -> str:
+    """Render the optional footer block."""
+    footer = manifest.get("footer")
+    if footer is None:
+        return ""
+    if isinstance(footer, str):
+        return footer.strip()
+    if isinstance(footer, dict):
+        _keys(footer, {"file", "text"}, set(), "footer")
+        if "file" in footer and "text" in footer:
+            raise ReadmeError("footer must define exactly one of 'file' or 'text'")
+        if "file" in footer:
+            path = _inside(root, _text(footer["file"], "footer.file", required=True), "footer.file")
+            if not path.is_file():
+                raise ReadmeError(f"footer.file is not a regular file: {footer['file']}")
+            try:
+                body = _read_bounded(path, MAX_SECTION_FILE_BYTES, "footer.file").decode("utf-8")
+            except UnicodeError as exc:
+                raise ReadmeError(f"footer.file is not valid UTF-8: {footer['file']}") from exc
+            return _resolve_includes(body.replace("\r\n", "\n").replace("\r", "\n"), root, "footer")
+        return _text(footer.get("text"), "footer.text")
+    raise ReadmeError("footer must be a string or an object with 'file' or 'text'")
+
+
+def _render_section(section: Any, index: int, root: Path, *, emoji_enabled: bool = True) -> tuple[str, str, str]:
     if not isinstance(section, dict):
         raise ReadmeError(f"sections[{index}] must be an object")
-    _keys(section, {"title", "content", "file", "emoji", "keywords"}, {"title"}, f"sections[{index}]")
+    _keys(section, {"title", "content", "file", "merge", "emoji", "keywords"}, {"title"}, f"sections[{index}]")
     title = _text(section.get("title"), f"sections[{index}].title", required=True)
-    if "content" not in section and "file" not in section:
-        raise ReadmeError(f"sections[{index}] must define exactly one of 'content' or 'file'")
-    if "content" in section and "file" in section:
-        raise ReadmeError(f"sections[{index}] must define exactly one of 'content' or 'file'")
+    sources = [key for key in ("content", "file", "merge") if key in section]
+    if len(sources) != 1:
+        raise ReadmeError(f"sections[{index}] must define exactly one of 'content', 'file', or 'merge'")
 
     if "file" in section:
         source_file = _text(section["file"], f"sections[{index}].file", required=True)
@@ -324,8 +519,15 @@ def _render_section(section: Any, index: int, root: Path) -> tuple[str, str, str
         except (ReadmeError, UnicodeError) as exc:
             raise ReadmeError(f"cannot read section file {path}: {exc}") from exc
         body = body.replace("\r\n", "\n").replace("\r", "\n")
+    elif "merge" in section:
+        merge_paths = section["merge"]
+        if not isinstance(merge_paths, list) or any(not isinstance(item, str) for item in merge_paths):
+            raise ReadmeError(f"sections[{index}].merge must be an array of strings")
+        body = _merge_files(merge_paths, root, f"sections[{index}].merge")
     else:
         body = _text(section["content"], f"sections[{index}].content")
+
+    body = _resolve_includes(body, root, f"sections[{index}]")
 
     explicit_emoji = section.get("emoji", "auto")
     if explicit_emoji == "none":
@@ -340,8 +542,14 @@ def _render_section(section: Any, index: int, root: Path) -> tuple[str, str, str
     keywords = section.get("keywords", [])
     if not isinstance(keywords, list) or any(not isinstance(item, str) for item in keywords):
         raise ReadmeError(f"sections[{index}].keywords must be an array of strings")
-    if explicit_emoji == "auto":
+    if explicit_emoji == "auto" and emoji_enabled:
         emoji = _semantic_emoji(title, keywords)
+    if emoji and title.startswith(emoji):
+        print(
+            f"warning: section title already starts with its emoji {emoji}: {title!r} — "
+            "the heading will show the emoji twice; remove it from the title or set emoji to 'none'",
+            file=sys.stderr,
+        )
 
     if "\n" in title or "\r" in title:
         raise ReadmeError(f"sections[{index}].title must be a single line")
@@ -352,13 +560,300 @@ def _render_section(section: Any, index: int, root: Path) -> tuple[str, str, str
     return title, heading, body.strip()
 
 
-def compile_readme(manifest: dict[str, Any], root: Path) -> str:
+def _validate_hex_color(value: str, where: str) -> str:
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        raise ReadmeError(f"{where} must be a #RRGGBB hex color")
+    return value
+
+
+def _render_badges(manifest: dict[str, Any]) -> list[str]:
+    badges = manifest.get("badges", [])
+    if not isinstance(badges, list):
+        raise ReadmeError("badges must be an array")
+    rendered_badges: list[str] = []
+    for index, badge in enumerate(badges):
+        if not isinstance(badge, dict):
+            raise ReadmeError(f"badges[{index}] must be an object")
+        _keys(badge, {"label", "image", "url"}, {"label", "image"}, f"badges[{index}]")
+        label = _single_line(_text(badge.get("label"), f"badges[{index}].label", required=True), f"badges[{index}].label")
+        image = _url(_text(badge.get("image"), f"badges[{index}].image", required=True), f"badges[{index}].image", image=True)
+        link = _text(badge.get("url"), f"badges[{index}].url")
+        if link:
+            link = _url(link, f"badges[{index}].url")
+        label = _markdown_label(label)
+        rendered = f"![{label}](<{image}>)"
+        rendered_badges.append(f"[{rendered}](<{link}>)" if link else rendered)
+    return rendered_badges
+
+
+def _report_dropped_empty_sections(manifest: dict[str, Any], rendered_sections: list[tuple[str, str, str]]) -> None:
+    """Report (stderr, deterministic sorted list) sections dropped for being empty.
+
+    Empty sections are skipped from the output by design; the report is
+    the confirmation of what vanished, so a first-time user is not left
+    guessing. Warnings go to stderr so `--dry-run` stdout stays clean.
+    """
+    rendered_titles = {title for title, _, _ in rendered_sections}
+    dropped = sorted(
+        {
+            str(section.get("title"))
+            for section in manifest.get("sections", []) or []
+            if isinstance(section, dict) and isinstance(section.get("title"), str)
+        }
+        - rendered_titles
+    )
+    if dropped:
+        print(f"dropped empty sections: {', '.join(dropped)}", file=sys.stderr)
+
+
+def _render_sections(manifest: dict[str, Any], root: Path, *, emoji_enabled: bool = True) -> list[tuple[str, str, str]]:
+    sections = manifest.get("sections", [])
+    if not isinstance(sections, list):
+        raise ReadmeError("sections must be an array")
+    rendered_sections: list[tuple[str, str, str]] = []
+    anchors: set[str] = set()
+    for index, section in enumerate(sections):
+        raw_title, heading, body = _render_section(section, index, root, emoji_enabled=emoji_enabled)
+        anchor = _slug(raw_title)
+        if anchor in anchors:
+            raise ReadmeError(f"duplicate section anchor: {anchor}")
+        anchors.add(anchor)
+        if body:
+            rendered_sections.append((raw_title, heading, body))
+    return rendered_sections
+
+
+def _render_links(manifest: dict[str, Any]) -> list[str]:
+    links = manifest.get("links", [])
+    if not isinstance(links, list):
+        raise ReadmeError("links must be an array")
+    rendered_links = []
+    for index, link in enumerate(links):
+        if not isinstance(link, dict):
+            raise ReadmeError(f"links[{index}] must be an object")
+        _keys(link, {"label", "url"}, {"label", "url"}, f"links[{index}]")
+        label = _single_line(_text(link.get("label"), f"links[{index}].label", required=True), f"links[{index}].label")
+        url = _url(_text(link.get("url"), f"links[{index}].url", required=True), f"links[{index}].url")
+        rendered_links.append(f"- [{_markdown_label(label)}](<{url}>)")
+    return rendered_links
+
+
+def _toc(rendered_sections: list[tuple[str, str, str]], *, heading: str = "## 📚 Contents") -> str:
+    toc = [heading]
+    toc.extend(f"- [{_markdown_label(title)}](#{_slug(title)})" for title, _, _ in rendered_sections)
+    return "\n".join(toc)
+
+
+def _used_extensions(manifest: dict[str, Any]) -> list[str]:
+    """Extension fields actually present, in fixed order (deterministic)."""
+    found: list[str] = []
+    if manifest.get("kind") == "profile":
+        found.append("profile")
+    if manifest.get("footer") is not None:
+        found.append("footer")
+    if manifest.get("banner") is not None:
+        found.append("banner")
+    if manifest.get("status") is not None:
+        found.append("status")
+    if manifest.get("subtitle") is not None:
+        found.append("subtitle")
+    if manifest.get("recurse") is True:
+        found.append("recurse")
+    for section in manifest.get("sections", []) or []:
+        if isinstance(section, dict):
+            if "merge" in section:
+                found.append("merge")
+                break
+    for section in manifest.get("sections", []) or []:
+        if isinstance(section, dict):
+            body = section.get("content", "")
+            if isinstance(body, str) and _has_include(body):
+                found.append("includes")
+                break
+    return sorted(set(found))
+
+
+def _find_guesses(manifest: dict[str, Any]) -> list[str]:
+    """Section titles whose bodies carry a [guess] label (heuristic, labelled)."""
+    guesses: list[str] = []
+    for section in manifest.get("sections", []) or []:
+        if isinstance(section, dict) and isinstance(section.get("content"), str) and GUESS_MARKER in section["content"]:
+            guesses.append(str(section.get("title", "?")))
+    return guesses
+
+
+def _validate_source_readme_sha(manifest: dict[str, Any]) -> None:
+    """Validate `source_readme_sha256` when present; compile ignores it for output."""
+    value = manifest.get("source_readme_sha256")
+    if value is None:
+        return
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ReadmeError("source_readme_sha256 must be a lowercase SHA-256 hex digest")
+
+
+def _header_extras(manifest: dict[str, Any]) -> list[str]:
+    """Render the optional subtitle / status / banner blocks, in order.
+
+    Subtitle and status are single lines rendered under the title;
+    banner is a verbatim block (surrounding whitespace trimmed, like
+    section bodies) rendered after the title. Absent fields render
+    nothing, so a plain v1 manifest is unaffected.
+    """
+    parts: list[str] = []
+    subtitle = _text(manifest.get("subtitle"), "subtitle")
+    if subtitle:
+        parts.append(_single_line(subtitle, "subtitle"))
+    status = _text(manifest.get("status"), "status")
+    if status:
+        parts.append(f"**Status:** {_single_line(status, 'status')}")
+    banner = _text(manifest.get("banner"), "banner")
+    if banner:
+        parts.append(banner)
+    return parts
+
+
+# Profile manifests: render a profile README from identity / layers / flagships.
+def compile_profile(manifest: dict[str, Any], root: Path) -> str:
+    """Render a profile README from identity / layers / flagships."""
     _keys(
         manifest,
-        {"$schema", "schema_version", "project", "table_of_contents", "badges", "sections", "links", "persona"},
+        {"$schema", "schema_version", "project", "table_of_contents", "badges", "sections",
+         "links", "persona", "footer", "kind", "identity", "layers", "flagships", "theme", "recurse",
+         "banner", "status", "subtitle", "source_readme_sha256"},
+        {"project", "sections", "identity"},
+        "manifest",
+    )
+    _validate_source_readme_sha(manifest)
+    version = manifest.get("schema_version", 1)
+    if type(version) is not int or version != 1:
+        raise ReadmeError(f"unsupported schema_version {version!r}; supported version is 1")
+
+    identity = manifest.get("identity")
+    if not isinstance(identity, dict):
+        raise ReadmeError("identity must be an object when kind is 'profile'")
+    _keys(identity, {"name", "headline", "tagline"}, {"name"}, "identity")
+    name = _text(identity.get("name"), "identity.name", required=True)
+    headline = _text(identity.get("headline"), "identity.headline")
+    tagline = _text(identity.get("tagline"), "identity.tagline")
+
+    theme = manifest.get("theme", {})
+    if not isinstance(theme, dict):
+        raise ReadmeError("theme must be an object")
+    _keys(theme, {"preset", "primary", "secondary"}, set(), "theme")
+    preset = theme.get("preset", "control-plane")
+    if preset not in PROFILE_PRESETS:
+        raise ReadmeError(f"theme.preset must be one of {', '.join(PROFILE_PRESETS)}")
+    primary = _validate_hex_color(theme["primary"], "theme.primary") if "primary" in theme else ""
+    secondary = _validate_hex_color(theme["secondary"], "theme.secondary") if "secondary" in theme else ""
+
+    project = manifest.get("project")
+    if not isinstance(project, dict):
+        raise ReadmeError("project must be an object")
+    _keys(project, {"title", "description", "emoji"}, {"title"}, "project")
+    title_emoji = project.get("emoji", "")
+    if not isinstance(title_emoji, str):
+        raise ReadmeError("project.emoji must be a string")
+
+    emoji_enabled = preset not in {"editorial", "minimal"}
+    toc_enabled = manifest.get("table_of_contents", True)
+    if not isinstance(toc_enabled, bool):
+        raise ReadmeError("table_of_contents must be true or false")
+    toc_heading = "## $ contents" if preset == "terminal" else ("## Contents" if preset == "editorial" else "## 📚 Contents")
+
+    persona_info = manifest.get("persona")
+    if isinstance(persona_info, dict) and persona_info.get("audience"):
+        marker = f"<!-- nougen-readme-compiler: v1 | persona: {persona_info.get('audience', '')} ({persona_info.get('market', '')}) [{persona_info.get('fingerprint', '')}] -->"
+    else:
+        marker = MANAGED_MARKER
+
+    parts = [marker]
+    if preset == "terminal":
+        parts.append(f"# $ {name}")
+    else:
+        parts.append(f"# {title_emoji.strip() + ' ' if title_emoji.strip() else ''}{_markdown_heading(name)}")
+    parts.extend(_header_extras(manifest))
+    if headline:
+        parts.append(f"**{headline}**")
+    if tagline:
+        parts.append(tagline)
+    if primary or secondary:
+        parts.append(f"<!-- theme: preset {preset}" + (f", primary {primary}" if primary else "") + (f", secondary {secondary}" if secondary else "") + " -->")
+
+    rendered_badges = _render_badges(manifest)
+    if rendered_badges:
+        parts.append(" ".join(rendered_badges))
+
+    layers = manifest.get("layers", [])
+    if not isinstance(layers, list):
+        raise ReadmeError("layers must be an array")
+    if layers:
+        rows = ["| Layer | Project | Description |", "| --- | --- | --- |"]
+        for index, layer in enumerate(layers):
+            if not isinstance(layer, dict):
+                raise ReadmeError(f"layers[{index}] must be an object")
+            _keys(layer, {"name", "project", "description", "tone"}, {"name"}, f"layers[{index}]")
+            rows.append(
+                f"| {_text(layer.get('name'), f'layers[{index}].name', required=True)} "
+                f"| {_text(layer.get('project'), f'layers[{index}].project')} "
+                f"| {_text(layer.get('description'), f'layers[{index}].description')} |"
+            )
+        parts.append("## Layers\n\n" + "\n".join(rows))
+
+    flagships = manifest.get("flagships", [])
+    if not isinstance(flagships, list):
+        raise ReadmeError("flagships must be an array")
+    if flagships:
+        lines = []
+        for index, ship in enumerate(flagships):
+            if not isinstance(ship, dict):
+                raise ReadmeError(f"flagships[{index}] must be an object")
+            _keys(ship, {"repo", "role", "description", "tone"}, {"repo"}, f"flagships[{index}]")
+            role = _text(ship.get("role"), f"flagships[{index}].role")
+            lines.append(
+                f"- **{_text(ship.get('repo'), f'flagships[{index}].repo', required=True)}**"
+                + (f" — {role}" if role else "")
+                + (f": {_text(ship.get('description'), f'flagships[{index}].description')}" if ship.get("description") else "")
+            )
+        parts.append("## Flagships\n\n" + "\n".join(lines))
+
+    rendered_sections = _render_sections(manifest, root, emoji_enabled=emoji_enabled)
+    _report_dropped_empty_sections(manifest, rendered_sections)
+    if toc_enabled and preset != "minimal" and len(rendered_sections) > 1:
+        parts.append(_toc(rendered_sections, heading=toc_heading))
+    for _, heading, body in rendered_sections:
+        if preset == "terminal":
+            heading = heading.replace("## ", "## $ ", 1)
+        parts.append(f"{heading}\n\n{body}")
+
+    rendered_links = _render_links(manifest)
+    if rendered_links:
+        parts.append("## 🔗 Links\n\n" + "\n".join(rendered_links) if emoji_enabled else "## Links\n\n" + "\n".join(rendered_links))
+
+    footer = _render_footer(manifest, root)
+    if footer:
+        parts.append(footer)
+
+    extensions = _used_extensions(manifest)
+    if extensions:
+        parts.insert(1, f"{EXTENSIONS_MARKER_PREFIX}{', '.join(extensions)} -->")
+    output = "\n\n".join(part.strip() for part in parts if part.strip()) + "\n"
+    if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
+        raise ReadmeError(f"generated README exceeds {MAX_OUTPUT_BYTES:,} bytes")
+    return output
+
+
+def compile_readme(manifest: dict[str, Any], root: Path) -> str:
+    if manifest.get("kind") == "profile":
+        return compile_profile(manifest, root)
+    _keys(
+        manifest,
+        {"$schema", "schema_version", "project", "table_of_contents", "badges", "sections",
+         "links", "persona", "footer", "kind", "identity", "layers", "flagships", "theme", "recurse",
+         "banner", "status", "subtitle", "source_readme_sha256"},
         {"project", "sections"},
         "manifest",
     )
+    _validate_source_readme_sha(manifest)
     version = manifest.get("schema_version", 1)
     if type(version) is not int or version != 1:
         raise ReadmeError(f"unsupported schema_version {version!r}; supported version is 1")
@@ -387,75 +882,44 @@ def compile_readme(manifest: dict[str, Any], root: Path) -> str:
         marker = MANAGED_MARKER
 
     parts = [marker, f"# {title_emoji.strip() + ' ' if title_emoji.strip() else ''}{_markdown_heading(title)}"]
+    parts.extend(_header_extras(manifest))
     if description:
         parts.append(description)
 
-    badges = manifest.get("badges", [])
-    if not isinstance(badges, list):
-        raise ReadmeError("badges must be an array")
-    rendered_badges: list[str] = []
-    for index, badge in enumerate(badges):
-        if not isinstance(badge, dict):
-            raise ReadmeError(f"badges[{index}] must be an object")
-        _keys(badge, {"label", "image", "url"}, {"label", "image"}, f"badges[{index}]")
-        label = _single_line(_text(badge.get("label"), f"badges[{index}].label", required=True), f"badges[{index}].label")
-        image = _url(_text(badge.get("image"), f"badges[{index}].image", required=True), f"badges[{index}].image", image=True)
-        link = _text(badge.get("url"), f"badges[{index}].url")
-        if link:
-            link = _url(link, f"badges[{index}].url")
-        label = _markdown_label(label)
-        rendered = f"![{label}](<{image}>)"
-        rendered_badges.append(f"[{rendered}](<{link}>)" if link else rendered)
+    rendered_badges = _render_badges(manifest)
     if rendered_badges:
         parts.append(" ".join(rendered_badges))
 
-    sections = manifest.get("sections", [])
-    if not isinstance(sections, list):
-        raise ReadmeError("sections must be an array")
-    rendered_sections: list[tuple[str, str, str]] = []
-    anchors: set[str] = set()
-    for index, section in enumerate(sections):
-        raw_title, heading, body = _render_section(section, index, root)
-        anchor = _slug(raw_title)
-        if anchor in anchors:
-            raise ReadmeError(f"duplicate section anchor: {anchor}")
-        anchors.add(anchor)
-        if body:
-            rendered_sections.append((raw_title, heading, body))
-
+    rendered_sections = _render_sections(manifest, root)
+    _report_dropped_empty_sections(manifest, rendered_sections)
     toc_enabled = manifest.get("table_of_contents", True)
     if not isinstance(toc_enabled, bool):
         raise ReadmeError("table_of_contents must be true or false")
     if toc_enabled and len(rendered_sections) > 1:
-        toc = ["## 📚 Contents"]
-        toc.extend(f"- [{_markdown_label(title)}](#{_slug(title)})" for title, _, _ in rendered_sections)
-        parts.append("\n".join(toc))
+        parts.append(_toc(rendered_sections))
 
     for _, heading, body in rendered_sections:
         parts.append(f"{heading}\n\n{body}")
 
-    links = manifest.get("links", [])
-    if not isinstance(links, list):
-        raise ReadmeError("links must be an array")
-    rendered_links = []
-    for index, link in enumerate(links):
-        if not isinstance(link, dict):
-            raise ReadmeError(f"links[{index}] must be an object")
-        _keys(link, {"label", "url"}, {"label", "url"}, f"links[{index}]")
-        label = _single_line(_text(link.get("label"), f"links[{index}].label", required=True), f"links[{index}].label")
-        url = _url(_text(link.get("url"), f"links[{index}].url", required=True), f"links[{index}].url")
-        rendered_links.append(f"- [{_markdown_label(label)}](<{url}>)")
+    rendered_links = _render_links(manifest)
     if rendered_links:
         parts.append("## 🔗 Links\n\n" + "\n".join(rendered_links))
 
+    footer = _render_footer(manifest, root)
+    if footer:
+        parts.append(footer)
+
+    extensions = _used_extensions(manifest)
+    if extensions:
+        parts.insert(1, f"{EXTENSIONS_MARKER_PREFIX}{', '.join(extensions)} -->")
     output = "\n\n".join(part.strip() for part in parts if part.strip()) + "\n"
     if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
         raise ReadmeError(f"generated README exceeds {MAX_OUTPUT_BYTES:,} bytes")
     return output
 
-
 def _project_defaults(root: Path) -> tuple[str, str]:
-    title = root.name.replace("-", " ").replace("_", " ").strip().title()
+    # Directory name verbatim: never title-case it (NuStack1 is not Nustack1).
+    title = root.name.strip()
     description = ""
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
@@ -495,7 +959,168 @@ def _project_defaults(root: Path) -> tuple[str, str]:
     return title, description
 
 
-def init_manifest(root: Path, manifest_path: Path, *, force: bool = False) -> Path | None:
+# Heuristic auto-prefill.
+# Every prefilled line is labelled [guess] — a guess is never presented
+# as a fact. `compile` warns about guess sections; it does not fail.
+def _auto_guesses(root: Path) -> list[tuple[str, str]]:
+    """Best-guess starter sections inferred from project files, labelled."""
+    guesses: list[tuple[str, str]] = []
+    has_pyproject = (root / "pyproject.toml").is_file()
+    has_package_json = (root / "package.json").is_file()
+    has_cargo = (root / "Cargo.toml").is_file()
+    has_go_mod = (root / "go.mod").is_file()
+    has_makefile = (root / "Makefile").is_file()
+    has_license = (root / "LICENSE").is_file() or (root / "LICENSE.md").is_file()
+    if has_pyproject:
+        guesses.append(("Quick Start", f"{GUESS_MARKER} Install command inferred from pyproject.toml — verify.\n\n```sh\npip install -e .\n```"))
+    elif has_package_json:
+        guesses.append(("Quick Start", f"{GUESS_MARKER} Install command inferred from package.json — verify.\n\n```sh\nnpm install\n```"))
+    elif has_cargo:
+        guesses.append(("Quick Start", f"{GUESS_MARKER} Install command inferred from Cargo.toml — verify.\n\n```sh\ncargo build\n```"))
+    elif has_go_mod:
+        guesses.append(("Quick Start", f"{GUESS_MARKER} Install command inferred from go.mod — verify.\n\n```sh\ngo build ./...\n```"))
+    if has_makefile:
+        guesses.append(("Usage", f"{GUESS_MARKER} A Makefile is present — verify the targets.\n\n```sh\nmake\n```"))
+    if has_license:
+        guesses.append(("License", f"{GUESS_MARKER} A license file is present — verify the license name.\n\nSee [LICENSE](LICENSE)."))
+    return guesses
+
+
+# Files that mark a directory as a recognizable project (for init warnings).
+_RECOGNIZABLE_FILES = (
+    "README.md", "pyproject.toml", "package.json", "pubspec.yaml",
+    "Cargo.toml", "go.mod", "requirements.txt", "Makefile",
+    "CMakeLists.txt", "LICENSE", "LICENSE.md",
+)
+
+
+def _has_recognizable_files(root: Path) -> bool:
+    return any((root / name).is_file() for name in _RECOGNIZABLE_FILES)
+
+
+_H1_RE = re.compile(r"^#\s+(.+?)\s*$")
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+_HEADING_RE = re.compile(r"^#{1,2}\s+")
+
+
+def _parse_readme_for_init(readme_path: Path) -> dict[str, Any] | None:
+    """Parse an existing README.md for `init --from-readme`.
+
+    Returns None when the file is missing, empty, or undecodable.
+    Title is the first H1 verbatim (never title-cased); description is
+    the first paragraph after the H1 (lines joined with a space, since
+    the manifest description is a single line); sections are the H2
+    headings in order with body content verbatim. Fenced code blocks
+    are skipped when hunting headings, so a `#` inside a code sample
+    is never mistaken for a heading.
+    """
+    try:
+        raw = _read_bounded(readme_path, MAX_ARCHIVE_BYTES, "existing README")
+    except ReadmeError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError:
+        return None
+    sha256 = hashlib.sha256(raw).hexdigest()
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    title: str | None = None
+    description = ""
+    sections: list[dict[str, Any]] = []
+    in_fence = False
+    h1_index: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = _H1_RE.match(line)
+        if match and title is None:
+            title = match.group(1).strip()
+            h1_index = index
+            break
+    if h1_index is None:
+        # No H1: still harvest H2 sections, title stays the directory name.
+        current: dict[str, Any] | None = None
+        body_lines: list[str] = []
+        in_fence = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+                if current is not None:
+                    body_lines.append(line)
+                continue
+            if not in_fence:
+                match = _H2_RE.match(line)
+                if match:
+                    if current is not None:
+                        current["content"] = "\n".join(body_lines).strip()
+                        sections.append(current)
+                    current = {"title": match.group(1).strip(), "content": "", "emoji": "auto"}
+                    body_lines = []
+                    continue
+            if current is not None:
+                body_lines.append(line)
+        if current is not None:
+            current["content"] = "\n".join(body_lines).strip()
+            sections.append(current)
+        return {"title": None, "description": "", "sections": sections, "source_readme_sha256": sha256}
+
+    # Description: first paragraph after the H1.
+    paragraph: list[str] = []
+    for line in lines[h1_index + 1:]:
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            break
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if _HEADING_RE.match(line):
+            break
+        paragraph.append(stripped)
+    description = " ".join(paragraph)
+
+    # Sections: H2 headings in order, body verbatim.
+    current = None
+    body_lines = []
+    in_fence = False
+    for line in lines[h1_index + 1:]:
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            if current is not None:
+                body_lines.append(line)
+            continue
+        if not in_fence:
+            match = _H2_RE.match(line)
+            if match:
+                if current is not None:
+                    current["content"] = "\n".join(body_lines).strip()
+                    sections.append(current)
+                current = {"title": match.group(1).strip(), "content": "", "emoji": "auto"}
+                body_lines = []
+                continue
+            if _H1_RE.match(line) and current is not None:
+                current["content"] = "\n".join(body_lines).strip()
+                sections.append(current)
+                current = None
+                body_lines = []
+                continue
+        if current is not None:
+            body_lines.append(line)
+    if current is not None:
+        current["content"] = "\n".join(body_lines).strip()
+        sections.append(current)
+    return {"title": title, "description": description, "sections": sections, "source_readme_sha256": sha256}
+
+
+def init_manifest(root: Path, manifest_path: Path, *, force: bool = False, auto: bool = False, from_readme: bool = False) -> Path | None:
     if manifest_path.exists() and not force:
         raise ReadmeError(f"manifest already exists: {manifest_path} (use --force to replace it)")
     backup_path = None
@@ -522,9 +1147,140 @@ def init_manifest(root: Path, manifest_path: Path, *, force: bool = False) -> Pa
         ],
         "links": [],
     }
+    from_readme_failed = False
+    if from_readme:
+        parsed = _parse_readme_for_init(root / "README.md")
+        if parsed is None:
+            from_readme_failed = True
+            print(
+                "warning: init --from-readme: no README.md found in "
+                f"{root} (or it is empty/unreadable); the manifest below is "
+                "all [guess] — verify every line before publishing, never "
+                "trust it as fact",
+                file=sys.stderr,
+            )
+            for section in starter["sections"]:
+                section["content"] = f"{GUESS_MARKER} No README.md to prefill from — verify before publishing."
+        else:
+            if parsed["title"] is None:
+                print(
+                    f"warning: init --from-readme: {root / 'README.md'} has no H1; "
+                    "using the directory name as the title",
+                    file=sys.stderr,
+                )
+            else:
+                starter["project"]["title"] = parsed["title"]
+            starter["project"]["description"] = parsed["description"]
+            starter["source_readme_sha256"] = parsed["source_readme_sha256"]
+            if parsed["sections"]:
+                starter["sections"] = parsed["sections"]
+    if auto:
+        if not from_readme_failed and not _has_recognizable_files(root) and not (root / "README.md").is_file():
+            print(
+                f"warning: init --auto: no README.md and no recognizable project files in {root}; "
+                "the manifest below is all guesses — verify every line before publishing",
+                file=sys.stderr,
+            )
+        by_title = {section["title"]: section for section in starter["sections"]}
+        for guess_title, guess_body in _auto_guesses(root):
+            if guess_title in by_title:
+                if not by_title[guess_title].get("content"):
+                    by_title[guess_title]["content"] = guess_body
+            else:
+                starter["sections"].append({"title": guess_title, "content": guess_body, "emoji": "auto"})
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(manifest_path, (json.dumps(starter, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return backup_path
+
+
+# Interactive questionnaire.
+# Writes a DRAFT manifest by default; --apply writes the canonical manifest.
+# --answers FILE makes the flow non-interactive and deterministic.
+ASK_QUESTIONS: list[tuple[str, str]] = [
+    ("title", "What is the title of your project?"),
+    ("description", "Please provide a description of your project: "),
+    ("technologies", "What technologies were used for your project?"),
+    ("install", "Please provide installation instructions for your project: "),
+    ("usage", "Please provide usage instructions for your project: "),
+    ("guide", "Please provide contribution guidelines for your project: "),
+    ("test", "Please provide test instructions for your project: "),
+    ("design", "Would you like to add a link to images of the design? (leave blank for none)"),
+    ("contributors", "Would you like to add any contributors? (leave blank for none)"),
+    ("author", "Who was the original author of this project?"),
+    ("license", "What license would you like to add? (e.g. MIT, leave blank for none)"),
+    ("email", "What's your email address? (leave blank for none)"),
+    ("github", "What's your GitHub username or project URL? (leave blank for none)"),
+    ("linkedin", "What's your LinkedIn? (leave blank for none)"),
+]
+
+
+def build_manifest_from_answers(answers: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Turn questionnaire answers into a v1 manifest (empty answers skipped)."""
+    if not isinstance(answers, dict):
+        raise ReadmeError("answers must be a JSON object")
+    clean: dict[str, str] = {}
+    for key, _prompt in ASK_QUESTIONS:
+        value = answers.get(key)
+        if isinstance(value, str) and value.strip():
+            clean[key] = value.strip()
+    title = clean.get("title") or root.name.strip()
+    sections: list[dict[str, Any]] = []
+    if clean.get("description"):
+        sections.append({"title": "Overview", "content": clean["description"], "emoji": "auto"})
+    if clean.get("technologies"):
+        sections.append({"title": "Technologies", "content": clean["technologies"], "emoji": "auto"})
+    if clean.get("install"):
+        sections.append({"title": "Quick Start", "content": clean["install"], "emoji": "auto"})
+    if clean.get("usage"):
+        sections.append({"title": "Usage", "content": clean["usage"], "emoji": "auto"})
+    if clean.get("design"):
+        sections.append({"title": "Design", "content": f"See the design: {clean['design']}", "emoji": "auto"})
+    if clean.get("guide") or clean.get("contributors"):
+        body = clean.get("guide", "")
+        if clean.get("contributors"):
+            body = (body + "\n\nContributors: " + clean["contributors"]).strip()
+        sections.append({"title": "Contributing", "content": body, "emoji": "auto"})
+    if clean.get("test"):
+        sections.append({"title": "Tests", "content": clean["test"], "emoji": "auto"})
+    if clean.get("license"):
+        sections.append({"title": "License", "content": clean["license"], "emoji": "auto"})
+    if clean.get("author"):
+        sections.append({"title": "Author", "content": clean["author"], "emoji": "auto"})
+    links: list[dict[str, str]] = []
+    if clean.get("github"):
+        github = clean["github"]
+        url = github if github.startswith(("http://", "https://")) else f"https://github.com/{github}"
+        links.append({"label": "GitHub", "url": url})
+    if clean.get("linkedin"):
+        linkedin = clean["linkedin"]
+        url = linkedin if linkedin.startswith(("http://", "https://")) else f"https://www.linkedin.com/in/{linkedin}"
+        links.append({"label": "LinkedIn", "url": url})
+    if clean.get("email"):
+        links.append({"label": "Email", "url": f"mailto:{clean['email']}"})
+    manifest: dict[str, Any] = {
+        "$schema": "https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json",
+        "schema_version": 1,
+        "project": {"title": title, "description": clean.get("description", ""), "emoji": ""},
+        "table_of_contents": True,
+        "badges": [],
+        "sections": sections,
+        "links": links,
+    }
+    compile_readme(manifest, root)  # Validate before returning.
+    return manifest
+
+
+def _ask_interactive(root: Path) -> dict[str, Any]:
+    answers: dict[str, str] = {}
+    print("NouGen README compiler — answer the questions (blank skips a section).")
+    for key, prompt in ASK_QUESTIONS:
+        try:
+            value = input(f"{prompt} ").strip()
+        except EOFError:
+            value = ""
+        if value:
+            answers[key] = value
+    return build_manifest_from_answers(answers, root)
 
 
 def _ollama_base(raw: str | None) -> str:
@@ -706,7 +1462,128 @@ def draft_manifest(root: Path, sources: list[dict[str, str]], model: str, host: 
     return manifest
 
 
+# ---------------------------------------------------------------------------
+# Baseline truth store + recursive compile
+# ---------------------------------------------------------------------------
+
+def _section_source_paths(manifest: dict[str, Any], root: Path) -> list[Path]:
+    """Every on-disk file a manifest depends on, in manifest order.
+
+    Includes section files, merge files, the footer file, and every file
+    transitively pulled in by `#include` (from inline content too).
+    """
+    direct: list[tuple[Path | None, str | None]] = []
+    for section in manifest.get("sections", []) or []:
+        if not isinstance(section, dict):
+            continue
+        if isinstance(section.get("file"), str):
+            direct.append((_inside(root, section["file"], "section file"), None))
+        for relative in section.get("merge", []) or []:
+            if isinstance(relative, str):
+                direct.append((_inside(root, relative.strip(), "section merge"), None))
+        if isinstance(section.get("content"), str):
+            direct.append((None, section["content"]))
+    footer = manifest.get("footer")
+    if isinstance(footer, dict) and isinstance(footer.get("file"), str):
+        direct.append((_inside(root, footer["file"], "footer file"), None))
+    paths: list[Path] = []
+    for path, inline in direct:
+        if path is not None:
+            paths.append(path)
+            if not path.is_file():
+                continue
+            try:
+                inline = _read_bounded(path, MAX_SECTION_FILE_BYTES, "source file").decode("utf-8")
+            except UnicodeError:
+                continue
+            inline = inline.replace("\r\n", "\n").replace("\r", "\n")
+        paths.extend(_include_paths(inline or "", root, "dependency"))
+    unique: list[Path] = []
+    for path in paths:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(_read_bounded(path, MAX_ARCHIVE_BYTES, "baseline file")).hexdigest()
+
+
+def _rel_or_abs(root: Path, path: Path) -> str:
+    """Project-relative path when inside the project, absolute otherwise."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def write_baseline(root: Path, manifest_path: Path, output_path: Path, manifest: dict[str, Any], content: str) -> Path:
+    """Record the truth store: hashes of manifest, output, and section files."""
+    baseline: dict[str, Any] = {
+        "schema_version": 1,
+        "generated_by": "nougen-readme-compiler v1",
+        "manifest": _rel_or_abs(root, manifest_path),
+        "manifest_sha256": _sha256_file(manifest_path),
+        "output": _rel_or_abs(root, output_path),
+        "output_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "sections": {},
+    }
+    for path in _section_source_paths(manifest, root):
+        baseline["sections"][str(path.relative_to(root))] = _sha256_file(path)
+    baseline_path = root / BASELINE_FILENAME
+    _atomic_write(baseline_path, (json.dumps(baseline, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return baseline_path
+
+
+def verify_baseline(root: Path, manifest_path: Path, output_path: Path, manifest: dict[str, Any], content: str) -> list[str]:
+    """Compare current files against the stored baseline; return mismatches."""
+    baseline_path = root / BASELINE_FILENAME
+    if not baseline_path.is_file():
+        raise ReadmeError(f"no baseline found: {baseline_path} (run compile --write-baseline first)")
+    baseline = _read_manifest(baseline_path)
+    mismatches: list[str] = []
+    if baseline.get("manifest_sha256") != _sha256_file(manifest_path):
+        mismatches.append("manifest changed since baseline")
+    if baseline.get("output_sha256") != hashlib.sha256(content.encode("utf-8")).hexdigest():
+        mismatches.append("generated output changed since baseline")
+    stored_sections = baseline.get("sections", {})
+    if not isinstance(stored_sections, dict):
+        raise ReadmeError("baseline sections must be an object")
+    for relative, stored_hash in sorted(stored_sections.items()):
+        path = _inside(root, relative, "baseline section")
+        if not path.is_file():
+            mismatches.append(f"section file missing since baseline: {relative}")
+        elif _sha256_file(path) != stored_hash:
+            mismatches.append(f"section file changed since baseline: {relative}")
+    return mismatches
+
+
+def _find_child_manifests(root: Path, manifest_name: str, *, depth: int) -> list[Path]:
+    """Child dirs (sorted, deterministic) holding their own manifest.
+
+    Skips hidden dirs (.git, .readme-archive, ...).
+    """
+    found: list[Path] = []
+    if depth < 1:
+        return found
+    for child in sorted(root.iterdir(), key=lambda item: item.name):
+        if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            child.resolve().relative_to(root.resolve())
+        except ValueError:
+            continue  # junction/reparse point escaping the project root
+        if (child / manifest_name).is_file():
+            found.append(child)
+        if depth > 1:
+            found.extend(_find_child_manifests(child, manifest_name, depth=depth - 1))
+    return found
+
 def _safe_output(root: Path, output: str) -> Path:
+    # An absolute path is used as-is; a relative path stays inside the project.
+    candidate = Path(output)
+    if candidate.is_absolute():
+        return candidate.resolve()
     return _inside(root, output, "output path")
 
 
@@ -736,13 +1613,11 @@ def _assert_paths_separate(root: Path, manifest: Path, output: Path, archive: Pa
         raise ReadmeError("archive directory must be a dedicated subdirectory, separate from the output")
     if archive == manifest or archive in manifest.parents:
         raise ReadmeError("archive directory cannot contain the manifest")
-    for index, section in enumerate(document.get("sections", [])):
-        if isinstance(section, dict) and isinstance(section.get("file"), str):
-            source = _inside(root, section["file"], f"sections[{index}].file")
-            if source == output:
-                raise ReadmeError(f"output path cannot overwrite its own section source: {source}")
-            if archive == source or archive in source.parents:
-                raise ReadmeError(f"archive directory cannot contain section source: {source}")
+    for source in _section_source_paths(document, root):
+        if source == output:
+            raise ReadmeError(f"output path cannot overwrite its own source: {source}")
+        if archive == source or archive in source.parents:
+            raise ReadmeError(f"archive directory cannot contain source: {source}")
 
 
 def _add_output_options(parser: argparse.ArgumentParser) -> None:
@@ -780,6 +1655,83 @@ def _restore(root: Path, output: Path, archive_root: Path, snapshot_arg: str, li
     return 0
 
 
+def _do_compile(root: Path, manifest_name: str, output_name: str, archive_dir_name: str,
+                archive_limit: int, *, dry_run: bool, force: bool, check_mode: bool,
+                diff: bool, record_baseline: bool) -> int:
+    """Compile one project dir. Returns an exit code (0 ok, 1 stale, 2 error)."""
+    manifest_path = _safe_output(root, manifest_name)
+    manifest = _read_manifest(manifest_path)
+    content = compile_readme(manifest, root)
+    output_path = _safe_output(root, output_name)
+    archive_root = _safe_output(root, archive_dir_name)
+    _assert_paths_separate(root, manifest_path, output_path, archive_root, manifest)
+    if check_mode:
+        try:
+            current = _read_bounded(output_path, MAX_ARCHIVE_BYTES, "README").decode("utf-8") if output_path.exists() else None
+        except UnicodeError as exc:
+            raise ReadmeError(f"existing output is not valid UTF-8: {output_path}") from exc
+        if current == content:
+            print(f"Up to date: {output_path}")
+            return 0
+        if diff:
+            before = current.splitlines(keepends=True) if current is not None else []
+            after = content.splitlines(keepends=True)
+            sys.stdout.writelines(difflib.unified_diff(before, after, fromfile=str(output_path), tofile="generated README.md"))
+        print(f"Stale or missing: {output_path}", file=sys.stderr)
+        return 1
+    if dry_run:
+        if force:
+            raise ReadmeError("--force cannot be combined with --dry-run")
+        sys.stdout.write(content)
+        return 0
+    current_bytes = _read_bounded(output_path, MAX_ARCHIVE_BYTES, "README") if output_path.exists() else None
+    if current_bytes is not None and current_bytes != content.encode("utf-8") and not _managed_readme(output_path) and not force:
+        raise ReadmeError(
+            f"refusing to replace unmanaged README {output_path}; inspect --dry-run, then use --force to archive and take over"
+        )
+    if current_bytes != content.encode("utf-8"):
+        if current_bytes is not None:
+            _archive_previous(root, output_path, archive_root)
+        _atomic_write(output_path, content.encode("utf-8"))
+        if current_bytes is not None:
+            # Prune only after the new README is durably in place.
+            _prune_archives(root, output_path, archive_root, archive_limit)
+    guesses = _find_guesses(manifest)
+    if guesses:
+        print(f"warning: guess sections present (verify before publishing): {', '.join(guesses)}", file=sys.stderr)
+    if record_baseline:
+        baseline_path = write_baseline(root, manifest_path, output_path, manifest, content)
+        print(f"Wrote baseline {baseline_path}")
+    print(f"Compiled {output_path}")
+    return 0
+
+
+def _do_check(root: Path, manifest_name: str, output_name: str, *, diff: bool, baseline: bool) -> int:
+    manifest_path = _safe_output(root, manifest_name)
+    manifest = _read_manifest(manifest_path)
+    content = compile_readme(manifest, root)
+    output_path = _safe_output(root, output_name)
+    try:
+        current = _read_bounded(output_path, MAX_ARCHIVE_BYTES, "README").decode("utf-8") if output_path.exists() else None
+    except UnicodeError as exc:
+        raise ReadmeError(f"existing output is not valid UTF-8: {output_path}") from exc
+    if current != content:
+        if diff:
+            before = current.splitlines(keepends=True) if current is not None else []
+            after = content.splitlines(keepends=True)
+            sys.stdout.writelines(difflib.unified_diff(before, after, fromfile=str(output_path), tofile="generated README.md"))
+        print(f"Stale or missing: {output_path}", file=sys.stderr)
+        return 1
+    if baseline:
+        mismatches = verify_baseline(root, manifest_path, output_path, manifest, content)
+        if mismatches:
+            for item in mismatches:
+                print(f"Baseline mismatch: {item}", file=sys.stderr)
+            return 1
+    print(f"Up to date: {output_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -793,20 +1745,26 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("project_dir", nargs="?", default=".")
     init_parser.add_argument("--manifest", default="README.nougen.json")
     init_parser.add_argument("--force", action="store_true", help="replace an existing manifest")
+    init_parser.add_argument("--auto", action="store_true", help="prefill sections with labelled [guess] heuristics")
+    init_parser.add_argument("--from-readme", action="store_true", help="prefill title, description, and sections from the existing README.md")
 
     for command, help_text in (("compile", "compile the manifest into a GitHub README"), ("check", "report whether README.md matches the manifest")):
         build_parser = subparsers.add_parser(command, help=help_text)
         build_parser.add_argument("project_dir", nargs="?", default=".")
         build_parser.add_argument("--manifest", default="README.nougen.json")
         build_parser.add_argument("--output", default="README.md")
+        build_parser.add_argument("--recurse", action="store_true", help="also compile child dirs with their own manifest")
+        build_parser.add_argument("--recurse-depth", type=_positive_int, default=1, help="recursion depth for --recurse (default: 1)")
         if command == "compile":
             build_parser.add_argument("--check", action="store_true", help="exit nonzero instead of writing when stale")
             build_parser.add_argument("--dry-run", action="store_true", help="print generated Markdown without writing")
             build_parser.add_argument("--force", action="store_true", help="take over an unmanaged README after archiving it")
             build_parser.add_argument("--archive-dir", default=".readme-archive")
             build_parser.add_argument("--archive-limit", type=_positive_int, default=10, help="distinct prior versions to retain (default: 10)")
+            build_parser.add_argument("--write-baseline", action="store_true", help="record a .readme-baseline.json truth store after compiling")
         else:
             build_parser.add_argument("--diff", action="store_true", help="print a unified diff when stale")
+            build_parser.add_argument("--baseline", action="store_true", help="also verify the stored .readme-baseline.json hashes")
 
     history_parser = subparsers.add_parser("history", help="list retained README snapshots")
     _add_output_options(history_parser)
@@ -823,6 +1781,14 @@ def main(argv: list[str] | None = None) -> int:
     draft_parser.add_argument("--timeout", type=float, default=120.0)
     draft_parser.add_argument("--output", help="write draft JSON here; without this option, print it to stdout")
     draft_parser.add_argument("--force", action="store_true", help="replace an existing draft output file")
+
+    ask_parser = subparsers.add_parser("ask", help="interactive questionnaire -> manifest")
+    ask_parser.add_argument("project_dir", nargs="?", default=".")
+    ask_parser.add_argument("--answers", help="JSON file with answers (non-interactive, deterministic)")
+    ask_parser.add_argument("--output", default="README.nougen.draft.json", help="draft manifest path (default: README.nougen.draft.json)")
+    ask_parser.add_argument("--manifest", default="README.nougen.json", help="canonical manifest path for --apply")
+    ask_parser.add_argument("--apply", action="store_true", help="write the canonical manifest instead of a draft")
+    ask_parser.add_argument("--force", action="store_true", help="replace an existing manifest/draft")
 
     args = parser.parse_args(argv)
     root = Path(args.project_dir).resolve()
@@ -872,52 +1838,58 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stdout.buffer.write(rendered)
             return 0
 
-        manifest_path = _safe_output(root, args.manifest)
+        if args.command == "ask":
+            if args.answers:
+                answers_path = _inside(root, args.answers, "answers file")
+                answers = _read_manifest(answers_path)
+                manifest = build_manifest_from_answers(answers, root)
+            else:
+                manifest = _ask_interactive(root)
+            target_name = args.manifest if args.apply else args.output
+            target = _safe_output(root, target_name)
+            if target.exists() and not args.force:
+                raise ReadmeError(f"target already exists: {target} (use --force to replace it)")
+            _atomic_write(target, (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+            print(f"Wrote {'manifest' if args.apply else 'draft manifest'} {target}; review it before using compile" if not args.apply else f"Wrote manifest {target}")
+            return 0
+
         if args.command == "init":
-            backup_path = init_manifest(root, manifest_path, force=args.force)
+            manifest_path = _safe_output(root, args.manifest)
+            backup_path = init_manifest(root, manifest_path, force=args.force, auto=args.auto, from_readme=args.from_readme)
             print(f"Created {manifest_path}")
             if backup_path:
                 print(f"Archived previous manifest at {backup_path}")
             return 0
 
-        manifest = _read_manifest(manifest_path)
-        content = compile_readme(manifest, root)
-        output_path = _safe_output(root, args.output)
-        archive_root = _safe_output(root, args.archive_dir) if args.command == "compile" else _safe_output(root, ".readme-archive")
-        _assert_paths_separate(root, manifest_path, output_path, archive_root, manifest)
-        if args.command == "check" or args.check:
-            try:
-                current = _read_bounded(output_path, MAX_ARCHIVE_BYTES, "README").decode("utf-8") if output_path.exists() else None
-            except UnicodeError as exc:
-                raise ReadmeError(f"existing output is not valid UTF-8: {output_path}") from exc
-            if current == content:
-                print(f"Up to date: {output_path}")
-                return 0
-            if getattr(args, "diff", False):
-                before = current.splitlines(keepends=True) if current is not None else []
-                after = content.splitlines(keepends=True)
-                sys.stdout.writelines(difflib.unified_diff(before, after, fromfile=str(output_path), tofile="generated README.md"))
-            print(f"Stale or missing: {output_path}", file=sys.stderr)
-            return 1
-        if args.dry_run:
-            if args.force:
-                raise ReadmeError("--force cannot be combined with --dry-run")
-            sys.stdout.write(content)
-            return 0
-        current_bytes = _read_bounded(output_path, MAX_ARCHIVE_BYTES, "README") if output_path.exists() else None
-        if current_bytes is not None and current_bytes != content.encode("utf-8") and not _managed_readme(output_path) and not args.force:
-            raise ReadmeError(
-                f"refusing to replace unmanaged README {output_path}; inspect --dry-run, then use --force to archive and take over"
-            )
-        if current_bytes != content.encode("utf-8"):
-            if current_bytes is not None:
-                _archive_previous(root, output_path, archive_root)
-            _atomic_write(output_path, content.encode("utf-8"))
-            if current_bytes is not None:
-                # Prune only after the new README is durably in place.
-                _prune_archives(root, output_path, archive_root, args.archive_limit)
-        print(f"Compiled {output_path}")
-        return 0
+        if args.command == "compile":
+            code = _do_compile(root, args.manifest, args.output, args.archive_dir, args.archive_limit,
+                               dry_run=args.dry_run, force=args.force, check_mode=args.check,
+                               diff=False, record_baseline=args.write_baseline)
+            if args.recurse:
+                for child in _find_child_manifests(root, args.manifest, depth=args.recurse_depth):
+                    try:
+                        child_code = _do_compile(child, args.manifest, args.output, args.archive_dir,
+                                                 args.archive_limit, dry_run=args.dry_run, force=args.force,
+                                                 check_mode=args.check, diff=False, record_baseline=args.write_baseline)
+                    except (OSError, ReadmeError) as exc:
+                        print(f"FAIL {child}: {exc}", file=sys.stderr)
+                        child_code = 2
+                    code = max(code, child_code)
+            return code
+
+        if args.command == "check":
+            code = _do_check(root, args.manifest, args.output, diff=args.diff, baseline=args.baseline)
+            if args.recurse:
+                for child in _find_child_manifests(root, args.manifest, depth=args.recurse_depth):
+                    try:
+                        child_code = _do_check(child, args.manifest, args.output, diff=args.diff, baseline=args.baseline)
+                    except (OSError, ReadmeError) as exc:
+                        print(f"FAIL {child}: {exc}", file=sys.stderr)
+                        child_code = 2
+                    code = max(code, child_code)
+            return code
+
+        raise ReadmeError(f"unknown command: {args.command}")
     except (OSError, ReadmeError) as exc:
         print(f"readme-compiler: {exc}", file=sys.stderr)
         return 2

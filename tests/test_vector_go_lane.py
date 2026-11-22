@@ -102,7 +102,8 @@ def test_wire_format(monkeypatch):
                         "paths": {"2": "/v/db2", "3": "/v/db3", "4": "/v/db4"}}
         paths, rows = core._go_vector_rows(np.array([1, 0], dtype=np.float32), 5, None, frozenset({"B", "A"}))
         assert paths == {2: "/v/db2", 4: "/v/db4"}  # answered: scored and dim-skipped; never the handed-back DB
-        assert rows == {2: [(0.25, 7), (0.2, 9)]}
+        # Third slot is the raw cosine ("sem"); this front predates it, so None.
+        assert rows == {2: [(0.25, 7, None), (0.2, 9, None)]}
         assert _Front.seen["path"] == "/v1/vector/retrieve" and _Front.seen["token"] == "t0k"
         assert _Front.seen["body"] == {"embedding": [1.0, 0.0], "limit": 5, "domain_key": "*", "excluded_types": ["A", "B"]}
     finally:
