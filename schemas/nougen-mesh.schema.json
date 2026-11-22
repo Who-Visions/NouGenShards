@@ -4,27 +4,95 @@
   "title": "mesh.json: one box's runtime config for the NouGen mesh (lives in NOUGEN_ROOT, default ~/.nougen)",
   "type": "object",
   "properties": {
-    "schema": {"const": "nougen-mesh/1"},
+    "schema": {
+      "const": "nougen-mesh/1"
+    },
     "identity": {
       "type": "object",
       "properties": {
-        "machine": {"type": "string"},
-        "agent": {"type": "string"},
-        "node": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"},
-        "tenant": {"type": "string"}
+        "machine": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+        },
+        "tenant": {
+          "type": "string"
+        }
       }
     },
-    "ingress": {"type": "string", "description": "Front door other nodes are reached through: <ingress>/<node>/<service>"},
-    "ports": {"type": "object", "additionalProperties": {"type": "integer"}},
-    "endpoints": {"type": "object", "additionalProperties": {"type": "string"}, "description": "This box's services when not on loopback"},
-    "repos": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Short repo name -> checkout path"},
+    "ingress": {
+      "type": "string",
+      "description": "Front door other nodes are reached through: <ingress>/<node>/<service>"
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "This box's services when not on loopback"
+    },
+    "repos": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Short repo name -> checkout path"
+    },
     "nodes": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "host_patterns": {"type": "array", "items": {"type": "string"}},
-          "endpoints": {"type": "object", "additionalProperties": {"type": "string"}}
+          "host_patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "Per-repo model choices on this box, e.g. code (local model NouGenCode runs) and code_open (model asked of NouGenOpen).",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "code_open": {
+          "type": "string"
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "description": "Local folders a repo needs that are not package checkouts, e.g. edge_ai.",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "edge_ai": {
+          "type": "string"
         }
       }
     }
