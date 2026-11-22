@@ -288,6 +288,8 @@ def run_arm(arm: str, facts, tasks, *, max_ticks: int = 40, log=print) -> dict:
         "states": {s: sum(1 for r in rows.values() if r["state"] == s) for s in {r["state"] for r in rows.values()}},
         "first_attempt_passes": strat.get("baseline", 0), "passes_by_strategy": strat,
         "attempt_outcomes": outcomes,
+        # which goals finished, so an audit can compute exact Rescue/Harm between arms
+        "done_goals": sorted(done),
         "tokens_total": usage["tokens"], "prompt_tokens": usage["prompt_tokens"], "lane_calls": usage["calls"],
         "lane_errors": usage["errors"],
         "tokens_per_success": round(usage["tokens"] / len(done)) if done else None,

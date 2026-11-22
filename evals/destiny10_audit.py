@@ -96,21 +96,30 @@ def main() -> int:
     P("")
 
     # Rescue / harm, per seed where both arms ran: tasks fail without memory, pass with it, and the reverse.
-    P("## Rescue and Harm (per task count, shards_first vs each control)\n")
-    P("Counts are derived from done totals because both controls and shards_first run the same 100 tasks.\n")
-    P("| Seed | vs | Rescue (fails there, passes shards_first) | Harm (passes there, fails shards_first) |")
-    P("|---|---|---|---|")
+    P("## Rescue and Harm (shards_first vs each control)\n")
+    P("Exact when both runs stored `done_goals`; otherwise a lower bound from done totals "
+      "(same 100 tasks in every arm).\n")
+    P("| Seed | vs | Rescue (fails there, passes shards_first) | Harm (passes there, fails shards_first) | Basis |")
+    P("|---|---|---|---|---|")
+    any_bound = False
     for seed in sorted(arms.get("shards_first", {})):
         s = arms["shards_first"][seed]
         for ctl in ("no_memory", "prompt_only"):
             c = arms.get(ctl, {}).get(seed)
             if not c:
                 continue
-            # lower bound on rescue and harm from totals alone
-            diff = s["done"] - c["done"]
-            P(f"| {seed} | {ctl} | at least {max(diff, 0)} | at least {max(-diff, 0)} |")
-    P("\nPer-task outcomes were not stored, so these are lower bounds from totals. Equal totals "
-      "do not rule out offsetting rescue and harm.\n")
+            if "done_goals" in s and "done_goals" in c:
+                sg, cg = set(s["done_goals"]), set(c["done_goals"])
+                P(f"| {seed} | {ctl} | {len(sg - cg)} | {len(cg - sg)} | exact |")
+            else:
+                any_bound = True
+                diff = s["done"] - c["done"]
+                P(f"| {seed} | {ctl} | at least {max(diff, 0)} | at least {max(-diff, 0)} | bound from totals |")
+    if any_bound:
+        P("\nRows marked 'bound from totals' predate per-task storage. Equal totals do not rule out "
+          "offsetting rescue and harm; rerun those arms to make them exact.\n")
+    else:
+        P("")
 
     # Event-by-event verdict.
     seeds_ok = all(len(arms.get(a, {})) >= 3 for a in ("no_memory", "prompt_only", "shards_first"))
