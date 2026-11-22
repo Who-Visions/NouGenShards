@@ -33,6 +33,25 @@ Computers that joined before the supervisor existed have a `run.ps1` or
 `run.sh` instead; those are read too, so no one has to set up again. A folder
 whose download never finished (no `NouGenShards/app.py`) is ignored.
 
+### Tunnel-only accounts
+
+A published tunnel with no node of its own (for example a named tunnel that
+fronts another service on the computer) is an account with `tunnel_only` set.
+Its tunnel is checked and restarted like any other; no node is started for it.
+
+    {"id": "vault", "port": 4501, "tunnel_only": true,
+     "tunnel_file": "C:\path\to\tunnel.token", "cloudflared": "C:\path\to\cloudflared.exe"}
+
+- `tunnel_file` must be an absolute path. Its contents are the tunnel token,
+  read at start, so the token stays out of `node.json`. Use `tunnel` instead
+  only if the token already lives there.
+- `port` is required: it names the account's readiness port and must be unique.
+  Nothing listens on it as a node.
+- `cloudflared` is optional and must be absolute; without it the usual lookup
+  in the account folder and then the base folder is used.
+- An account switched to `tunnel_only` while its node runs has that node
+  stopped.
+
 ## Safety
 
 - The status endpoint listens on `127.0.0.1:47411` only and never returns a
