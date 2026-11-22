@@ -5278,8 +5278,101 @@ app.add_middleware(_McpSlashNormalizer)
 # / recon / transcript dumps) but keep the FastAPI app serving — the token-gated
 # /mcp endpoint and REST API stay up. Raising here would abort `uvicorn app:app`
 # and take /mcp down along with the HUD.
-if _hud_auth or not _network_exposed:
-    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
+from nougen_shards import hud_login as _hud_login
+from fastapi.responses import HTMLResponse as _HTMLResponse, RedirectResponse as _RedirectResponse
+
+
+def _hud_cookie_secure(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    return proto.split(",")[0].strip().lower() == "https"
+
+
+def _hud_signed_in(request: Request, user: str) -> _RedirectResponse:
+    resp = _RedirectResponse("/", status_code=303)
+    resp.set_cookie(_hud_login.COOKIE, _hud_login.session_cookie(user),
+                    max_age=_hud_login.SESSION_TTL, httponly=True, samesite="lax",
+                    secure=_hud_cookie_secure(request), path="/")
+    resp.headers["cache-control"] = "no-store"
+    return resp
+
+
+def _hud_user_dependency(request: Request) -> Optional[str]:
+    """Gradio auth_dependency: the account a valid session cookie signs in."""
+    return _hud_login.session_user(request.cookies.get(_hud_login.COOKIE))
+
+
+# Registered BEFORE the Gradio catch-all at "/" so these paths reach FastAPI.
+@app.get("/hud/login", include_in_schema=False)
+async def _hud_login_page():
+    return _HTMLResponse(_hud_login.login_page(), headers={"cache-control": "no-store"})
+
+
+@app.post("/hud/login", include_in_schema=False)
+async def _hud_login_submit(request: Request):
+    from urllib.parse import parse_qs
+    form = parse_qs((await request.body())[:4096].decode("utf-8", "replace"))
+    user = (form.get("username") or [""])[0]
+    if not _hud_login.check_password(user, (form.get("password") or [""])[0]):
+        return _HTMLResponse(_hud_login.login_page("That username and password did not match."),
+                             status_code=401, headers={"cache-control": "no-store"})
+    return _hud_signed_in(request, user)
+
+
+@app.get("/hud/ticket", include_in_schema=False)
+async def _hud_ticket(request: Request, t: str = ""):
+    """Landing for the Join worker's Google sign-in: a one-time ticket becomes a session."""
+    user = _hud_login.redeem_ticket(t)
+    if not user:
+        return _HTMLResponse(_hud_login.login_page("That sign-in link has expired. Sign in again."),
+                             status_code=401, headers={"cache-control": "no-store"})
+    return _hud_signed_in(request, user)
+
+
+@app.get("/hud/logout", include_in_schema=False)
+async def _hud_logout():
+    resp = _RedirectResponse("/hud/login", status_code=303)
+    resp.delete_cookie(_hud_login.COOKIE, path="/")
+    return resp
+
+
+class _HudLoginRedirect:
+    """Send a signed-out browser asking for the HUD page to /hud/login.
+
+    With auth_dependency Gradio answers a signed-out page load with a bare 401;
+    a person should see the sign-in page instead. Only GET/HEAD "/" is
+    redirected: Gradio's own API calls keep their 401, other routes are untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") == "http" and scope.get("method") in ("GET", "HEAD")
+                and scope.get("path") == "/"):
+            cookie = ""
+            for k, v in scope.get("headers", []):
+                if k.lower() == b"cookie":
+                    for part in v.decode("latin-1").split(";"):
+                        name, _, val = part.strip().partition("=")
+                        if name == _hud_login.COOKIE:
+                            cookie = val
+            if not _hud_login.session_user(cookie):
+                await send({"type": "http.response.start", "status": 303,
+                            "headers": [(b"location", b"/hud/login"), (b"cache-control", b"no-store"),
+                                        (b"content-length", b"0")]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+        await self.app(scope, receive, send)
+
+
+if _hud_auth:
+    # Signed in by the Google identity the Join page already verified, or the
+    # fallback form; never by a password the tenant was never given. See
+    # nougen_shards.hud_login.
+    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth_dependency=_hud_user_dependency)
+    app.add_middleware(_HudLoginRedirect)
+elif not _network_exposed:
+    app = gr.mount_gradio_app(app, cortex_hud, path="/")
 else:
     print(
         "[WARN] Cortex HUD not mounted: host is network-exposed "
