@@ -5296,6 +5296,10 @@ def _hud_signed_in(request: Request, user: str) -> _RedirectResponse:
     return resp
 
 
+def _hud_public_host(request: Request) -> str:
+    return request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+
+
 def _hud_user_dependency(request: Request) -> Optional[str]:
     """Gradio auth_dependency: the account a valid session cookie signs in."""
     return _hud_login.session_user(request.cookies.get(_hud_login.COOKIE))
@@ -5303,8 +5307,8 @@ def _hud_user_dependency(request: Request) -> Optional[str]:
 
 # Registered BEFORE the Gradio catch-all at "/" so these paths reach FastAPI.
 @app.get("/hud/login", include_in_schema=False)
-async def _hud_login_page():
-    return _HTMLResponse(_hud_login.login_page(), headers={"cache-control": "no-store"})
+async def _hud_login_page(request: Request):
+    return _HTMLResponse(_hud_login.login_page(host=_hud_public_host(request)), headers={"cache-control": "no-store"})
 
 
 @app.post("/hud/login", include_in_schema=False)
@@ -5313,7 +5317,7 @@ async def _hud_login_submit(request: Request):
     form = parse_qs((await request.body())[:4096].decode("utf-8", "replace"))
     user = (form.get("username") or [""])[0]
     if not _hud_login.check_password(user, (form.get("password") or [""])[0]):
-        return _HTMLResponse(_hud_login.login_page("That username and password did not match."),
+        return _HTMLResponse(_hud_login.login_page("That username and password did not match.", _hud_public_host(request)),
                              status_code=401, headers={"cache-control": "no-store"})
     return _hud_signed_in(request, user)
 
@@ -5323,7 +5327,7 @@ async def _hud_ticket(request: Request, t: str = ""):
     """Landing for the Join worker's Google sign-in: a one-time ticket becomes a session."""
     user = _hud_login.redeem_ticket(t)
     if not user:
-        return _HTMLResponse(_hud_login.login_page("That sign-in link has expired. Sign in again."),
+        return _HTMLResponse(_hud_login.login_page("That sign-in link has expired. Sign in again.", _hud_public_host(request)),
                              status_code=401, headers={"cache-control": "no-store"})
     return _hud_signed_in(request, user)
 

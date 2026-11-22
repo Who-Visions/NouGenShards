@@ -29,6 +29,7 @@ import hmac
 import html
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -39,7 +40,6 @@ SESSION_PURPOSE = "hud-session"
 COOKIE = "nougen_hud"
 TICKET_MAX_TTL = 300          # a ticket that claims to live longer is refused
 SESSION_TTL = 7 * 24 * 3600   # a signed-in browser stays in for a week
-DEFAULT_JOIN_URL = "https://join.nougenai.com"
 
 
 def _b64(raw: bytes) -> str:
@@ -107,9 +107,28 @@ def configured() -> bool:
     return bool(hud_user() and hud_password())
 
 
-def join_url() -> str:
-    """Where "Continue with Google" goes. NGS_JOIN_URL="" turns the button off."""
-    return os.environ.get("NGS_JOIN_URL", DEFAULT_JOIN_URL).rstrip("/")
+def join_url(host: str = "") -> str:
+    """Where "Continue with Google" goes, resolved at runtime, never hard-coded.
+
+    1. NGS_JOIN_URL, or ``join_url`` from the endpoints file (env NOUGEN_JOIN_URL);
+       NGS_JOIN_URL="" turns the button off.
+    2. Else the Join page beside this node: a tenant node is served at
+       ``<account>-<hex>.<zone>`` and the Join worker at ``join.<zone>``, so the
+       zone comes from the host the browser used. Loopback or a bare name gets
+       no button (the username/password form is shown instead).
+    """
+    if "NGS_JOIN_URL" in os.environ:
+        return os.environ["NGS_JOIN_URL"].strip().rstrip("/")
+    from nougen_shards import endpoints
+    configured = os.environ.get("NOUGEN_JOIN_URL", "").strip() or endpoints.resolve("join_url")
+    if configured:
+        return configured.rstrip("/")
+    name = (host or "").split(",")[0].strip().lower().rsplit(":", 1)[0] if host and not host.startswith("[") else ""
+    labels = name.split(".") if name else []
+    if (len(labels) >= 3 and all(re.fullmatch(r"[a-z0-9-]{1,63}", x) for x in labels)
+            and not all(x.isdigit() for x in labels)):
+        return "https://join." + ".".join(labels[1:])
+    return ""
 
 
 # ------------------------------------------------------------------ one-time tickets
@@ -169,8 +188,8 @@ def session_user(cookie_value: Optional[str], now: Optional[float] = None) -> Op
 
 # ------------------------------------------------------------------ page
 
-def login_page(error: str = "") -> str:
-    join = join_url()
+def login_page(error: str = "", host: str = "") -> str:
+    join = join_url(host)
     google = (f'<a class="btn primary" href="{html.escape(join)}/open">Continue with Google</a>'
               '<p class="muted">Use the Google account you joined NouGen with.</p>') if join else ""
     err = f'<p class="err" role="alert">{html.escape(error)}</p>' if error else ""

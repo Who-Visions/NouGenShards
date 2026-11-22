@@ -113,7 +113,29 @@ def test_signed_out_browser_gets_the_sign_in_page_not_a_password_wall(client):
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/hud/login"
     page = client.get("/hud/login").text
-    assert "Continue with Google" in page and "https://join.nougenai.com/open" in page
+    assert "Continue with Google" in page and "https://join.example.com/open" in page
+
+
+@pytest.mark.parametrize("host,want", [
+    ("pat-ab12.example.com", "https://join.example.com"),
+    ("pat-ab12.example.com:443", "https://join.example.com"),
+    ("127.0.0.1:4500", ""),
+    ("localhost:4500", ""),
+    ("", ""),
+])
+def test_join_url_comes_from_the_host_not_the_code(monkeypatch, host, want):
+    for k in ("NGS_JOIN_URL", "NOUGEN_JOIN_URL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("NOUGEN_ENDPOINTS_FILE", "/nonexistent/endpoints.json")
+    assert hud_login.join_url(host) == want
+
+
+def test_join_url_config_wins(monkeypatch):
+    monkeypatch.setenv("NOUGEN_JOIN_URL", "https://signup.example.org/")
+    assert hud_login.join_url("pat-ab12.example.com") == "https://signup.example.org"
+    monkeypatch.setenv("NGS_JOIN_URL", "")
+    assert hud_login.join_url("pat-ab12.example.com") == ""
+    assert "Continue with Google" not in hud_login.login_page(host="pat-ab12.example.com")
 
 
 def test_join_ticket_opens_the_hud(client):
