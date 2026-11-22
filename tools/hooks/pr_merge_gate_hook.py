@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 _SEPARATORS = {"&&", "||", ";", "|", "&", "\n"}
 _PR_URL = re.compile(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+_API_MERGE = re.compile(r"repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge")
+_RAW_MERGE = re.compile(r"\bgh(?:\.exe)?\s+pr\s+merge\b")
 
 
 def _tokens(command: str) -> list:
@@ -55,6 +57,13 @@ def merge_segments(command: str) -> list:
         else:
             seg.append(tok)
     return out
+
+
+def api_merge_targets(command: str) -> list:
+    """`gh api -X PUT repos/<o>/<r>/pulls/<n>/merge` merges a PR without `gh pr merge`."""
+    if not re.search(r"\bgh(?:\.exe)?\s+api\b", command):
+        return []
+    return [(m.group(1), int(m.group(2))) for m in _API_MERGE.finditer(command)]
 
 
 def parse_merge_args(args: list) -> dict:
@@ -141,6 +150,9 @@ def decide(payload: dict) -> Optional[str]:
                 if info["admin"]:
                     return "merge denied: --admin bypasses the gate and branch protection"
                 targets.append(resolve_target(info, cwd))
+            targets.extend(api_merge_targets(str(tool_input.get("command", ""))))
+            if not targets and _RAW_MERGE.search(str(tool_input.get("command", ""))):
+                return "merge gate: a `gh pr merge` is hidden inside a quoted string; run it directly so the gate can read it"
         elif re.search(r"merge_pull_request", tool):
             targets.append(mcp_target(tool_input))
     except Exception as exc:  # cannot tell which PR this merges: never a green light

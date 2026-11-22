@@ -72,3 +72,19 @@ def test_non_json_stdin_never_wedges(monkeypatch):
     import io
     monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
     assert hook.main() == 0
+
+
+def test_api_put_merge_is_gated(monkeypatch):
+    seen = []
+    monkeypatch.setattr(hook, "run_gate", lambda repo, pr: (seen.append((repo, pr)) or (1, "BLOCKED")))
+    cmd = "gh api -X PUT repos/o/r/pulls/33/merge -f merge_method=squash"
+    assert hook.decide(bash(cmd)) == "BLOCKED" and seen == [("o/r", 33)]
+
+
+def test_api_read_of_pulls_is_not_a_merge():
+    assert hook.decide(bash("gh api repos/o/r/pulls/33")) is None
+
+
+def test_merge_hidden_in_quotes_is_denied():
+    reason = hook.decide(bash("bash -c 'gh pr merge 5 --repo o/r'"))
+    assert reason and "hidden" in reason
