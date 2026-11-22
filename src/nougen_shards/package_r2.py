@@ -364,7 +364,7 @@ def publish(dist: Optional[str] = None, *, dry_run: bool = False, settings: Opti
                 continue
         plan.append({"key": key, "action": "upload", "bytes": row["bytes"]})
     if dry_run:
-        return {"dry_run": True, "bucket": s["bucket"], "plan": plan + [
+        return {"dry_run": True, "plan": plan + [
             {"key": f"{s['prefix']}/install.py", "action": "upload"}, {"key": f"{s['prefix']}/manifest.json", "action": "upload"}]}
     for step in plan:
         if step["action"] != "upload":
@@ -383,7 +383,7 @@ def publish(dist: Optional[str] = None, *, dry_run: bool = False, settings: Opti
     code, resp, _ = _signed_request("PUT", _object_url(s, mkey), s, (d / "manifest.json").read_bytes(), "application/json")
     if code not in (200, 201):
         raise R2Error(f"upload {mkey} failed: HTTP {code} {resp[:200]!r}")
-    return {"bucket": s["bucket"], "uploaded": done + [mkey], "present": [p["key"] for p in plan if p["action"] == "present"],
+    return {"uploaded": done + [mkey], "present": [p["key"] for p in plan if p["action"] == "present"],
             "repos": len(manifest["repos"])}
 
 
