@@ -4,6 +4,7 @@ Routes IPC and notification pings to Claude Code, Antigravity, OpenAI Codex, and
 """
 import os
 import base64
+import ipaddress
 import glob
 import json
 import time
@@ -177,6 +178,35 @@ def _known_fleet_hosts() -> Dict[str, Tuple[str, ...]]:
         if name:
             out[name] = tuple(str(p).strip().lower() for p in (pats or [name]) if str(p).strip())
     return out
+
+
+# Set by a receiver (tools/nougenmsg_node.py) for the request it is handling: the
+# TCP peer address, which only the server can see. Never read from a message body.
+PEER = threading.local()
+
+
+def node_for_peer(addr: str) -> Optional[str]:
+    """The fleet node whose configured LAN address is ``addr``, else None.
+
+    Addresses come from fleet_hosts.json ("ip") or NOUGEN_NODE_<NODE>_IP, so
+    nothing is hardcoded. Loopback is never a node: a tunnel hands every
+    connector-relayed message to the receiver from 127.0.0.1, and labelling
+    those with the receiving box is the bug #1155 removed.
+    """
+    try:
+        ip = ipaddress.ip_address(str(addr or "").strip())
+    except ValueError:
+        return None
+    if ip.is_loopback or ip.is_unspecified:
+        return None
+    nodes = _load_fleet_hosts().get("nodes") or {}
+    for node, cfg in nodes.items() if isinstance(nodes, dict) else ():
+        name = str(node).strip().lower()
+        known = {str((cfg or {}).get("ip") or "").strip() if isinstance(cfg, dict) else "",
+                 os.environ.get(f"NOUGEN_NODE_{name.upper()}_IP", "").strip()}
+        if name and str(ip) in known:
+            return name
+    return None
 
 
 def _default_coach_routes() -> Dict[str, str]:
@@ -1232,7 +1262,8 @@ class NouGenMsgBus:
         forwarded = bool(forwarded)
         if forwarded:
             path = [str(x).strip().lower() for x in (supplied.get("relay_path") or []) if str(x).strip()]
-            sender_machine = claimed_machine or (path[0] if path else "") or "unknown"
+            inferred = "" if (claimed_machine or path) else (node_for_peer(getattr(PEER, "addr", "")) or "")
+            sender_machine = claimed_machine or (path[0] if path else "") or inferred or "unknown"
             sender_id = supplied.get("machine_id") or "unknown"
             if path and claimed_machine and not cls._is_genuine_forward(supplied, ident["node"], current):
                 conflicts.append({"field": "relay_path", "claimed": claimed_machine,
