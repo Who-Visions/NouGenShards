@@ -29,8 +29,9 @@ _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
 def resolve_session() -> str:
     """Which SESSION on this lane is speaking, or "" when nothing knows.
 
-    A NouGenMsg payload names a BOX at best (get_current_node's three-way
-    hardcoded branch) and a connector's own label at worst. Several sessions
+    A NouGenMsg payload names a BOX at best (whatever get_current_node
+    resolves from the local fleet_hosts.json and the hostname) and a
+    connector's own label at worst. Several sessions
     run on one box under one lane name, so a message can be delivered and
     credited to the wrong writer with nothing in the record to catch it.
     Measured on blade 2026-09-08: 124 relay legs under a single byline in one
@@ -51,9 +52,10 @@ def resolve_session() -> str:
 def resolve_origin_host() -> str:
     """The physical box this message was written on, regardless of its label.
 
-    Deliberately NOT get_current_node(): that returns one of three hardcoded
-    names, and a connector-written message inherits whichever branch happens
-    to fire rather than saying where it actually ran. This asks the OS.
+    Deliberately NOT get_current_node(): that resolves a fleet label from
+    the local fleet_hosts.json / hostname match, and a connector-written
+    message inherits that label rather than saying where it actually ran.
+    This asks the OS.
     Named `origin_host` because `origin` already means the original-sender
     routing block in this payload shape, and overloading it would silently
     change meaning for every existing consumer.
@@ -764,9 +766,78 @@ class AgentPinger:
     # whoart's card is 6141 MiB. The qat build fits at 4.34 GB and is why
     # CLAUDE.md Rule 0.5.1 pins it as the resident local lane; plain e2b is
     # 7.16 GB and does NOT fit, so a fleet-wide "gemma4:e2b" default points
-    # whoart at a model a gigabyte larger than its VRAM.
-    _OLLAMA_DEFAULTS = {"whoart": "gemma4:e2b-qat"}
+    # whoart at a model a gigabyte larger than its VRAM. A hard-coded
+    # per-machine map rots exactly as fast as the tags do, so the default is
+    # DISCOVERED from the serving node's own /api/tags at call time (below):
+    # no machine names, only the node's live inventory.
     _OLLAMA_FALLBACK = "gemma4:e2b"
+    # e2b-class = the model's tag carries an e2b segment (gemma4:e2b,
+    # gemma4:e2b-qat, solai:e2b, ...). A name pattern, never a machine name.
+    _E2B_CLASS = re.compile(r"(?:^|:)e2b(?:[-:.]|$)")
+
+    @staticmethod
+    def _ollama_installed(node: str, is_local: bool) -> List[Dict[str, Any]]:
+        """The serving node's /api/tags model entries, or [] when it cannot
+        be asked. Local: the discovered client URL (ollama_host), the same
+        resolution ping_ollama dials. Remote: ssh + curl against the node's
+        own loopback, the same transport ping_ollama uses for its remote
+        /api/generate. Any failure reads as "no tags" and the caller falls
+        back -- discovery must never break the ping path.
+        """
+        try:
+            if is_local:
+                base = "http://127.0.0.1:11434"
+                try:
+                    from .ollama_host import discover_ollama_url  # pylint: disable=import-outside-toplevel
+                    base = discover_ollama_url() or base
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                req = urllib.request.Request(base.rstrip("/") + "/api/tags")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    data = json.loads(r.read().decode())
+            else:
+                res = subprocess.run(
+                    ["ssh", "--", node, "curl -sS http://127.0.0.1:11434/api/tags"],
+                    creationflags=_NO_WINDOW,
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                )
+                data = json.loads(res.stdout)
+            models = data.get("models")
+            return models if isinstance(models, list) else []
+        except Exception:  # pylint: disable=broad-except
+            return []
+
+    @staticmethod
+    def _discover_ollama_model(node: str, is_local: bool) -> Optional[str]:
+        """The serving node's own e2b-class chat model, from its live tags.
+
+        The stock family (the fallback's family) wins first; within a tier a
+        quantized (qat) build wins, then the smallest build -- the
+        constrained card is the whole reason the tags diverged, and the qat
+        build is the one that fits it. Returns None when the node holds no
+        e2b-class tag, leaving the fallback to speak for it.
+        """
+        stock_family = AgentPinger._OLLAMA_FALLBACK.split(":", 1)[0]
+        candidates: List[Tuple[int, int, float, str]] = []
+        for entry in AgentPinger._ollama_installed(node, is_local):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name or not AgentPinger._E2B_CLASS.search(name):
+                continue
+            try:
+                size = float(entry.get("size") or 0) or float("inf")
+            except (TypeError, ValueError):
+                size = float("inf")
+            family, _, tag = name.partition(":")
+            tier = 0 if family == stock_family else 1
+            qat_rank = 0 if "qat" in tag else 1
+            candidates.append((tier, qat_rank, size, name))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][3]
 
     @staticmethod
     def _default_ollama_model(node: str) -> str:
@@ -774,15 +845,23 @@ class AgentPinger:
         that will actually serve this request.
 
         A single fleet-wide default cannot be correct: the nodes hold
-        different tags, and whoart's 6141 MiB card only fits the quantized
-        build. Key off the serving machine instead.
+        different tags, and a constrained card only fits the quantized
+        build. Resolution: NOUGEN_LOCAL_E2B_MODEL (this box's own slot
+        build, local targets only) -> the serving node's live /api/tags
+        (see _discover_ollama_model) -> _OLLAMA_FALLBACK when the node
+        cannot be asked. Keyed off the serving machine's inventory, never
+        off a machine name.
         """
         current = get_current_node()
         is_local = node in ("local", "", None, current)
+        if is_local:
+            # The slot names a tag on THIS box; a remote node may not hold it.
+            slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL")
+            if slot:
+                return slot
         machine = current if is_local else node
-        # The slot names a tag on THIS box; a remote node may not hold it.
-        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
+        return (AgentPinger._discover_ollama_model(machine, is_local)
+                or AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,
