@@ -56,7 +56,7 @@ def test_no_lane_reports_stays_unknown(node):
 def test_queue_accepted_alone_is_not_verified(node):
     res = {"phoebus": {"codex": {"queue_accepted": True, "delivery_verified": False}}}
     body = node._receipt({"delivered": True, "routed": True, "results": res})
-    assert body["delivered"] is False and body["status"] == "unverified"
+    assert body["delivered"] is False and body["status"] == "queued"
 
 
 def test_foreign_dispatch_uses_honest_flag(node, monkeypatch):
@@ -70,3 +70,17 @@ def test_foreign_dispatch_uses_honest_flag(node, monkeypatch):
     status, body = node._dispatch_foreign_target(msg, ("phoebus", "claude"))
     assert status == 200
     assert body["delivered"] is False and body["status"] == "unverified"
+
+
+def test_queue_only_receipt_says_queued_not_unverified(node):
+    body = node._receipt({"delivered": True, "routed": True,
+                       "results": {"codex": {"queue_accepted": True}}})
+    assert body["delivered"] is False
+    assert body["delivery_verified"] is False
+    assert body["status"] == "queued"
+
+
+def test_nested_unrelated_keys_do_not_count_as_lane_verdicts(node):
+    results = {"antigravity": {"pipe_delivered": False,
+                               "meta": {"delivered": ["x"], "pipe_delivered": True}}}
+    assert node._lanes_verified(results) is False
