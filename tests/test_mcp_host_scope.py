@@ -30,8 +30,8 @@ class FakeMCP:
         await send({"type": "http.response.body", "body": out})
 
 
-def call(app, host, payload):
-    scope = {"type": "http", "method": "POST", "headers": [(b"host", host.encode())]}
+def call(app, host, payload, extra_headers=()):
+    scope = {"type": "http", "method": "POST", "headers": [(b"host", host.encode()), *extra_headers]}
     got = {}
 
     async def receive():
@@ -184,3 +184,94 @@ def test_malformed_tool_call_names_are_refused_not_crashed():
         res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": params})
         assert res["id"] == 9 and res["error"]["code"] == -32601, params
     assert inner.seen == []
+
+
+def test_spoofed_forwarded_host_cannot_unscope_msgs_host():
+    app, inner = make()
+    xfh = [(b"x-forwarded-host", b"mcp.example.test")]
+    res = call(app, "msgs.example.test", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, xfh)
+    assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
+    res = call(app, "msgs.example.test",
+               {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "vault_put"}}, xfh)
+    assert res["error"]["code"] == -32601 and len(inner.seen) == 1
+
+
+def test_forwarded_msgs_host_behind_proxy_is_scoped():
+    app, _ = make()
+    xfh = [(b"x-forwarded-host", b"msgs.example.test, edge.example.test")]
+    res = call(app, "127.0.0.1:4444", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, xfh)
+    assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
+
+
+def raw_call(app, host, payload, extra_headers=()):
+    scope = {"type": "http", "method": "POST", "headers": [(b"host", host.encode()), *extra_headers]}
+    got = {}
+
+    async def receive():
+        return {"type": "http.request", "body": json.dumps(payload).encode(), "more_body": False}
+
+    async def send(event):
+        if event["type"] == "http.response.start":
+            got["status"] = event.get("status", 200)
+        else:
+            got["body"] = event["body"]
+
+    asyncio.run(app(scope, receive, send))
+    return got["status"], json.loads(got["body"])
+
+
+def test_trailing_dot_and_port_still_scoped():
+    app, inner = make()
+    for host in ("msgs.example.test.", "MSGS.example.test.:443", "msgs.example.test:8443"):
+        res = call(app, host, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "vault_put"}})
+        assert res["error"]["code"] == -32601, host
+    assert inner.seen == []
+
+
+def test_scope_keys_normalised():
+    scopes = load_scopes({"NOUGEN_MCP_MSG_HOSTS": " Msgs.Example.Test. "})
+    assert list(scopes) == ["msgs.example.test"]
+
+
+def fail_closed():
+    inner = FakeMCP()
+    app = HostScopedMCP(inner, load_scopes({"NOUGEN_MCP_MSG_HOSTS": "msgs.example.test"}),
+                        open_hosts=["mcp.example.test", "127.0.0.1"])
+    return app, inner
+
+
+def test_fail_closed_refuses_unrecognised_host():
+    app, inner = fail_closed()
+    # Proxy rewrote Host to an internal name; client sent its own X-Forwarded-Host.
+    status, body = raw_call(app, "internal.svc", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                            [(b"x-forwarded-host", b"evil.example.test")])
+    assert status == 403 and body == {"error": "host not recognised"}
+    assert inner.seen == []
+
+
+def test_fail_closed_forwarded_open_host_cannot_widen():
+    app, inner = fail_closed()
+    # Proxy rewrote Host to an internal name; client names an OPEN host in XFH.
+    status, body = raw_call(app, "internal.svc", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                            [(b"x-forwarded-host", b"mcp.example.test")])
+    assert status == 403 and body == {"error": "host not recognised"}
+    assert inner.seen == []
+
+
+def test_fail_closed_lets_open_hosts_through():
+    app, _ = fail_closed()
+    for host in ("mcp.example.test", "127.0.0.1:4444"):
+        res = call(app, host, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert len(res["result"]["tools"]) == len(ALL_TOOLS), host
+
+
+def test_fail_closed_still_scopes_msgs_host():
+    app, _ = fail_closed()
+    res = call(app, "msgs.example.test.", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert [t["name"] for t in res["result"]["tools"]] == ["nougenmsg", "nougenmsg_inbox", "node_status"]
+
+
+def test_open_hosts_unset_keeps_pass_through():
+    app, _ = make()
+    res = call(app, "anything.example.test", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert len(res["result"]["tools"]) == len(ALL_TOOLS)
