@@ -4635,7 +4635,7 @@ def studio_lighting(color: str = "green", target: str = "all") -> dict:
 @node_mcp.tool()
 @_offloaded
 def tunnel_status() -> dict:
-    """Inspect active Ngrok TLS ingress edge tunnels for local MsgNode and Web HUD."""
+    """Cloudflare tunnel health: this box's cloudflared connector plus /health on the fleet hostnames."""
     from nougen_shards import tunnel
     return tunnel.get_active_tunnels()
 
