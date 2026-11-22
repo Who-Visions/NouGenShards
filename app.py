@@ -5287,9 +5287,11 @@ def _hud_cookie_secure(request: Request) -> bool:
     return proto.split(",")[0].strip().lower() == "https"
 
 
-def _hud_signed_in(request: Request, user: str) -> _RedirectResponse:
+def _hud_signed_in(request: Request) -> _RedirectResponse:
+    # Callers only get here after the ticket or password proved this node's account,
+    # so the cookie is minted for the configured account, never for request text.
     resp = _RedirectResponse("/", status_code=303)
-    resp.set_cookie(_hud_login.COOKIE, _hud_login.session_cookie(user),
+    resp.set_cookie(_hud_login.COOKIE, _hud_login.session_cookie(_hud_login.hud_user()),
                     max_age=_hud_login.SESSION_TTL, httponly=True, samesite="lax",
                     secure=_hud_cookie_secure(request), path="/")
     resp.headers["cache-control"] = "no-store"
@@ -5319,7 +5321,7 @@ async def _hud_login_submit(request: Request):
     if not _hud_login.check_password(user, (form.get("password") or [""])[0]):
         return _HTMLResponse(_hud_login.login_page("That username and password did not match.", _hud_public_host(request)),
                              status_code=401, headers={"cache-control": "no-store"})
-    return _hud_signed_in(request, user)
+    return _hud_signed_in(request)
 
 
 @app.get("/hud/ticket", include_in_schema=False)
@@ -5329,7 +5331,7 @@ async def _hud_ticket(request: Request, t: str = ""):
     if not user:
         return _HTMLResponse(_hud_login.login_page("That sign-in link has expired. Sign in again.", _hud_public_host(request)),
                              status_code=401, headers={"cache-control": "no-store"})
-    return _hud_signed_in(request, user)
+    return _hud_signed_in(request)
 
 
 @app.get("/hud/logout", include_in_schema=False)

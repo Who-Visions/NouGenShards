@@ -24,6 +24,7 @@ supervisor restart with a new token behave the same way.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import html
@@ -95,12 +96,21 @@ def ticket_secret() -> str:
     return os.environ.get("NGS_NODE_TOKEN", "")
 
 
+@functools.lru_cache(maxsize=8)
+def _derive_session_key(user: str, base: str) -> str:
+    # PBKDF2, not a bare hash: on owner nodes the base can be a typed password.
+    # Cached per (user, base), so it costs once per process and changes when the
+    # token or password does.
+    return hashlib.pbkdf2_hmac("sha256", base.encode("utf-8"),
+                               f"nougen-hud-session:{user}".encode("utf-8"), 200_000).hex()
+
+
 def session_secret() -> str:
     """Key for the session cookie. Derived, so a cookie never doubles as a ticket."""
     base = ticket_secret() or hud_password()
     if not base:
         return ""
-    return hashlib.sha256(f"nougen-hud-session:{hud_user()}:{base}".encode("utf-8")).hexdigest()
+    return _derive_session_key(hud_user(), base)
 
 
 def configured() -> bool:
