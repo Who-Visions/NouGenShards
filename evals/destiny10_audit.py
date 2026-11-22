@@ -40,7 +40,11 @@ def load():
         # the 11/17 file predates the --seed flag; it ran the default seed 1085.
         # Later files overwrite earlier ones for the same arm and seed (glob is sorted),
         # so the post-gate-fix 11/18 runs replace the 11/17 ones where both exist.
-        seed = int(m.group(1)) if m else 1085
+        # Seed precedence: the result's own metadata, then the filename, then 1085.
+        if isinstance(d.get("seed"), int):
+            seed = d["seed"]
+        else:
+            seed = int(m.group(1)) if m else 1085
         for r in d.get("arms", []):
             if r.get("lane_calls", 0) == 0:
                 skipped.append((name, r["arm"], "0 model calls (lane errors: %s)" % r.get("lane_errors")))
@@ -116,10 +120,18 @@ def main() -> int:
     sf_tps = [r["tokens_per_success"] for r in sf.values() if r.get("tokens_per_success")]
     po_tps = [r["tokens_per_success"] for r in po.values() if r.get("tokens_per_success")]
     cost_clear = bool(sf_tps and po_tps and max(sf_tps) < min(po_tps))
-    success_tie = bool(sf and po and all(sf[s]["done"] == po[s]["done"] for s in sf if s in po))
-    beats_nm = bool(sf and nm and all(sf[s]["done"] > nm[s]["done"] for s in sf if s in nm))
+    # Every-seed claims only cover seeds present in BOTH arms; an empty overlap is
+    # not evidence, so it never evaluates to a vacuous True.
+    po_seeds = sorted(set(sf) & set(po))
+    nm_seeds = sorted(set(sf) & set(nm))
+    success_tie = bool(po_seeds) and all(sf[s]["done"] == po[s]["done"] for s in po_seeds)
+    beats_nm = bool(nm_seeds) and all(sf[s]["done"] > nm[s]["done"] for s in nm_seeds)
+    unpaired = sorted(x for x in (set(sf) | set(po) | set(nm)) if not (x in sf and x in po and x in nm))
     clean_rollback = all(r["rollback_violations"] == 0 for g in arms.values() for r in g.values())
 
+    if unpaired:
+        P("**Unpaired seeds** (not in all three arms, excluded from every-seed claims): "
+          + ", ".join(str(x) for x in unpaired) + ".\n")
     P("## Required events\n")
     P("| Event | Status | Evidence |")
     P("|---|---|---|")
