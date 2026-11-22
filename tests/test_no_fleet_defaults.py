@@ -13,6 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = [
     "src/nougen_shards/tunnel.py",
     "src/nougen_shards/endpoints.py",
+    "src/nougen_shards/wire/address.py",
+    "src/nougen_shards/wire/hub.py",
+    "src/nougen_shards/wire/store.py",
+    "src/nougen_shards/wire/receipts.py",
+    "src/nougen_shards/wire/service.py",
+    "src/nougen_shards/wire/adapters.py",
+    "src/nougen_shards/wire/access.py",
+    "src/nougen_shards/wire/guard.py",
 ]
 FLEET = re.compile(r"nougenai\.com|whoentertains|\bg-dave\b|\bblade\b|\bphoebus\b|\bwhoart\b|superdave", re.I)
 
