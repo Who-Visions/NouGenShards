@@ -602,12 +602,9 @@ class AgentPinger:
         name to recognise, and a live flag. Newest registration first."""
         if _tenant_scope():
             return []
-        try:
-            with open(AgentPinger._cc_registry_path(), "r", encoding="utf-8") as f:
-                registry = json.load(f)
-        except (OSError, ValueError):
-            return []
-        if not isinstance(registry, dict):
+        from . import cc_registry
+        registry, _corrupt = cc_registry.read(AgentPinger._cc_registry_path())
+        if not registry:
             return []
         entries: Dict[str, Dict[str, Any]] = {}
         nested = registry.get("sessions")
@@ -672,12 +669,9 @@ class AgentPinger:
                     "note": "identical message already delivered to this box within NOUGEN_PING_DEDUPE_S; skipped"}
         source = display_sender(origin)
         text = f"NouGenMsg from {source}: {prompt}"
+        from . import cc_registry
         reg_path = AgentPinger._cc_registry_path()
-        try:
-            with open(reg_path, "r", encoding="utf-8") as f:
-                registry = json.load(f)
-        except (OSError, ValueError):
-            registry = {}
+        registry, registry_corrupt = cc_registry.read(reg_path)  # salvages a corrupt file
         # Both registry shapes can coexist in one file: blade nests {"sessions":
         # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
         # top level. An EMPTY nested "sessions" key used to mask every top-level
@@ -756,13 +750,19 @@ class AgentPinger:
                     print(f"[nougenmsg] pruned unreachable Claude endpoint {sock}: {last_exc}", file=sys.stderr, flush=True)
                 else:
                     print(f"[nougenmsg] delivery error on Claude endpoint {sock} (retained): {last_exc}", file=sys.stderr, flush=True)
-        if pruned:
+        if pruned or registry_corrupt:
+            gone = set(pruned)
+
+            def _prune(reg: Dict[str, Any]) -> None:
+                nested = reg.get("sessions")
+                if isinstance(nested, dict):
+                    for sock in gone:
+                        nested.pop(sock, None)
+                for sid in [k for k, v in reg.items()
+                            if k != "sessions" and isinstance(v, dict) and str(v.get("socket")) in gone]:
+                    reg.pop(sid, None)
             try:
-                registry["sessions"] = sessions
-                tmp = reg_path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(registry, f, indent=1)
-                os.replace(tmp, reg_path)
+                cc_registry.update(reg_path, _prune)  # locked; also rewrites a corrupt file clean
             except OSError:
                 pass
         # A targeted delivery must never leave a second copy in the shared
@@ -793,7 +793,8 @@ class AgentPinger:
             note = (f"socket write accepted by {len(delivered)} live session(s); the harness writes no ack, "
                     "the receiver's context is the proof")
         return {"delivered": delivered, "pruned": pruned, "registered": registered_count, "inbox_file": inbox_file,
-                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note}
+                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note,
+                "registry_corrupt": registry_corrupt}
 
     @staticmethod
     def ping_antigravity(

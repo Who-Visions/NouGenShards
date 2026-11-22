@@ -47,7 +47,8 @@ class Hub:
         return r
 
     # -- ingest ------------------------------------------------------------
-    def send(self, env: Dict[str, Any], allow_actions: bool = False, push: bool = True) -> Dict[str, Any]:
+    def send(self, env: Dict[str, Any], allow_actions: bool = False, push: bool = True,
+             proof: str = "") -> Dict[str, Any]:
         E.validate(env)
         now = self.clock()
         if env["kind"] == "answer":
@@ -61,8 +62,12 @@ class Hub:
             return {"id": env["id"], "state": "refused", "guard": verdict.as_dict(), "receipts": [r]}
         inserted, state = self.store.put(env, now)
         if not inserted:
+            stored = self.store.get(env["id"])
+            if stored and E.canonical(stored["env"]) != E.canonical(env):
+                return {"id": env["id"], "state": state, "conflict": True,
+                        "error": "this id was already used for a different message; send a new id"}
             return {"id": env["id"], "state": state, "duplicate": True, "receipts": self.store.receipts(env["id"])}
-        self._receipt(env, "accepted", f"guard {verdict.rule}")
+        self._receipt(env, "accepted", f"guard {verdict.rule}" + (f"; {proof}" if proof else ""))
         if env["kind"] == "answer":
             self._close_ask(env)
         if push:
@@ -104,6 +109,11 @@ class Hub:
         if to.node and to.node != self.node:
             # Pinned to another machine: this hub's transports are local only, so
             # they would wake the wrong agent. It waits for that node's receiver.
+            self.store.park(env["id"])
+            return "accepted"
+        if to.session and not getattr(adapter, "pins_session", False):
+            # A pinned message reaches only that session. This transport can only
+            # wake the whole lane, so the message waits in that session's inbox.
             self.store.park(env["id"])
             return "accepted"
         if not self.store.claim(env["id"], self.clock()):

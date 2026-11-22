@@ -41,6 +41,59 @@ def _lock_to_user(path: Path) -> None:
         pass
 
 
+def _update(path: str, change) -> None:
+    """Locked read-modify-write. Uses nougen_shards.cc_registry when importable;
+    this hook also runs standalone from ~/.claude/hooks, so it carries a copy."""
+    try:
+        from nougen_shards import cc_registry
+        cc_registry.update(path, change)
+        return
+    except ImportError:
+        pass
+    import secrets
+    lock = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        for _ in range(250):
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(0.02)
+        try:
+            raw = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        data: dict = {}
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except ValueError:  # salvage every object rather than wipe the registry
+            dec, i = json.JSONDecoder(), 0
+            while (j := raw.find("{", i)) >= 0:
+                try:
+                    obj, i = dec.raw_decode(raw, j)
+                except ValueError:
+                    i = j + 1
+                    continue
+                if isinstance(obj, dict):
+                    nested = obj.pop("sessions", None)
+                    data.update(obj)
+                    if isinstance(nested, dict):
+                        data.setdefault("sessions", {}).update(nested)
+        if not isinstance(data, dict):
+            data = {}
+        change(data)
+        tmp = f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        Path(tmp).write_text(json.dumps(data, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        os.close(lock)
+
+
 def register(event: dict) -> dict | None:
     sock = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "").strip()
     tok = os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN", "").strip()
@@ -49,11 +102,6 @@ def register(event: dict) -> dict | None:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh = not path.exists()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, ValueError):
-        data = {}
-    sessions = data.get("sessions") if isinstance(data.get("sessions"), dict) else {}
     entry = {
         "socket": sock, "token": tok,
         "session_id": str(event.get("session_id") or ""),
@@ -62,10 +110,14 @@ def register(event: dict) -> dict | None:
         "registered_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "agent": os.environ.get("NOUGEN_AGENT", "claude-cli"),
     }
-    sessions[sock] = entry
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"sessions": sessions, "updated_utc": entry["registered_utc"]}, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+
+    def change(data: dict) -> None:
+        if not isinstance(data.get("sessions"), dict):
+            data["sessions"] = {}
+        data["sessions"][sock] = entry
+        data["updated_utc"] = entry["registered_utc"]
+
+    _update(str(path), change)
     if fresh:
         _lock_to_user(path)
     return entry

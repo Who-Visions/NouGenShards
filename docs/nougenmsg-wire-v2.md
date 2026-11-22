@@ -138,12 +138,60 @@ session sockets from `cc_sessions.json`, `antigravity` to its pipe with ack,
 `codex` to codex_pipe, `ollama` and `openrouter` to HTTP. Lanes with no
 adapter (`claude-app`, `meta-app`, the phone) are pull lanes.
 
+## Callers, scope and limits
+
+The node resolves every `/wire` request to a caller before anything else:
+
+- **relay**: `NOUGEN_WIRE_RELAY_TOKEN`, held only by the connector Worker,
+  which authenticates its own callers and derives their lane. Full access.
+- **shared**: the /msg token every sender holds. Send and status only; never
+  reads or acks an inbox. Its `from` is asserted, and the accepted receipt says
+  "sender asserted (shared token)".
+- **lane**: a per-lane token (`access mint --lane codex`). Sends as, reads and
+  acks only that lane.
+- **guest**: a scoped tester token (`access mint --name ... --send-to ...`).
+  Always `tester/<name>`; its own traffic only; listed lanes only; never an
+  actuator; never owner sign-off. 30 sends a minute (fleet 600).
+
+Lane and guest tokens are stored as SHA-256 hashes and picked up without a
+restart. A node with no dedicated receipt key makes its own
+(`wire-receipt.key` beside the db, 0600) on first start, so it never signs
+with the shared token and never runs unsigned.
+
+Over the limit is a 429 with `retry_after_s`. Every 4xx carries a `reason` or
+`error` and a `fix`. An id reused for different content is a 409. A message
+pinned to a session on a lane whose transport can only wake the whole lane
+(codex, antigravity, ollama) waits in that session's inbox instead.
+
+War game: `tools/wire_wargame.py` (34 checks, run against any node) and
+`tests/test_wire_wargame.py` (the same suite in process, plus restart,
+lane-offline and fresh-tenant cases). Tester guide: `docs/nougenmsg-wire-tester.md`.
+
 ## Rollout
 
 - **PR A (this):** `nougen_shards.wire` package and tests. No runtime change.
-- **PR B:** node `/wire/send`, `/wire/inbox`, `/wire/ack`, `/wire/status` on
-  the msgs node, push adapters, pump thread. Old `/msg` keeps working and is
-  wrapped into v2 envelopes on ingest.
+- **PR B:** node `/wire/send`, `/wire/inbox`, `/wire/ack`, `/wire/status`,
+  `/wire/info` on the msgs node behind the same X-NGS-Token, push adapters
+  (`wire/adapters.py`), pump thread. Old `/msg` is untouched.
+
+## Node endpoints (PR B)
+
+| Route | Body / query | Answer |
+|-------|--------------|--------|
+| `POST /wire/send` | a v2 envelope, or `{from, to, text, kind?, in_reply_to?, priority?, ttl_s?}` | `{id, state, guard, receipts}`; a refusal is 200 with `state: refused` so no older sender falls through to another route |
+| `GET /wire/inbox` | `for=<address>&after=<seq>&limit=<n>` | open messages with the rendered turn, `next_after` |
+| `POST /wire/ack` | `{id, by}` | 200 acked, 409 when `by` is not the addressee, 404 unknown |
+| `GET /wire/status/<id>` | | state, attempts, every receipt re-verified |
+| `GET /wire/info` | | push lanes, whether receipts are signed, whether owner sign-off is configured |
+
+Owner sign-off for an action to an actuator lane is never a body flag alone:
+it needs `X-NGS-Owner` matching `NOUGEN_WIRE_OWNER_TOKEN` (Keymaker). With
+none configured, nobody can override the guard.
+
+Node env: `NOUGEN_WIRE_DB` (default `wire.db` beside the inbox),
+`NOUGEN_WIRE_PUSH_LANES` (default `claude-code,antigravity,codex,ollama`;
+openrouter is opt-in because each message is a hosted call),
+`NOUGEN_WIRE_PUMP=0` to disable the retry thread, `NOUGEN_WIRE_PUMP_S`.
 - **PR C:** fleet-mcp connector sends v2 to msgs.nougenai.com, shows receipts
   in results, adds `nougenmsg_ack`. Old routes stay as fallback.
 - **Proof:** Claude to Codex to Muse and back, every hop with a verified

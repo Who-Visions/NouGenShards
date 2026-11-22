@@ -1,6 +1,6 @@
 """The action guard, enforced at the hub so every route gets it.
 
-Before v2 the only guard lived in the Phoebus app bridge, so a message that
+Before v2 the only guard lived in one node's app bridge, so a message that
 fell back to an app's own node or its mailbox skipped it. Here the hub checks
 every envelope on ingest, before any route is chosen.
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -23,10 +24,34 @@ from .address import Address
 
 DEFAULT_ACTUATORS = ("muse", "meta-app")
 ACTION_RE = re.compile(
-    r"\b(buy|purchase|pay|order|checkout|cancel|book|reserve|call|phone|dial|"
-    r"transfer|send\s+money|wire\s+money|subscribe|sign\s+up)\b",
+    r"\b(buy|buying|bought|purchas\w*|pay|paying|paid|payments?|order\w*|check[\s-]*out\w*|"
+    r"cancel\w*|book|booking|booked|reserv\w*|rsvp|call|calling|phone|dial\w*|"
+    r"transfer\w*|(?:send|wire)\s+(?:\$|money|cash|funds)|venmo|zelle|cash\s*app|paypal|"
+    r"subscrib\w*|sign[\s-]*up|add\s+to\s+(?:cart|bag)|donat\w*|sell\w*|renew\w*|refund\w*)\b",
     re.IGNORECASE,
 )
+_INVISIBLE = re.compile("[\u00ad\u034f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s", "|": "i"})
+_SPACED = re.compile(r"\b(?:[A-Za-z][\s.\-_*·]){2,}[A-Za-z]\b")
+
+
+def _views(text: str):
+    """The text as written, plus normalized views that undo the usual dodges:
+    lookalike letters (NFKC), invisible characters, l33t digits, and spaced
+    or dotted letters ("b.u.y", "b u y")."""
+    base = _INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+    yield base
+    joined = _SPACED.sub(lambda m: re.sub(r"[\s.\-_*·]", "", m.group(0)), base)
+    yield joined
+    yield joined.translate(_LEET)
+
+
+def find_action(text: str):
+    for view in _views(text):
+        hit = ACTION_RE.search(view)
+        if hit:
+            return hit
+    return None
 
 
 def actuator_lanes() -> set:
@@ -49,7 +74,7 @@ class Verdict:
 def check(env: Dict[str, object], allow_actions: bool = False, actuators: Optional[set] = None) -> Verdict:
     to = Address.parse(str(env["to"]))
     acts = actuator_lanes() if actuators is None else actuators
-    hit = ACTION_RE.search(str(env.get("text", "")))
+    hit = find_action(str(env.get("text", "")))
     if to.lane not in acts and not to.app:
         return Verdict(True, "not-an-actuator", hit.group(0) if hit else "")
     if not hit:
