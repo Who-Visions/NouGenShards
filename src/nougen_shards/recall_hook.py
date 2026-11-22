@@ -288,7 +288,7 @@ def record_budget_sample(result: Dict[str, Any]) -> None:
             samples = []
         samples = (samples + [min(ms, _learn_max_ms())])[-_LEARN_SAMPLES:]
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
+        tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"samples": samples}, fh)
         os.replace(tmp, path)
