@@ -21,7 +21,7 @@ the cross-session model shows seven gaps:
 | 3 | Connector lanes (claude-app, meta-app) are pull-only. Nothing wakes them. | Push adapters per lane; pull lanes keep a durable inbox. |
 | 4 | "Delivered" means "written to a socket". No receipt says the receiver read it. | Receiver acks; the ack is a signed receipt. |
 | 5 | Asks (`q_id`) exist only in the connector. | `kind=ask` and `kind=answer` on every route; the answer closes the ask. |
-| 6 | Claude Code session sockets have no wire ack, so retries are blind. | Unverified pushes retry with backoff until acked, answered or expired. |
+| 6 | Claude Code session sockets have no wire ack, so a sender cannot tell read from lost. | Pushes that reached nobody retry with backoff; written-but-unconfirmed ones wait for the receiver's ack and are never sent twice. |
 | 7 | The connector mailbox and the node inbox are separate stores with separate ids. | One envelope id end to end; dedupe by id on every hop. |
 
 ## Address
@@ -77,8 +77,9 @@ key is the node's `NOUGEN_WIRE_RECEIPT_KEY` from Keymaker (falls back to the
 
 `pushed` means written without confirmation (a Claude Code socket).
 `delivered` means the receiver's transport confirmed it (Antigravity's pipe
-ack). `acked` means the receiving agent read it. Only `acked` or `answered`
-ends retries.
+ack). `acked` means the receiving agent read it. Only a push that reached
+nobody is retried; a `pushed` or `delivered` message waits for the ack and is
+never sent twice.
 
 ## Guard
 
@@ -98,8 +99,12 @@ fleet hands envelopes to a hub:
 2. guard
 3. store once (SQLite, WAL, dedupe by id)
 4. push now if the lane has an adapter, else leave it in the lane's inbox
-5. `pump()` every few seconds: expire old envelopes, re-push due ones with
-   backoff 5 s, 10 s, 20 s ... capped at 10 min, `failed` after 8 attempts
+5. `pump()` every few seconds: expire old envelopes, re-push the ones that
+   reached nobody with backoff 5 s, 10 s, 20 s ... capped at 10 min, `failed`
+   after 8 attempts
+5a. a model lane (ollama, openrouter) that answers in the same call has its
+   reply routed back to the sender as an answer; a reply is never answered
+   again, so model lanes cannot loop
 6. `inbox(receiver, after)` returns open messages with the rendered turn and a
    seq cursor; `ack(id, receiver)` closes one (only its addressee can ack)
 7. an `answer` closes its ask with an `answered` receipt
