@@ -33,6 +33,7 @@ LANE_PROVIDERS = {
     "antigravity": "google", "gemini": "google",
     "muse": "meta", "meta-app": "meta",
     "ollama": "local",
+    "tester": "guest",
 }
 
 

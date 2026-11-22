@@ -41,6 +41,8 @@ def build(pinger: Any = None) -> Dict[str, Adapter]:
         return {"pushed": bool(live or dropped), "verified": False,
                 "detail": f"claude-code sockets {live}, inbox file {'yes' if dropped else 'no'}"}
 
+    claude_code.pins_session = True  # type: ignore[attr-defined]
+
     def antigravity(env: Dict[str, Any], turn: str) -> Dict[str, Any]:
         res = pinger.ping_antigravity(turn, origin=_origin(env)) or {}
         acked = bool(res.get("pipe_delivered"))

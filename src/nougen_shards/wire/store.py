@@ -97,6 +97,12 @@ class WireStore:
                              (new, attempts, now + backoff_s(attempts), now, env_id))
             return new
 
+    def park(self, env_id: str) -> None:
+        """Keep a message in its inbox and out of the retry queue (a pinned
+        session on a lane whose transport can't pin: it must not wake the lane)."""
+        with self._lock:
+            self._db.execute("UPDATE messages SET next_attempt=expires WHERE id=?", (env_id,))
+
     def expire(self, now: Optional[float] = None) -> List[str]:
         now = time.time() if now is None else now
         with self._lock:

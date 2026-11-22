@@ -59,6 +59,10 @@ class Hub:
             return {"id": env["id"], "state": "refused", "guard": verdict.as_dict(), "receipts": [r]}
         inserted, state = self.store.put(env, now)
         if not inserted:
+            stored = self.store.get(env["id"])
+            if stored and E.canonical(stored["env"]) != E.canonical(env):
+                return {"id": env["id"], "state": state, "conflict": True,
+                        "error": "this id was already used for a different message; send a new id"}
             return {"id": env["id"], "state": state, "duplicate": True, "receipts": self.store.receipts(env["id"])}
         self._receipt(env, "accepted", f"guard {verdict.rule}")
         if env["kind"] == "answer":
@@ -76,10 +80,15 @@ class Hub:
 
     # -- push and retry ----------------------------------------------------
     def _push(self, env: Dict[str, Any]) -> str:
-        lane = Address.parse(env["to"]).lane
-        adapter = self.adapters.get(lane)
+        to = Address.parse(env["to"])
+        adapter = self.adapters.get(to.lane)
         if adapter is None:
             return "accepted"  # pull lane: waits in its inbox for the receiver to read and ack
+        if to.session and not getattr(adapter, "pins_session", False):
+            # A pinned message reaches only that session. This transport can only
+            # wake the whole lane, so the message waits in that session's inbox.
+            self.store.park(env["id"])
+            return "accepted"
         try:
             res = adapter(env, E.render_turn(env)) or {}
         except Exception as exc:  # pylint: disable=broad-except

@@ -861,7 +861,8 @@ def wire_service():
     """The node's wire v2 hub, built on first use (None if it cannot load).
 
     One SQLite inbox per node, beside the legacy inbox unless NOUGEN_WIRE_DB
-    says otherwise. Every /wire route is behind the same X-NGS-Token as /msg.
+    says otherwise. Every /wire route needs the fleet X-NGS-Token or a scoped
+    guest token (nougen_shards.wire.access).
     """
     global _WIRE  # pylint: disable=global-statement
     with _WIRE_LOCK:
@@ -924,15 +925,36 @@ class Handler(BaseHTTPRequestHandler):
         """Serve /wire/* (wire v2). True when the request was answered here."""
         if not self._route().startswith("/wire"):
             return False
-        if self._reject_unauthorized():
+        svc = wire_service()
+        if svc is None:
+            self._discard_body()
+            self._send({"error": "wire v2 unavailable on this node"}, 503)
+            return True
+        if AUTH_LATCH and not AUTH_TOKEN:
+            self._discard_body()
+            self._send({"error": "unauthorized", "reason": "auth latched required but no token resolved"}, 401)
+            return True
+        caller, why = svc.authenticate(self.headers.get("X-NGS-Token", ""), AUTH_TOKEN)
+        if caller is None:
+            self._discard_body()
+            self._send({"error": "unauthorized", "reason": why,
+                        "fix": "send your token in the X-NGS-Token header; ask the node owner for a new one if it expired"}, 401)
             return True
         body = {}
         if method == "POST":
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > (1 << 20):
+                    # Read off a modestly oversize body first, so the sender gets a
+                    # readable 413 and not a broken pipe; past 8 MiB just hang up.
+                    left = length if length <= (8 << 20) else 0
+                    while left > 0:
+                        chunk = self.rfile.read(min(left, 1 << 16))
+                        if not chunk:
+                            break
+                        left -= len(chunk)
                     self.close_connection = True
-                    self._send({"error": "body over 1 MiB"}, 413)
+                    self._send({"error": "body over 1 MiB", "fix": "keep text under 64 KiB"}, 413)
                     return True
                 raw = self.rfile.read(length) if length else b"{}"
                 body = json.loads(raw.decode("utf-8") or "{}")
@@ -942,11 +964,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 self._send({"error": "body must be a JSON object"}, 400)
                 return True
-        svc = wire_service()
-        if svc is None:
-            self._send({"error": "wire v2 unavailable on this node"}, 503)
-            return True
-        code, payload = svc.handle(method, self.path, body, self.headers.get("X-NGS-Owner", ""))
+        code, payload = svc.handle(method, self.path, body, self.headers.get("X-NGS-Owner", ""), caller)
         self._send(payload, code)
         return True
 

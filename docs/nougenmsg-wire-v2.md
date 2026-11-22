@@ -127,6 +127,26 @@ session sockets from `cc_sessions.json`, `antigravity` to its pipe with ack,
 `codex` to codex_pipe, `ollama` and `openrouter` to HTTP. Lanes with no
 adapter (`claude-app`, `meta-app`, the phone) are pull lanes.
 
+## Callers, scope and limits
+
+The node resolves every `/wire` request to a caller before anything else:
+
+- **fleet**: the node's X-NGS-Token. Names its own sender (the connector
+  derives it from the caller's key first). 600 sends a minute.
+- **guest**: a scoped token from `nougen_shards.wire.access mint`, stored as
+  a SHA-256 hash. Always sends as `tester/<name>`; reads, acks and sees status
+  for its own traffic only; reaches only the lanes its entry lists and never an
+  actuator; can't carry owner sign-off. 30 sends a minute.
+
+Over the limit is a 429 with `retry_after_s`. Every 4xx carries a `reason` or
+`error` and a `fix`. An id reused for different content is a 409. A message
+pinned to a session on a lane whose transport can only wake the whole lane
+(codex, antigravity, ollama) waits in that session's inbox instead.
+
+War game: `tools/wire_wargame.py` (34 checks, run against any node) and
+`tests/test_wire_wargame.py` (the same suite in process, plus restart,
+lane-offline and fresh-tenant cases). Tester guide: `docs/nougenmsg-wire-tester.md`.
+
 ## Rollout
 
 - **PR A (this):** `nougen_shards.wire` package and tests. No runtime change.
