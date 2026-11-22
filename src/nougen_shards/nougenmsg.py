@@ -229,44 +229,47 @@ def _parse_time(value) -> Optional[float]:
     return None
 
 
-def _discover_session_records(session_id: str = ""):
-    """Every (record, path) matching `session_id`, across all stores, in order."""
+_RECORDS_CACHE: dict = {}
+_RECORDS_TTL_S = 5.0
+
+
+def _discover_session_records(session_id: str = "") -> List[Tuple[dict, str]]:
+    """Every (record, path) matching `session_id`, across all stores, in order.
+
+    One scan serves both the title and start-time resolvers for a message:
+    the result is memoised per session id for a few seconds, so building an
+    origin envelope walks the home dot-dirs and parses the store files once.
+    """
     if _tenant_scope():
-        return
+        return []
     sid = (session_id or resolve_session()).strip()
     if not sid:
-        return
+        return []
+    now = time.monotonic()
+    # Key on every input discovery reads, so a changed HOME or store env
+    # never serves another configuration's records.
+    key = (sid, os.path.expanduser("~"), os.environ.get("NOUGEN_CC_SESSIONS", ""),
+           tuple(sorted((k, v) for k, v in os.environ.items()
+                        if k.endswith("SESSIONS_DIR") or k.endswith("SESSION_DIR"))))
+    hit = _RECORDS_CACHE.get(key)
+    if hit and now - hit[0] < _RECORDS_TTL_S:
+        return hit[1]
+    found: List[Tuple[dict, str]] = []
     for store in _discover_session_stores():
         for record, path in _iter_store_records(store):
             if _record_matches(record, sid):
-                yield record, path
+                found.append((record, path))
     for entry, path in _cc_registry_entries():
         if _record_matches(entry, sid):
-            yield entry, path
+            found.append((entry, path))
+    _RECORDS_CACHE[key] = (now, found)
+    return found
 
 
 def _discover_session_record(session_id: str = "") -> Tuple[dict, str]:
-    """The discovered record for `session_id` across every store, or ({}, "").
-
-    One discovery pass shared by the title and start-time resolvers, so the
-    two can never disagree about which session a record belongs to.
-    """
-    if _tenant_scope():
-        # Same boundary as resolve_session_title: a tenant request never
-        # reads the owner's session env, registries, or session stores.
-        return {}, ""
-    sid = (session_id or resolve_session()).strip()
-    if not sid:
-        return {}, ""
-    for store in _discover_session_stores():
-        for record, path in _iter_store_records(store):
-            if _record_matches(record, sid):
-                return record, path
-    for entry, path in _cc_registry_entries():
-        if _record_matches(entry, sid):
-            return entry, path
-    return {}, ""
-
+    """The first discovered record for `session_id`, or ({}, "")."""
+    records = _discover_session_records(session_id)
+    return records[0] if records else ({}, "")
 
 def resolve_session_started_at(session_id: str = "") -> Optional[float]:
     """When this session started (epoch seconds), or None when unknown.
@@ -286,18 +289,20 @@ def resolve_session_started_at(session_id: str = "") -> Optional[float]:
             parsed = _parse_time(value)
             if parsed is not None:
                 return parsed
-    record, path = _discover_session_record(session_id)
-    if record:
+    records = _discover_session_records(session_id)
+    # An explicit start on ANY matching record beats a file timestamp.
+    for record, _path in records:
         for field in _START_FIELDS:
             parsed = _parse_time(record.get(field))
             if parsed is not None:
                 return parsed
+    for _record, path in records:
         if path:
             try:
                 stat = os.stat(path)
                 return float(getattr(stat, "st_birthtime", stat.st_mtime))
             except OSError:
-                pass
+                continue
     return None
 
 
