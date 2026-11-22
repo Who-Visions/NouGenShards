@@ -30,6 +30,7 @@ import hmac
 import html
 import json
 import os
+import pathlib
 import re
 import secrets
 import threading
@@ -198,6 +199,45 @@ def session_user(cookie_value: Optional[str], now: Optional[float] = None) -> Op
 
 # ------------------------------------------------------------------ page
 
+_TOKENS = pathlib.Path(__file__).resolve().parents[2] / "designs" / "nougen-core" / "tokens.css"
+
+
+@functools.lru_cache(maxsize=1)
+def _design_tokens() -> str:
+    """The generated nougen-core token package (designs/nougen-core/tokens.css).
+
+    The page below only consumes these tokens, so its colours, spacing, focus and
+    target sizes follow design.json and its lint and drift checks. Read once; a
+    missing package leaves the page unstyled but working.
+    """
+    try:
+        return _TOKENS.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+# Layout only: every colour, size and radius is a nougen-core token.
+_PAGE_CSS = """
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);
+font-family:var(--font-main);font-size:var(--type-body);line-height:var(--line-body);padding:var(--space-4)}
+main{width:100%;max-width:26rem;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-5)}
+h1{font-size:1.5rem;margin:0 0 var(--space-4)}
+.muted{color:var(--muted);font-size:var(--type-meta);margin:var(--space-2) 0 var(--space-5)}
+.btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:var(--target-touch);padding:var(--space-3) var(--space-4);
+border-radius:var(--radius-md);border:1px solid var(--line);background:transparent;color:var(--text);font:inherit;font-weight:700;
+text-decoration:none;cursor:pointer;transition:background var(--motion-fast) var(--motion-ease)}
+.btn:hover{background:var(--panel-hover)}
+.btn.primary{background:var(--accent);color:var(--control-ink);border-color:var(--accent)}
+.btn:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+summary{cursor:pointer;color:var(--muted);font-size:var(--type-meta);min-height:var(--target-min)}
+form{display:grid;gap:var(--space-3);margin-top:var(--space-3)}
+label{display:grid;gap:var(--space-1);font-size:var(--type-meta);color:var(--muted)}
+input{min-height:var(--target-touch);padding:var(--space-2);border-radius:var(--radius-sm);border:1px solid var(--line);
+background:var(--panel-solid);color:var(--text);font:inherit}
+.err{color:var(--danger);font-size:var(--type-meta)}
+"""
+
+
 def login_page(error: str = "", host: str = "") -> str:
     join = join_url(host)
     google = (f'<a class="btn primary" href="{html.escape(join)}/open">Continue with Google</a>'
@@ -211,16 +251,4 @@ def login_page(error: str = "", host: str = "") -> str:
             ).format(open=" open" if (error or not join) else "")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to your NouGen node</title>
-<style>
-:root{{color-scheme:light dark;--bg:#0d0d0d;--panel:#141414;--line:#262626;--text:#f2eee6;--muted:#9a9a9a;--cta:#e2b86b;--ink:#111}}
-@media (prefers-color-scheme:light){{:root{{--bg:#f5f1e8;--panel:#fff;--line:#d8d2c6;--text:#202020;--muted:#555047;--cta:#765013;--ink:#fff}}}}
-body{{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:1rem}}
-main{{width:100%;max-width:26rem;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:1.5rem}}
-h1{{font-size:1.5rem;margin:0 0 1rem}}.muted{{color:var(--muted);font-size:.85rem;margin:.5rem 0 1.25rem}}
-.btn{{display:block;width:100%;box-sizing:border-box;padding:.8rem 1rem;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--text);font-weight:700;font-size:1rem;text-align:center;text-decoration:none;cursor:pointer}}
-.btn.primary{{background:var(--cta);color:var(--ink);border:none}}
-summary{{cursor:pointer;color:var(--muted);font-size:.9rem}}form{{display:grid;gap:.75rem;margin-top:.75rem}}
-label{{display:grid;gap:.25rem;font-size:.85rem;color:var(--muted)}}
-input{{padding:.6rem;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);font-size:1rem}}
-.err{{color:#ffb4ab;font-size:.9rem}}
-</style></head><body><main><h1>Your NouGen node</h1>{err}{google}{form}</main></body></html>"""
+<style>{_design_tokens()}{_PAGE_CSS}</style></head><body><main><h1>Your NouGen node</h1>{err}{google}{form}</main></body></html>"""

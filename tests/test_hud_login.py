@@ -167,3 +167,14 @@ def test_password_form_still_works(client):
 def test_gradio_api_stays_closed_without_a_session(client):
     r = client.get("/gradio_api/info", follow_redirects=False)
     assert r.status_code in (401, 403)
+
+
+def test_sign_in_page_is_styled_only_by_the_nougen_core_tokens():
+    """AGENTS.md UI rule: colours and sizes come from the generated design package."""
+    import re
+    assert hud_login._design_tokens().strip(), "designs/nougen-core/tokens.css should load"
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", hud_login._PAGE_CSS), "no handwritten colours"
+    for token in re.findall(r"var\((--[a-z0-9-]+)\)", hud_login._PAGE_CSS):
+        assert token + ":" in hud_login._design_tokens(), f"{token} is not a nougen-core token"
+    page = hud_login.login_page(host="pat-ab12.example.com")
+    assert hud_login._design_tokens()[:40] in page
