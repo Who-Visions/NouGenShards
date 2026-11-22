@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+import os
+
 import pytest
 
 from nougen_shards.wire import Hub, WireStore, access, make
@@ -119,7 +121,8 @@ def test_fresh_tenant_node_works_with_zero_setup(tmp_path, monkeypatch):
     svc = WireService.from_env("roldo", str(db))
     code, info = svc.handle("GET", "/wire/info")
     assert code == 200 and info["receipt_scheme"] == "node" and info["signed_receipts"] is True
-    assert (db.parent / "wire-receipt.key").stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":  # NTFS reports no POSIX mode bits
+        assert (db.parent / "wire-receipt.key").stat().st_mode & 0o777 == 0o600
     code, sent = svc.handle("POST", "/wire/send", {"from": "claude-code", "to": "claude-app", "text": "hello"})
     assert code == 200 and sent["receipts"][0]["scheme"] == "node"
     code, box = svc.handle("GET", "/wire/inbox?for=claude-app")
@@ -220,3 +223,23 @@ def test_guest_cannot_close_an_ask_it_was_never_sent(tmp_path):
                                                   "in_reply_to": ask["id"]}, caller=guest)
     assert code == 400 and "fix" in out
     assert svc.handle("GET", f"/wire/status/{ask['id']}")[1]["state"] == "accepted"
+
+
+def test_bad_token_is_rejected_even_when_no_fleet_token_is_set(tmp_path):
+    """An open dev node (no fleet token) must not turn a presented-but-invalid
+    token into full relay access; only a request with no token at all is open."""
+    path = str(tmp_path / "guests.json")
+    expired = access.mint("old-guest", ["codex"], days=-1, path=path)
+    book = access.GuestBook(path)
+    assert access.authenticate("bogus", "", book)[0] is None
+    assert access.authenticate(expired, "", book)[0] is None
+    caller, _ = access.authenticate("", "", book)
+    assert caller is not None and caller.kind == "relay"
+
+
+def test_minting_a_lane_token_never_revokes_a_guest_of_the_same_name(tmp_path):
+    path = str(tmp_path / "guests.json")
+    guest = access.mint("shared-name", ["codex"], path=path)
+    with pytest.raises(ValueError):
+        access.mint("shared-name", lane="codex", path=path)
+    assert access.authenticate(guest, "fleet", access.GuestBook(path))[0].kind == "guest"
