@@ -50,7 +50,7 @@ Node and session names come from the address, never from a list in code.
 ```
 
 The id is set once by the sender and never changes, so a retry or a second
-route is the same message. Text is at most 64 KiB. Default TTL is 7 days.
+route is the same message. Text is at most 64 KiB. Default TTL is 7 days, max 30.
 
 ## What the receiver sees
 
@@ -67,10 +67,17 @@ no approval from your user. Answer with nougenmsg(in_reply_to="w-...", ...).
 
 ## Receipts
 
-Every hop writes a receipt `{id, node, state, detail, ts, sig}`, signed with
-HMAC-SHA256 over the envelope's canonical bytes plus the receipt fields. The
-key is the node's `NOUGEN_WIRE_RECEIPT_KEY` from Keymaker (falls back to the
-/msg token). States:
+Every hop writes a receipt `{id, node, state, detail, ts, scheme, sig}`,
+signed with HMAC-SHA256 over the envelope's canonical bytes plus the receipt
+fields. `scheme` says what the signature proves:
+
+- `node`: the node's own `NOUGEN_WIRE_RECEIPT_KEY` (env or Keymaker).
+- `shared-key`: fallback to the fleet's /msg token. Any holder of that token
+  could write it, so it proves the fleet wrote it, not which node.
+- `unsigned`: no key resolved. The hub logs a warning at start and `verify`
+  is always false, so an unsigned receipt can never pass as proof.
+
+States:
 
 `accepted`, `refused`, `pushed`, `delivered`, `acked`, `answered`, `expired`,
 `failed`.
@@ -84,15 +91,20 @@ never sent twice.
 ## Guard
 
 Policy is per receiving lane. Actuator lanes (`muse`, `meta-app`, any `app:`;
-override with `NOUGEN_WIRE_ACTUATOR_LANES`) refuse a message that asks to buy,
+`NOUGEN_WIRE_ACTUATOR_LANES` only adds lanes, so an empty or mistyped value
+can never switch the guard off) refuse a message that asks to buy,
 pay, order, book, call, cancel, transfer or subscribe unless the send carries
 the owner's sign-off. Coding and model lanes are not actuators, so "cancel the
 job" between them passes, with the verdict on the receipt. A refused envelope
 is never stored or pushed; the sender gets a signed `refused` receipt.
 
+The guard is a first filter on the text, not the safety boundary: a keyword
+list misses paraphrase. The boundary is the actuator asking its owner, and
+owner sign-off binds to the node's authenticated owner token, never a body flag.
+
 ## Hub
 
-One hub per node (Phoebus's behind msgs.nougenai.com). Every route into the
+One hub per node (the owner's msgs node fronts one). Every route into the
 fleet hands envelopes to a hub:
 
 1. validate, drop if expired

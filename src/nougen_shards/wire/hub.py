@@ -1,6 +1,6 @@
 """The hub: ingest, guard, store, push, ack, receipts.
 
-One hub runs per node (Phoebus's is reached at msgs.nougenai.com). Every
+One hub runs per node (the owner's msgs node fronts one). Every
 route into the fleet (the connector, a CLI, another node, an app bridge)
 hands envelopes to a hub, so every route gets the same guard, the same dedupe
 and the same receipts.
@@ -15,6 +15,7 @@ reads the inbox and acks.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -23,19 +24,25 @@ from . import guard, receipts
 from .address import Address
 from .store import WireStore
 
+log = logging.getLogger(__name__)
+
 Adapter = Callable[[Dict[str, Any], str], Dict[str, Any]]
 
 
 class Hub:
     def __init__(self, store: WireStore, node: str, key: bytes = b"",
                  adapters: Optional[Dict[str, Adapter]] = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, key_scheme: str = "node") -> None:
         self.store, self.node, self.key = store, node, key
+        self.key_scheme = key_scheme if key else "unsigned"
+        if not key:
+            log.warning("wire hub on %s has no receipt key: every receipt is marked unsigned", node)
         self.adapters: Dict[str, Adapter] = dict(adapters or {})
         self.clock = clock
 
     def _receipt(self, env: Dict[str, Any], state: str, detail: str = "") -> Dict[str, Any]:
-        r = receipts.sign(self.key, E.canonical(env), env["id"], self.node, state, detail, self.clock())
+        r = receipts.sign(self.key, E.canonical(env), env["id"], self.node, state, detail, self.clock(),
+                          scheme=self.key_scheme)
         self.store.add_receipt(r)
         return r
 
@@ -47,7 +54,8 @@ class Hub:
             return {"id": env["id"], "state": "expired", "receipts": []}
         verdict = guard.check(env, allow_actions=allow_actions)
         if not verdict.ok:
-            r = receipts.sign(self.key, E.canonical(env), env["id"], self.node, "refused", verdict.rule, now)
+            r = receipts.sign(self.key, E.canonical(env), env["id"], self.node, "refused", verdict.rule, now,
+                              scheme=self.key_scheme)
             return {"id": env["id"], "state": "refused", "guard": verdict.as_dict(), "receipts": [r]}
         inserted, state = self.store.put(env, now)
         if not inserted:

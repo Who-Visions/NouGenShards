@@ -16,6 +16,7 @@ from .address import Address
 KINDS = ("msg", "ask", "answer")
 PRIORITIES = ("normal", "high", "critical")
 DEFAULT_TTL_S = 7 * 24 * 3600
+MAX_TTL_S = 30 * 24 * 3600
 MAX_TEXT = 64 * 1024
 
 
@@ -52,6 +53,12 @@ def validate(env: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("text over 64 KiB")
     Address.parse(env.get("from", ""))
     Address.parse(env.get("to", ""))
+    try:
+        created, expires = float(env["created"]), float(env["expires"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("created and expires must be numbers") from None
+    if not 0 < expires - created <= MAX_TTL_S:
+        raise ValueError("expires must be after created and within 30 days")
     if env["kind"] == "answer" and not env.get("in_reply_to"):
         raise ValueError("an answer names the ask it answers (in_reply_to)")
     return env

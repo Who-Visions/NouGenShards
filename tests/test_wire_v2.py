@@ -86,10 +86,14 @@ def test_guard_refuses_actions_to_actuators_only():
     assert v.ok and v.rule == "owner-sign-off"
 
 
-def test_guard_actuator_lanes_overridable(monkeypatch):
+def test_guard_actuator_override_only_adds(monkeypatch):
     monkeypatch.setenv("NOUGEN_WIRE_ACTUATOR_LANES", "codex")
     assert not guard.check(make("claude-app", "codex", "pay the invoice")).ok
-    assert guard.check(make("claude-app", "muse", "pay the invoice")).ok
+    assert not guard.check(make("claude-app", "muse", "pay the invoice")).ok
+    for blank in ("", " , ", "typo-lane"):
+        monkeypatch.setenv("NOUGEN_WIRE_ACTUATOR_LANES", blank)
+        assert not guard.check(make("claude-code", "muse", "please buy the thing")).ok
+        assert not guard.check(make("claude-code", "meta-app", "please buy the thing")).ok
 
 
 # -- receipts ----------------------------------------------------------------
@@ -101,12 +105,47 @@ def test_receipts_sign_and_detect_tamper():
     assert not receipts.verify(KEY, E.canonical(dict(env, text="changed")), r)
     assert not receipts.verify(KEY, E.canonical(env), dict(r, state="acked"))
     unsigned = receipts.sign(b"", E.canonical(env), env["id"], "phoebus", "accepted")
-    assert unsigned["sig"] == "" and not receipts.verify(b"", E.canonical(env), unsigned)
+    assert unsigned["sig"] == "" and unsigned["scheme"] == "unsigned"
+    assert not receipts.verify(b"", E.canonical(env), unsigned)
+    assert not receipts.verify(KEY, E.canonical(env), dict(r, scheme="unsigned"))
+    shared = receipts.sign(KEY, E.canonical(env), env["id"], "phoebus", "acked", scheme="shared-key")
+    assert shared["scheme"] == "shared-key" and receipts.verify(KEY, E.canonical(env), shared)
+    assert not receipts.verify(KEY, E.canonical(env), dict(shared, scheme="node"))
     with pytest.raises(ValueError):
         receipts.sign(KEY, b"", env["id"], "phoebus", "teleported")
 
 
 # -- store -------------------------------------------------------------------
+def test_receipt_key_prefers_a_dedicated_key_and_labels_the_fallback(monkeypatch):
+    import nougen_shards.keymaker as km
+    monkeypatch.delenv("NOUGEN_WIRE_RECEIPT_KEY", raising=False)
+    monkeypatch.setattr(km, "get_secret", lambda name: "tok" if name == "NOUGEN_AGY_MSG_TOKEN" else None)
+    assert receipts.resolve_key() == (b"tok", "shared-key")
+    monkeypatch.setenv("NOUGEN_WIRE_RECEIPT_KEY", "dedicated")
+    assert receipts.resolve_key() == (b"dedicated", "node")
+    monkeypatch.delenv("NOUGEN_WIRE_RECEIPT_KEY")
+    monkeypatch.setattr(km, "get_secret", lambda name: None)
+    assert receipts.resolve_key() == (b"", "unsigned")
+
+
+def test_keyless_hub_marks_every_receipt_unsigned(caplog):
+    hub = Hub(WireStore(), "phoebus", b"", clock=Clock())
+    assert "unsigned" in caplog.text
+    out = hub.send(make("codex", "claude-app", "x", now=hub.clock()))
+    assert out["receipts"][0]["scheme"] == "unsigned"
+    assert hub.status(out["id"])["receipts"][0]["verified"] is False
+
+
+def test_ttl_is_capped():
+    env = make("codex", "claude-app", "x", now=0)
+    with pytest.raises(ValueError):
+        validate(dict(env, expires=31 * 24 * 3600))
+    with pytest.raises(ValueError):
+        validate(dict(env, expires=-1))
+    with pytest.raises(ValueError):
+        make("codex", "claude-app", "x", ttl_s=31 * 24 * 3600)
+
+
 def test_store_put_is_idempotent_and_durable(tmp_path):
     path = str(tmp_path / "wire.db")
     env = make("claude-app", "codex", "once", now=0)
