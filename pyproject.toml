@@ -96,6 +96,7 @@ nougen = "nougen_shards.cli:main"
 nougen-mcp = "nougen_shards.mcp:main"
 nougen-web = "nougen_shards.web_research:main"
 nougen-time = "nougen_time.__main__:main"
+nougen-mesh = "nougen_shards.mesh:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

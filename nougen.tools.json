@@ -1,0 +1,2530 @@
+{
+ "mesh_version": "1",
+ "repo": "shards",
+ "schema": "nougen-tools/1",
+ "service": "shards",
+ "tools": [
+  {
+   "args": {
+    "properties": {
+     "content": {
+      "title": "Content",
+      "type": "string"
+     },
+     "tags": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tags"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     }
+    },
+    "required": [
+     "content"
+    ],
+    "title": "add_shardArguments",
+    "type": "object"
+   },
+   "description": "Capture a new intelligence memory shard directly into the active NouGen multi-DB cluster.",
+   "name": "add_shard",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "file_path": {
+      "title": "File Path",
+      "type": "string"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query"
+     }
+    },
+    "required": [
+     "file_path"
+    ],
+    "title": "analyze_file_sandboxedArguments",
+    "type": "object"
+   },
+   "description": "Analyze a file in the sandbox (AST classes/functions, JSON schema, pattern matches) without reading raw file into context.",
+   "name": "analyze_file_sandboxed",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "task": {
+      "title": "Task",
+      "type": "string"
+     }
+    },
+    "required": [
+     "task"
+    ],
+    "title": "apply_skillsArguments",
+    "type": "object"
+   },
+   "description": "Resolve which installed skills govern a task and return them in full.",
+   "name": "apply_skills",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "backfill": {
+      "default": false,
+      "title": "Backfill",
+      "type": "boolean"
+     },
+     "channel": {
+      "default": "cs.AR",
+      "title": "Channel",
+      "type": "string"
+     },
+     "commit": {
+      "default": false,
+      "title": "Commit",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 25,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "title": "arxiv_lab_watchArguments",
+    "type": "object"
+   },
+   "description": "Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates).",
+   "name": "arxiv_lab_watch",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "action": {
+      "title": "Action",
+      "type": "string"
+     },
+     "max_chars": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Max Chars"
+     },
+     "pattern": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Pattern"
+     },
+     "ref": {
+      "title": "Ref",
+      "type": "string"
+     }
+    },
+    "required": [
+     "action",
+     "ref"
+    ],
+    "title": "arxiv_paperArguments",
+    "type": "object"
+   },
+   "description": "Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search.",
+   "name": "arxiv_paper",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "channels": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Channels"
+     },
+     "commit": {
+      "default": false,
+      "title": "Commit",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 5,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "mode": {
+      "default": "preview",
+      "title": "Mode",
+      "type": "string"
+     },
+     "recipe_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Recipe Path"
+     }
+    },
+    "title": "arxiv_radarArguments",
+    "type": "object"
+   },
+   "description": "Run the arXiv research radar across core fleet pillars. Read-only unless commit=true.",
+   "name": "arxiv_radar",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "prompt": {
+      "title": "Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "prompt"
+    ],
+    "title": "ask_agentArguments",
+    "type": "object"
+   },
+   "description": "Run a prompt through any agent on the NouGen roster.",
+   "name": "ask_agent",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "question": {
+      "title": "Question",
+      "type": "string"
+     }
+    },
+    "required": [
+     "question"
+    ],
+    "title": "ask_irisArguments",
+    "type": "object"
+   },
+   "description": "Ask Iris, the always-on resident AI on this machine.",
+   "name": "ask_iris",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "handle": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Handle"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "prompt": {
+      "title": "Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "prompt"
+    ],
+    "title": "ask_ollama_sandboxedArguments",
+    "type": "object"
+   },
+   "description": "Accelerate context reasoning with Ollama (local GPU VRAM first, cloud API fallback).",
+   "name": "ask_ollama_sandboxed",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "commands": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Commands",
+      "type": "array"
+     },
+     "queries": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Queries"
+     }
+    },
+    "required": [
+     "commands"
+    ],
+    "title": "batch_execute_sandboxedArguments",
+    "type": "object"
+   },
+   "description": "Run multiple sandboxed commands/scripts, index output in sandbox, and extract query matches.",
+   "name": "batch_execute_sandboxed",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "content": {
+      "title": "Content",
+      "type": "string"
+     },
+     "event_type": {
+      "title": "Event Type",
+      "type": "string"
+     },
+     "original_timestamp": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Original Timestamp"
+     },
+     "tags": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tags"
+     },
+     "title": {
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "event_type",
+     "title",
+     "content"
+    ],
+    "title": "capture_experienceArguments",
+    "type": "object"
+   },
+   "description": "Store a unit of agent experience as a persistent shard.",
+   "name": "capture_experience",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "directory_path": {
+      "default": "",
+      "title": "Directory Path",
+      "type": "string"
+     }
+    },
+    "title": "cf_deploy_workerArguments",
+    "type": "object"
+   },
+   "description": "Auto-detect and deploy a Cloudflare Worker directly from its directory with zero-config.",
+   "name": "cf_deploy_worker",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "cf_list_workersArguments",
+    "type": "object"
+   },
+   "description": "List all active Cloudflare Workers deployed across the NouGen fleet orbit.",
+   "name": "cf_list_workers",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "model": {
+      "default": "@cf/meta/llama-3.1-8b-instruct",
+      "title": "Model",
+      "type": "string"
+     },
+     "prompt": {
+      "title": "Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "prompt"
+    ],
+    "title": "cf_run_aiArguments",
+    "type": "object"
+   },
+   "description": "Execute zero-VRAM Cloudflare Workers AI edge model inference directly from NouGen.",
+   "name": "cf_run_ai",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "cf_statusArguments",
+    "type": "object"
+   },
+   "description": "Get live status of Cloudflare Edge Substrate, active workers count, storage, and fleet MCP gateway health.",
+   "name": "cf_status",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "label": {
+      "title": "Label",
+      "type": "string"
+     }
+    },
+    "required": [
+     "label"
+    ],
+    "title": "checkpoint_sessionArguments",
+    "type": "object"
+   },
+   "description": "Snapshot active session working set and events into a named checkpoint.",
+   "name": "checkpoint_session",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "execute_cmd": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Execute Cmd"
+     },
+     "goal": {
+      "default": "working",
+      "title": "Goal",
+      "type": "string"
+     },
+     "scope": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Scope",
+      "type": "array"
+     },
+     "ttl_hours": {
+      "default": 8.0,
+      "title": "Ttl Hours",
+      "type": "number"
+     }
+    },
+    "required": [
+     "scope"
+    ],
+    "title": "claim_laneArguments",
+    "type": "object"
+   },
+   "description": "Declare an active lane claim on a file scope, replicate to shards, and enforce immediate work.",
+   "name": "claim_lane",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "current": {
+      "title": "Current",
+      "type": "string"
+     },
+     "previous": {
+      "title": "Previous",
+      "type": "string"
+     },
+     "provenance": {
+      "title": "Provenance",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "previous",
+     "current",
+     "provenance"
+    ],
+    "title": "context_correctArguments",
+    "type": "object"
+   },
+   "description": "Append a source-owner-authorized correction. Never persist a model proposal as authority.",
+   "name": "context_correct",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "feedback_json": {
+      "title": "Feedback Json",
+      "type": "string"
+     },
+     "packet_json": {
+      "title": "Packet Json",
+      "type": "string"
+     }
+    },
+    "required": [
+     "packet_json",
+     "feedback_json"
+    ],
+    "title": "context_feedbackArguments",
+    "type": "object"
+   },
+   "description": "Measure omissions and receiver-reported context use; no inferred cognition score.",
+   "name": "context_feedback",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "budget_bytes": {
+      "default": 8000,
+      "title": "Budget Bytes",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "state_json": {
+      "default": "{}",
+      "title": "State Json",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "query"
+    ],
+    "title": "context_session_assembleArguments",
+    "type": "object"
+   },
+   "description": "Compile federated recall with this session's durable task/correction state.",
+   "name": "context_session_assemble",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "provenance": {
+      "title": "Provenance",
+      "type": "string"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "state_json": {
+      "title": "State Json",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "state_json",
+     "provenance"
+    ],
+    "title": "context_task_checkpointArguments",
+    "type": "object"
+   },
+   "description": "Append verified compact task state for one session; never pass credentials.",
+   "name": "context_task_checkpoint",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id"
+    ],
+    "title": "context_task_currentArguments",
+    "type": "object"
+   },
+   "description": "Read current task checkpoint for the exact session, without transcript replay.",
+   "name": "context_task_current",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "declared_edges_json": {
+      "title": "Declared Edges Json",
+      "type": "string"
+     },
+     "observed_events_json": {
+      "title": "Observed Events Json",
+      "type": "string"
+     },
+     "threshold": {
+      "default": 0.8,
+      "title": "Threshold",
+      "type": "number"
+     }
+    },
+    "required": [
+     "declared_edges_json",
+     "observed_events_json"
+    ],
+    "title": "control_plane_adherence_evaluateArguments",
+    "type": "object"
+   },
+   "description": "Compare declared workflow edges with observed [source, target] event edges.",
+   "name": "control_plane_adherence_evaluate",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "budget_tokens": {
+      "default": 500,
+      "title": "Budget Tokens",
+      "type": "integer"
+     },
+     "nodes_json": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Nodes Json"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "control_plane_context_selectArguments",
+    "type": "object"
+   },
+   "description": "Select a bounded graph-aware projection from caller-supplied shard candidates.",
+   "name": "control_plane_context_select",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "policy_weights_json": {
+      "title": "Policy Weights Json",
+      "type": "string"
+     },
+     "routes_json": {
+      "title": "Routes Json",
+      "type": "string"
+     }
+    },
+    "required": [
+     "routes_json",
+     "policy_weights_json"
+    ],
+    "title": "control_plane_pareto_routeArguments",
+    "type": "object"
+   },
+   "description": "Choose from a Pareto front using explicit objective weights and provenance.",
+   "name": "control_plane_pareto_route",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "acceptable_variance": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Acceptable Variance"
+     },
+     "branch": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Branch"
+     },
+     "forbidden_outcomes": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Forbidden Outcomes"
+     },
+     "goal": {
+      "title": "Goal",
+      "type": "string"
+     },
+     "required_events": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Required Events"
+     },
+     "status": {
+      "default": "dormant",
+      "title": "Status",
+      "type": "string"
+     },
+     "title": {
+      "title": "Title",
+      "type": "string"
+     },
+     "trigger": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Trigger"
+     },
+     "verification": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Verification"
+     }
+    },
+    "required": [
+     "title",
+     "goal"
+    ],
+    "title": "create_destinyArguments",
+    "type": "object"
+   },
+   "description": "Create a new prospective goal (destiny) in the NouGen prospective memory substrate.",
+   "name": "create_destiny",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "instruction": {
+      "title": "Instruction",
+      "type": "string"
+     }
+    },
+    "required": [
+     "instruction"
+    ],
+    "title": "evolve_skillArguments",
+    "type": "object"
+   },
+   "description": "Autonomously construct and verify a new skill using open-world resources.",
+   "name": "evolve_skill",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "language": {
+      "default": "python",
+      "title": "Language",
+      "type": "string"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "execute_sandboxed_codeArguments",
+    "type": "object"
+   },
+   "description": "Execute Python, Node.js, PowerShell, or shell code in a sandboxed environment.",
+   "name": "execute_sandboxed_code",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "label": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Label"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "fetch_web_sandboxedArguments",
+    "type": "object"
+   },
+   "description": "Natively fetch, extract, and index a web page into NouGen Context without polluting prompt context.",
+   "name": "fetch_web_sandboxed",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "assertions": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Assertions",
+      "type": "array"
+     },
+     "declarations": {
+      "items": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "title": "Declarations",
+      "type": "array"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query"
+     },
+     "timeout_ms": {
+      "default": 5000,
+      "title": "Timeout Ms",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "declarations",
+     "assertions"
+    ],
+    "title": "formal_solve_smtArguments",
+    "type": "object"
+   },
+   "description": "Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver.",
+   "name": "formal_solve_smt",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "formal_verification_suiteArguments",
+    "type": "object"
+   },
+   "description": "Run bounded information-dynamics SMT models; this does not prove implementation refinement.",
+   "name": "formal_verification_suite",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "allow_sorry": {
+      "default": false,
+      "title": "Allow Sorry",
+      "type": "boolean"
+     },
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "timeout_seconds": {
+      "default": 30.0,
+      "title": "Timeout Seconds",
+      "type": "number"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "formal_verify_leanArguments",
+    "type": "object"
+   },
+   "description": "Verify a Lean 4 formal mathematical proof against the Lean kernel. Enforces strict zero-placeholder ('no-sorry') standard by default.",
+   "name": "formal_verify_lean",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "period": {
+      "default": "week",
+      "title": "Period",
+      "type": "string"
+     }
+    },
+    "title": "get_memory_statsArguments",
+    "type": "object"
+   },
+   "description": "Get historical analytics on memory growth and utility trends.",
+   "name": "get_memory_stats",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "dst_db": {
+      "default": 1,
+      "title": "Dst Db",
+      "type": "integer"
+     },
+     "dst_id": {
+      "title": "Dst Id",
+      "type": "integer"
+     },
+     "relation": {
+      "default": "relates",
+      "title": "Relation",
+      "type": "string"
+     },
+     "src_db": {
+      "default": 1,
+      "title": "Src Db",
+      "type": "integer"
+     },
+     "src_id": {
+      "title": "Src Id",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "src_id",
+     "dst_id"
+    ],
+    "title": "link_shardsArguments",
+    "type": "object"
+   },
+   "description": "Link two memory shards into the graph mesh (e.g. a fix to the file it touched,",
+   "name": "link_shards",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "list_agentsArguments",
+    "type": "object"
+   },
+   "description": "List the NouGen roster: each agent's name, role and default model.",
+   "name": "list_agents",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "list_lane_claimsArguments",
+    "type": "object"
+   },
+   "description": "List all active declared lane claims across the NouGen fleet.",
+   "name": "list_lane_claims",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "list_skillsArguments",
+    "type": "object"
+   },
+   "description": "List every installed skill with its description.",
+   "name": "list_skills",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "load_skillArguments",
+    "type": "object"
+   },
+   "description": "Return one skill's full text by name.",
+   "name": "load_skill",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "description": {
+      "title": "Description",
+      "type": "string"
+     },
+     "event_type": {
+      "title": "Event Type",
+      "type": "string"
+     },
+     "metadata": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Metadata"
+     }
+    },
+    "required": [
+     "event_type",
+     "description"
+    ],
+    "title": "log_context_eventArguments",
+    "type": "object"
+   },
+   "description": "Log an ephemeral session event to the short-term context layer.",
+   "name": "log_context_event",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "note": {
+      "default": "",
+      "title": "Note",
+      "type": "string"
+     },
+     "note_ids": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Note Ids"
+     },
+     "worked": {
+      "title": "Worked",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "worked"
+    ],
+    "title": "mark_skillArguments",
+    "type": "object"
+   },
+   "description": "Report how a skill did after using it. This is what lets the registry learn.",
+   "name": "mark_skill",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "db_index": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Db Index"
+     },
+     "shard_id": {
+      "title": "Shard Id",
+      "type": "integer"
+     },
+     "worked": {
+      "title": "Worked",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "shard_id",
+     "worked"
+    ],
+    "title": "mark_utilityArguments",
+    "type": "object"
+   },
+   "description": "Update the usefulness score of a shard based on its performance outcome.",
+   "name": "mark_utility",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "title": "morph_atom_catalogArguments",
+    "type": "object"
+   },
+   "description": "Catalog already morph_gate-verified (source, claim) pairs into named structural atoms.",
+   "name": "morph_atom_catalog",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "claims": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Claims",
+      "type": "array"
+     },
+     "ref": {
+      "title": "Ref",
+      "type": "string"
+     }
+    },
+    "required": [
+     "ref",
+     "claims"
+    ],
+    "title": "morph_gateArguments",
+    "type": "object"
+   },
+   "description": "Turn candidate key claims into typed verifiability evidence by regex checking the LaTeX paper body.",
+   "name": "morph_gate",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "max_chars_per_page": {
+      "default": 4000,
+      "title": "Max Chars Per Page",
+      "type": "integer"
+     },
+     "max_depth": {
+      "default": 2,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 10,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "nougen_web_crawlArguments",
+    "type": "object"
+   },
+   "description": "BFS-crawl a small same-origin public site, with per-page provenance and error records.",
+   "name": "nougen_web_crawl",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "max_chars": {
+      "default": 16000,
+      "title": "Max Chars",
+      "type": "integer"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "nougen_web_fetchArguments",
+    "type": "object"
+   },
+   "description": "Fetch one public web page into a bounded, provenance-rich untrusted-source envelope.",
+   "name": "nougen_web_fetch",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "target": {
+      "default": "antigravity",
+      "title": "Target",
+      "type": "string"
+     }
+    },
+    "title": "nougenmsg_inboxArguments",
+    "type": "object"
+   },
+   "description": "Read recent incoming messages from the local agent inbox.",
+   "name": "nougenmsg_inbox",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "nougenmsg_peersArguments",
+    "type": "object"
+   },
+   "description": "Probe and report live connectivity, active named pipes, and inbox counts across fleet peers.",
+   "name": "nougenmsg_peers",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "target": {
+      "default": "all",
+      "title": "Target",
+      "type": "string"
+     },
+     "timeout_s": {
+      "default": 3.0,
+      "title": "Timeout S",
+      "type": "number"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "nougenmsg_searchArguments",
+    "type": "object"
+   },
+   "description": "Search across active and archived NouGenMsg inbox notifications across agents.",
+   "name": "nougenmsg_search",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "audience": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Audience"
+     },
+     "lane": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Lane"
+     },
+     "target": {
+      "default": "all",
+      "title": "Target",
+      "type": "string"
+     },
+     "text": {
+      "title": "Text",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "title": "nougenmsg_sendArguments",
+    "type": "object"
+   },
+   "description": "Broadcast or route a live message across the NouGen fleet mesh.",
+   "name": "nougenmsg_send",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "pr": {
+      "default": 0,
+      "title": "Pr",
+      "type": "integer"
+     },
+     "repo": {
+      "default": "",
+      "title": "Repo",
+      "type": "string"
+     }
+    },
+    "title": "pr_review_statusArguments",
+    "type": "object"
+   },
+   "description": "Latest PR reviewer verdicts from the local ledger, newest first. Read-only.",
+   "name": "pr_review_status",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "pr": {
+      "title": "Pr",
+      "type": "integer"
+     },
+     "repo": {
+      "title": "Repo",
+      "type": "string"
+     }
+    },
+    "required": [
+     "repo",
+     "pr"
+    ],
+    "title": "pr_review_verdictsArguments",
+    "type": "object"
+   },
+   "description": "Review-loop state for a PR from prreview logs: every round's verdict, FIXED/NOT FIXED, open P1/P2/P3,",
+   "name": "pr_review_verdicts",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "event_id": {
+      "title": "Event Id",
+      "type": "integer"
+     },
+     "tags": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tags"
+     }
+    },
+    "required": [
+     "event_id"
+    ],
+    "title": "promote_context_to_shardArguments",
+    "type": "object"
+   },
+   "description": "Promote an ephemeral context event into a permanent, durable memory shard.",
+   "name": "promote_context_to_shard",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "token_budget": {
+      "default": 1200,
+      "title": "Token Budget",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "recall_layeredArguments",
+    "type": "object"
+   },
+   "description": "Layered recall (TencentDB-Agent-Memory L0-L3): the owner persona (L3) and the",
+   "name": "recall_layered",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "agent": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent"
+     },
+     "as_of": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "As Of"
+     },
+     "limit": {
+      "default": 3,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "machine": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Machine"
+     },
+     "project": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session Id"
+     },
+     "user": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "User"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "recall_memoryArguments",
+    "type": "object"
+   },
+   "description": "Search for relevant history shards using the federated weighted-relevance retrieval engine.",
+   "name": "recall_memory",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "db_index": {
+      "default": 1,
+      "title": "Db Index",
+      "type": "integer"
+     },
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "relation": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Relation"
+     },
+     "shard_id": {
+      "title": "Shard Id",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "shard_id"
+    ],
+    "title": "recall_relatedArguments",
+    "type": "object"
+   },
+   "description": "Recall shards connected to a given shard in the graph mesh (walks links in",
+   "name": "recall_related",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "end": {
+      "default": "",
+      "title": "End",
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     },
+     "since": {
+      "default": "",
+      "title": "Since",
+      "type": "string"
+     },
+     "start": {
+      "default": "",
+      "title": "Start",
+      "type": "string"
+     },
+     "tz": {
+      "default": "",
+      "title": "Tz",
+      "type": "string"
+     },
+     "until": {
+      "default": "",
+      "title": "Until",
+      "type": "string"
+     },
+     "when": {
+      "default": "",
+      "title": "When",
+      "type": "string"
+     }
+    },
+    "title": "recall_windowArguments",
+    "type": "object"
+   },
+   "description": "Browse the memory substrate BY TIME: everything recorded in a period, with",
+   "name": "recall_window",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "title": "relay_openArguments",
+    "type": "object"
+   },
+   "description": "Inspect open relay legs currently waiting on the fleet relay board.",
+   "name": "relay_open",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "release_laneArguments",
+    "type": "object"
+   },
+   "description": "Release any active lane claim currently held by this agent/machine.",
+   "name": "release_lane",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "label": {
+      "title": "Label",
+      "type": "string"
+     }
+    },
+    "required": [
+     "label"
+    ],
+    "title": "restore_sessionArguments",
+    "type": "object"
+   },
+   "description": "Restore session state from a named checkpoint.",
+   "name": "restore_session",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "pr": {
+      "title": "Pr",
+      "type": "integer"
+     },
+     "repo": {
+      "title": "Repo",
+      "type": "string"
+     }
+    },
+    "required": [
+     "repo",
+     "pr"
+    ],
+    "title": "review_prArguments",
+    "type": "object"
+   },
+   "description": "Review a GitHub PR as the configured reviewer account (free lanes -> local e2b -> agy, second-lane supervisor).",
+   "name": "review_pr",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "rsi_evolveArguments",
+    "type": "object"
+   },
+   "description": "Run one RSI scoring pass (judge findings vs later pushes, propose a checklist, holdout gate). Gated by NOUGEN_ENABLE_PR_REVIEW=1.",
+   "name": "rsi_evolve",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "lanes": {
+      "default": 2,
+      "title": "Lanes",
+      "type": "integer"
+     },
+     "targets": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Targets",
+      "type": "array"
+     }
+    },
+    "required": [
+     "targets"
+    ],
+    "title": "rsi_reverseArguments",
+    "type": "object"
+   },
+   "description": "Fleet reads donor repos' source (owner/repo[:pat1,pat2]) in 7k chunks and extracts RSI mechanisms to",
+   "name": "rsi_reverse",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "version": {
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "version"
+    ],
+    "title": "rsi_rollbackArguments",
+    "type": "object"
+   },
+   "description": "Re-issue checklist v<version> as the newest version (append-only; history is kept). Gated by NOUGEN_ENABLE_PR_REVIEW=1.",
+   "name": "rsi_rollback",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {},
+    "title": "rsi_statusArguments",
+    "type": "object"
+   },
+   "description": "PR reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only.",
+   "name": "rsi_status",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "source_filter": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Filter"
+     }
+    },
+    "title": "run_brain_importArguments",
+    "type": "object"
+   },
+   "description": "Import discovered AI tool history into the NouGenShards memory substrate.",
+   "name": "run_brain_import",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "include_unknown": {
+      "default": false,
+      "title": "Include Unknown",
+      "type": "boolean"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "run_brain_scanArguments",
+    "type": "object"
+   },
+   "description": "Scan the local machine for AI tool history (Claude, Gemini, Cursor, etc.).",
+   "name": "run_brain_scan",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "limit": {
+      "default": 5,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_contextArguments",
+    "type": "object"
+   },
+   "description": "Search for ephemeral session events in the short-term context layer.",
+   "name": "search_context",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "include_finished": {
+      "default": false,
+      "title": "Include Finished",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_destiniesArguments",
+    "type": "object"
+   },
+   "description": "Search prospective memory destinies by title, goal, trigger, or verification keywords.",
+   "name": "search_destinies",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "context_budget": {
+      "default": 0,
+      "title": "Context Budget",
+      "type": "integer"
+     },
+     "limit": {
+      "default": 5,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_shardsArguments",
+    "type": "object"
+   },
+   "description": "Search across the 108K+ active NouGen substrate shards (federated weighted-relevance retrieval).",
+   "name": "search_shards",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "budget_bytes": {
+      "default": 8000,
+      "title": "Budget Bytes",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "state_json": {
+      "default": "{}",
+      "title": "State Json",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "semantic_context_assembleArguments",
+    "type": "object"
+   },
+   "description": "Assemble bounded identity/global/recall/active state. Corrections must be caller-authorized.",
+   "name": "semantic_context_assemble",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "agent": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent"
+     },
+     "dry_run": {
+      "default": false,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "goal": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Goal"
+     },
+     "summary": {
+      "default": "",
+      "title": "Summary",
+      "type": "string"
+     }
+    },
+    "title": "session_byeArguments",
+    "type": "object"
+   },
+   "description": "Session-close probe: sweep dirty repos, write handoff record, and optionally persist session close shard.",
+   "name": "session_bye",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "fleet": {
+      "default": true,
+      "title": "Fleet",
+      "type": "boolean"
+     }
+    },
+    "title": "session_hiArguments",
+    "type": "object"
+   },
+   "description": "Session-open probe: report machine identity, enrolled fleet pulse, open handoffs, and next play.",
+   "name": "session_hi",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "handle": {
+      "title": "Handle",
+      "type": "string"
+     },
+     "instruction": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Instruction"
+     }
+    },
+    "required": [
+     "handle"
+    ],
+    "title": "synthesize_sandboxArguments",
+    "type": "object"
+   },
+   "description": "Intelligently synthesize large sandbox data with local Ollama GPU worker and save summary back into sandbox.",
+   "name": "synthesize_sandbox",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "auto_shard": {
+      "default": true,
+      "title": "Auto Shard",
+      "type": "boolean"
+     },
+     "language": {
+      "default": "",
+      "title": "Language",
+      "type": "string"
+     },
+     "source": {
+      "title": "Source",
+      "type": "string"
+     },
+     "whisper_model": {
+      "default": "base",
+      "title": "Whisper Model",
+      "type": "string"
+     }
+    },
+    "required": [
+     "source"
+    ],
+    "title": "transcribe_mediaArguments",
+    "type": "object"
+   },
+   "description": "Transcribe and summarize video/audio from 30+ platforms (YouTube, X, TikTok, Apple Podcasts, etc.)",
+   "name": "transcribe_media",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  },
+  {
+   "args": {
+    "properties": {
+     "branch": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Branch"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Status"
+     },
+     "trigger": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Trigger"
+     }
+    },
+    "title": "unfinished_destiniesArguments",
+    "type": "object"
+   },
+   "description": "Query unfinished destinies (dormant and active prospective goals) across the NouGen grid.",
+   "name": "unfinished_destinies",
+   "pythonpath": [
+    "src"
+   ],
+   "server": "nougen_shards.mcp:mcp",
+   "transport": "mcp"
+  }
+ ]
+}
