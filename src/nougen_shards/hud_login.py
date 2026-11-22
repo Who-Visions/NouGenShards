@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import os
 import pathlib
 import re
@@ -77,6 +78,10 @@ def verify(secret: str, purpose: str, token: str, now: Optional[float] = None) -
     except (ValueError, KeyError, TypeError):
         return None
     if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
+        return None
+    # json.loads accepts NaN and +/-Infinity; NaN compares False with everything,
+    # so a non-finite exp would make a token that never expires.
+    if not math.isfinite(exp):
         return None
     if (now if now is not None else time.time()) >= exp:
         return None

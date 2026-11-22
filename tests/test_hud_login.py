@@ -60,6 +60,17 @@ def test_garbage_never_raises(tenant_env):
         assert hud_login.session_user(junk) is None
 
 
+@pytest.mark.parametrize("exp", ["NaN", "Infinity", "-Infinity"])
+def test_a_ticket_that_never_expires_is_refused(tenant_env, exp):
+    # json.loads accepts NaN/Infinity, and every comparison with NaN is False,
+    # so without a finite check such a ticket would verify forever.
+    body = hud_login._b64(('{"exp":%s,"n":"nonce-1234","sub":"pat"}' % exp).encode())
+    t = f"{body}.{hud_login._sig(TOKEN, hud_login.TICKET_PURPOSE, body)}"
+    assert hud_login.verify(TOKEN, hud_login.TICKET_PURPOSE, t, now=time.time() + 10 ** 9) is None
+    assert hud_login.redeem_ticket(t) is None
+    assert not hud_login._used, "a refused ticket leaves nothing in the replay table"
+
+
 def test_session_cookie_is_not_a_ticket_and_vice_versa(tenant_env):
     cookie = hud_login.session_cookie("pat")
     assert hud_login.session_user(cookie) == "pat"
