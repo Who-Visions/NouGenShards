@@ -9,6 +9,7 @@ operator's full token only to upload the script and bind the custom domain.
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import sys
 import urllib.error
@@ -76,6 +77,53 @@ def client():
     return cls(token=t._resolve_cf_token())
 
 
+RELAY_URL_RE = re.compile(r"^(wss|https)://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$")
+KV_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def relay_bindings(env) -> list:
+    """Bindings that let the join worker provision accounts on the relay.
+
+    Off unless the person deploying sets BOTH NOUGEN_JOIN_RELAY_URL (the
+    relay's wss:// or https:// address) and NOUGEN_JOIN_RELAY_AUTH_KV_ID (the
+    id of the relay's RELAY_AUTH namespace). Setting only one, or a value that
+    is not well formed, stops the deploy: a half-configured relay would hand
+    out an address the relay then refuses.
+    """
+    url = (env.get("NOUGEN_JOIN_RELAY_URL") or "").strip()
+    kv_id = (env.get("NOUGEN_JOIN_RELAY_AUTH_KV_ID") or "").strip()
+    if not url and not kv_id:
+        return []
+    if not url or not kv_id:
+        raise SystemExit("relay: set both NOUGEN_JOIN_RELAY_URL and NOUGEN_JOIN_RELAY_AUTH_KV_ID, or neither; nothing deployed")
+    if not RELAY_URL_RE.match(url):
+        raise SystemExit("relay: NOUGEN_JOIN_RELAY_URL must be a plain wss:// or https:// address; nothing deployed")
+    if not KV_ID_RE.match(kv_id):
+        raise SystemExit("relay: NOUGEN_JOIN_RELAY_AUTH_KV_ID is not a KV namespace id; nothing deployed")
+    return [
+        {"type": "kv_namespace", "name": "RELAY_AUTH", "namespace_id": kv_id},
+        {"type": "plain_text", "name": "RELAY_URL", "text": url},
+    ]
+
+
+def _google_pair() -> list:
+    """Google sign-in client for join, resolved as a PAIR. Both in the keymaker: send both.
+    Neither: keep the live worker's pair (Cloudflare "inherit"; needs an existing worker, so a
+    first-ever deploy fails loudly at the API). Only one: refuse, since a new id with an old
+    secret (or the reverse) breaks sign-in."""
+    cid = keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_ID")
+    sec = keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")
+    if cid and sec:
+        return [{"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": sec},
+                {"type": "plain_text", "name": "GOOGLE_CLIENT_ID", "text": cid}]
+    if not cid and not sec:
+        print("NOUGEN_JOIN_GOOGLE_CLIENT_ID/SECRET not in keymaker: inheriting the live worker's pair")
+        return [{"type": "inherit", "name": "GOOGLE_CLIENT_SECRET"},
+                {"type": "inherit", "name": "GOOGLE_CLIENT_ID"}]
+    raise SystemExit("only one of NOUGEN_JOIN_GOOGLE_CLIENT_ID/SECRET is in the keymaker; "
+                     "store both or neither; nothing deployed")
+
+
 def main():
     c = client()
     acct = c.account_id
@@ -87,8 +135,7 @@ def main():
         {"type": "durable_object_namespace", "name": "COORD", "class_name": "JoinCoordinator"},
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
         {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
-        {"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")},
-        {"type": "plain_text", "name": "GOOGLE_CLIENT_ID", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_ID")},
+        *_google_pair(),
         {"type": "plain_text", "name": "CF_ACCOUNT_ID", "text": acct},
         {"type": "plain_text", "name": "CF_ZONE_ID", "text": zone},
         {"type": "plain_text", "name": "ZONE_NAME", "text": ZONE},
@@ -96,6 +143,7 @@ def main():
         {"type": "plain_text", "name": "JOIN_MAX_PER_IP_DAY", "text": "5"},
         {"type": "plain_text", "name": "LINK_TTL_DAYS", "text": "14"},
     ]
+    bindings += relay_bindings(os.environ)
     if any(b.get("text") in (None, "") for b in bindings if b["type"] in ("secret_text", "plain_text")):
         raise SystemExit("a keymaker value is missing; nothing deployed")
     meta = {"main_module": "worker.js", "compatibility_date": "2026-11-11", "bindings": bindings,

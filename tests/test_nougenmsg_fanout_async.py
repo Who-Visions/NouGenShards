@@ -21,7 +21,7 @@ def _stub(monkeypatch, peer_delay=0.0):
     monkeypatch.setattr(m.NouGenMsgBus, "live_ping",
                         classmethod(lambda cls, target, text, origin=None, **k: {"local": "ok"}))
 
-    def fake_emit_node(cls, node, target, text, origin=None):
+    def fake_emit_node(cls, node, target, text, origin=None, **_kw):
         time.sleep(peer_delay)
         calls.append(node)
         if len(calls) == 2:
@@ -56,7 +56,7 @@ def test_background_failure_is_logged_not_raised(monkeypatch, capsys):
     monkeypatch.setattr(m.NouGenMsgBus, "live_ping",
                         classmethod(lambda cls, target, text, origin=None, **k: {"local": "ok"}))
     monkeypatch.setattr(m.NouGenMsgBus, "emit_node",
-                        classmethod(lambda cls, node, target, text, origin=None: {node: "Error: TimeoutExpired"}))
+                        classmethod(lambda cls, node, target, text, origin=None, **_kw: {node: "Error: TimeoutExpired"}))
     m.NouGenMsgBus.emit_fleet("hi", target="all", background=True)
     m.NouGenMsgBus._last_fanout_thread.join(5)
     assert "background fan-out to blade failed" in capsys.readouterr().err

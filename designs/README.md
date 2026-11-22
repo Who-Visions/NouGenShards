@@ -9,6 +9,7 @@ python tools/nougendesigns.py inspect ui/src
 python tools/nougendesigns.py compile designs/nougen-core/design.json designs/nougen-core
 python tools/nougendesigns.py lint designs/nougen-core/design.json --css ui/src/styles.css
 python tools/nougendesigns.py check designs/nougen-core/design.json designs/nougen-core
+python tools/nougendesigns.py compile designs/mono-violet/design.json designs/mono-violet --tokens-js extensions/nougentube-chrome/design-tokens.js
 python tools/nougendesigns.py diff before.json after.json
 ```
 

@@ -183,6 +183,31 @@ def _read_head(s: socket.socket, limit: int = 65536) -> bytes:
 
 
 # ------------------------------------------------------------------ minimal WebSocket
+SECURE_RELAY_SCHEMES = ("wss", "https")
+# The only path the relay worker upgrades on (workers/relay/worker.js).
+RELAY_CONNECT_PATH = os.environ.get("NOUGEN_RELAY_CONNECT_PATH", "/_relay/connect")
+
+
+class InsecureRelayURL(ValueError):
+    """The relay address would send the node's token without encryption."""
+
+
+def require_secure_relay_url(url: str) -> urllib.parse.SplitResult:
+    """Parse a relay address, refusing anything that is not TLS.
+
+    The node authenticates to the relay with its join token in a header. Over
+    ``ws://`` or ``http://`` that token would cross the network in the clear, so
+    such an address is refused here, before any socket is opened. ``https://``
+    is accepted as another spelling of ``wss://``.
+    """
+    u = urllib.parse.urlsplit(str(url or "").strip())
+    if u.scheme.lower() not in SECURE_RELAY_SCHEMES or not u.hostname:
+        raise InsecureRelayURL(
+            f"relay address must start with wss:// or https:// (got scheme {u.scheme or 'none'!r}); "
+            "refusing to send the node token without encryption")
+    return u
+
+
 class WebSocket:
     def __init__(self, sock):
         self.sock = sock
@@ -191,13 +216,15 @@ class WebSocket:
     @classmethod
     def connect(cls, url: str, headers: dict, timeout: float = 15.0, env: Optional[dict] = None,
                 resolver: Callable[[str], Optional[str]] = doh_resolve) -> "WebSocket":
-        u = urllib.parse.urlsplit(url)
-        secure = u.scheme == "wss"
-        port = u.port or (443 if secure else 80)
+        u = require_secure_relay_url(url)
+        port = u.port or 443
         raw = open_tunnel(u.hostname, port, timeout, env, resolver)
-        sock = tls_context(env).wrap_socket(raw, server_hostname=u.hostname) if secure else raw
+        sock = tls_context(env).wrap_socket(raw, server_hostname=u.hostname)
         key = base64.b64encode(os.urandom(16)).decode()
-        path = (u.path or "/") + (("?" + u.query) if u.query else "")
+        # The relay only upgrades on /_relay/connect; a bare origin
+        # (wss://relay.example) would GET "/" and receive a 404.
+        base_path = u.path if u.path not in ("", "/") else RELAY_CONNECT_PATH
+        path = base_path + (("?" + u.query) if u.query else "")
         host = u.hostname if u.port in (None, 443, 80) else f"{u.hostname}:{u.port}"
         lines = [f"GET {path} HTTP/1.1", f"Host: {host}", "Upgrade: websocket", "Connection: Upgrade",
                  f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13", "User-Agent: nougen-relay"]
@@ -412,6 +439,13 @@ def main(argv=None) -> int:
     url = a.relay_url or n.get("relay_url") or default_relay_url()
     if not url:
         print("relay: unavailable (no relay_url in node.json, NOUGEN_RELAY_URL or endpoints file)")
+        return 2
+    # Checked here as well as at connect time, so `run` stops at once with the
+    # reason instead of retrying an address it will never use.
+    try:
+        require_secure_relay_url(url)
+    except InsecureRelayURL as e:
+        print(f"relay: unavailable ({e})")
         return 2
     c = RelayClient(url, relay_id(n),
                     str(n["token"]), int(n["port"]))

@@ -13,6 +13,7 @@ mDNS hostname it happens to advertise today.
 
 import getpass
 import hashlib
+import logging
 import os
 import platform
 import socket
@@ -92,6 +93,10 @@ def machine_identity(repo_root: object | None = None) -> dict[str, str]:
         "arch": platform.machine(),
         "python": platform.python_version(),
     }
+    try:
+        identity["node"] = sender_identity()["node"]
+    except Exception:  # never fail a handoff over the alias
+        pass
     if not _private_mode():
         try:
             identity["user"] = getpass.getuser()
@@ -194,3 +199,73 @@ def record_alias_warning(data: dict | None) -> str | None:
 def record_origin(data: dict | None) -> str:
     """'local' or 'remote', the axis triggers match on."""
     return "local" if is_local_record(data) else "remote"
+
+
+# ---------------------------------------------------------------------------
+# Sender identity: the one resolver every outbound message, relay leg and shard
+# capture stamps from. Resolved at run time on whatever computer the code is
+# running on; callers never type it.
+# ---------------------------------------------------------------------------
+
+_log = logging.getLogger(__name__)
+
+
+def _fleet_node() -> str | None:
+    """Fleet node alias from the local fleet_hosts config, or None.
+
+    Lazy import: nougenmsg is heavy and imports this module's neighbours.
+    "standalone" means no config matched, which is not a node name.
+    """
+    try:
+        # current_machine_id() (PR 1142) is the wire name: the fleet node when
+        # this box is listed, else the slugged hostname or a persisted device id.
+        from .nougenmsg import current_machine_id
+        node = (current_machine_id() or "").strip().lower()
+    except Exception as exc:  # config unreadable: fall through to the probe
+        _log.debug("fleet node lookup failed: %s", exc)
+        return None
+    return node if node and node != "standalone" else None
+
+
+def sender_identity() -> dict[str, str]:
+    """Who is sending, resolved env -> config -> probe.
+
+    Not cached: the fleet alias is a live config lookup, and the hostname and
+    machine id underneath are already cached.
+
+    node:       NOUGEN_NODE, then the fleet_hosts.json alias, then host_label().
+    host:       host_label() (NOUGEN_MACHINE or the probed hostname).
+    machine_id: machine_id() (NOUGEN_MACHINE_ID or a hash of host/OS/arch).
+    node_source records which rung answered so a wrong label can be traced.
+    """
+    node, source = _env("NOUGEN_NODE"), "env:NOUGEN_NODE"
+    if node:
+        node = node.lower()
+    else:
+        node, source = _fleet_node(), "runtime:current_machine_id"
+    if not node:
+        node, source = host_label().lower(), "probe:hostname"
+        if node == "unknown-host":
+            source = "fallback:constant"
+            _log.warning("sender identity: no env, config or hostname; using %r", node)
+    return {"node": node, "host": host_label(), "machine_id": machine_id(),
+            "platform": sys.platform, "node_source": source}
+
+
+def check_asserted_node(asserted: object) -> dict[str, str] | None:
+    """Compare a caller-supplied node/machine with the resolved one.
+
+    Returns a conflict record (and logs it) when they disagree; the resolved
+    value always wins. An asserted value matching node, host or machine_id is
+    not a conflict.
+    """
+    claimed = str(asserted or "").strip()
+    if not claimed:
+        return None
+    ident = sender_identity()
+    if claimed.lower() in {ident["node"], ident["host"].lower(), ident["machine_id"]}:
+        return None
+    _log.warning("asserted node %r ignored; resolved sender is %s (%s)",
+                 claimed, ident["node"], ident["machine_id"])
+    return {"field": "node", "claimed": claimed, "resolved": ident["node"],
+            "machine_id": ident["machine_id"]}

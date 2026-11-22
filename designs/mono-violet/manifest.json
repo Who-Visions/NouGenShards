@@ -29,7 +29,7 @@
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "6f1938b55bdd5c682920d60ac06c5b897cd945e74a76428e850859b3588c1c2b",
+  "sourceDigest": "6c9591afa021010bbfaf4aaffc72050332fc1fae846de3543283d9a9beab9045",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
@@ -38,7 +38,8 @@
     "arcade",
     "dark",
     "hardcade",
-    "light"
+    "light",
+    "youtube"
   ],
   "version": "0.1.1"
 }

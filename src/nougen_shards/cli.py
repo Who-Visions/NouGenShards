@@ -1429,6 +1429,20 @@ def cmd_recall_hook(args):
     else:
         print(recall_hook.format_block(result))
 
+def cmd_transport(args):
+    """nougen transport discover: exit 0 when a transport is chosen, 2 when none."""
+    from . import transport_discovery as td  # pylint: disable=import-outside-toplevel
+    argv = []
+    if args.account_dir:
+        argv += ["--account-dir", args.account_dir]
+    for flag in ("refresh", "failing", "json"):
+        if getattr(args, flag, False):
+            argv.append(f"--{flag}")
+    for o in args.observed or []:
+        argv += ["--observed", o]
+    sys.exit(td.main(argv))
+
+
 def cmd_embed(args):
     """Embedding provider: status, fetch the onnx model, backfill, self-test."""
     from . import embed_providers as ep  # pylint: disable=import-outside-toplevel
@@ -2544,6 +2558,15 @@ def get_parser():
     p_eb.add_argument("--reembed", action="store_true",
                       help="Also re-embed rows whose stored dimension differs from the provider's (after a provider switch)")
 
+    p_transport = subparsers.add_parser("transport", help="Discover how this node reaches the internet (quic|http2|relay|none)")
+    transport_sub = p_transport.add_subparsers(dest="transport_cmd", required=True)
+    p_td = transport_sub.add_parser("discover", help="Probe edge + relay, decide, cache in <account dir>/transport.json")
+    p_td.add_argument("--account-dir", default=None)
+    p_td.add_argument("--refresh", action="store_true", help="Ignore the cache and re-probe")
+    p_td.add_argument("--failing", action="store_true", help="Current transport is failing: re-probe")
+    p_td.add_argument("--observed", action="append", default=[], help="Protocol cloudflared reported, e.g. quic")
+    p_td.add_argument("--json", action="store_true")
+
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
     p_mark.add_argument("--worked", action="store_true")
@@ -2682,6 +2705,26 @@ def get_parser():
 
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_vault_unify = subparsers.add_parser(
+        "vault-unify", help="Check that the node and the local install use one vault; --apply repairs it")
+    p_vault_unify.add_argument("--node-vault", help="the node's vault folder (default: NOUGEN_VAULT_DIR)")
+    p_vault_unify.add_argument("--local-vault", help="the local install's vault (default: ~/.nougen/shards)")
+    p_vault_unify.add_argument("--apply", action="store_true",
+                               help="back up both vaults, then point the node at the populated one")
+    p_vault_unify.add_argument("--allow-populated-node", action="store_true",
+                               help="with --apply: proceed even though the node's folder already holds shards")
+    p_vault_unify.add_argument("--dry-run", action="store_true", help="with --apply: show the plan, change nothing")
+    p_vault_unify.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_agent_perms = subparsers.add_parser(
+        "agent-permissions",
+        help="Let your coding agent run the read-only NouGen commands without asking each time")
+    p_agent_perms.add_argument("--apply", action="store_true", help="add the rules (default: only show them)")
+    p_agent_perms.add_argument("--remove", action="store_true", help="take out the rules NouGen added")
+    p_agent_perms.add_argument("--settings", help="settings file to edit (default: your Claude Code settings)")
+    p_agent_perms.add_argument("--connector", help="the name you gave the hosted NouGen connector, to cover its tools too")
+    p_agent_perms.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_wishlist = subparsers.add_parser(
         "wishlist", help="Track the canonical 100-item resilience/context wishlist "
@@ -3605,6 +3648,78 @@ def cmd_wishlist(args):
 
     print(f"unknown wishlist subcommand: {sub!r}")
     raise SystemExit(1)
+
+
+def cmd_vault_unify(args):
+    """Report, and with --apply repair, a node that opened a different vault
+    folder than the one the local install filled (nougen_shards/vault_unify.py)."""
+    from nougen_shards import vault_unify  # pylint: disable=import-outside-toplevel
+    node_vault = getattr(args, "node_vault", None) or vault_unify.configured_vault()
+    if not node_vault:
+        print("No node vault to check: pass --node-vault, or set NOUGEN_VAULT_DIR to the "
+              "folder the node was started with.", file=sys.stderr)
+        sys.exit(2)
+    local_vault = getattr(args, "local_vault", None)
+    try:
+        if getattr(args, "apply", False):
+            report = vault_unify.apply(Path(node_vault), Path(local_vault) if local_vault else None,
+                                       allow_populated_node=getattr(args, "allow_populated_node", False),
+                                       dry_run=getattr(args, "dry_run", False))
+        else:
+            report = vault_unify.inspect(Path(node_vault), Path(local_vault) if local_vault else None)
+    except vault_unify.VaultUnifyError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "json", False):
+        print(json.dumps(dict(report, ok=True)))
+        return
+    print(vault_unify.describe(report))
+    if report.get("changed"):
+        print(f"Backups: {report['backup_dir']}")
+        print("Restart the node so it opens the vault it now points at.")
+    elif report.get("dry_run"):
+        print(f"Dry run: would back up {report['backup_bytes']} bytes, then write the pointer.")
+
+
+def cmd_agent_permissions(args):
+    """Show, add or remove the short list of NouGen commands a coding agent may
+    run without asking (nougen_shards/agent_permissions.py)."""
+    from nougen_shards import agent_permissions  # pylint: disable=import-outside-toplevel
+    settings = Path(args.settings) if getattr(args, "settings", None) else None
+    if getattr(args, "connector", None):
+        os.environ[agent_permissions.ENV_GATEWAY_SERVER] = args.connector
+    try:
+        if getattr(args, "remove", False):
+            report = agent_permissions.remove(settings)
+        elif getattr(args, "apply", False):
+            report = agent_permissions.apply(settings)
+        else:
+            report = agent_permissions.apply(settings, dry_run=True)
+    except agent_permissions.AgentPermissionsError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    if getattr(args, "json", False):
+        print(json.dumps(dict(report, ok=True)))
+        return
+    print(f"Settings file: {report['settings']}")
+    if "removed" in report:
+        print(f"Removed {len(report['removed'])} rule(s) that NouGen had added.")
+    else:
+        verb = "Added" if report.get("changed") else "Would add"
+        print(f"{verb} {len(report['to_add'])} rule(s); {len(report['already_allowed'])} already allowed; "
+              f"{len(report['left_alone'])} left alone because you set them to deny or ask.")
+        for rule in report["to_add"]:
+            print(f"  {rule}")
+        if not report.get("changed") and report["to_add"]:
+            print("Nothing was written. Run again with --apply to add them.")
+    if report.get("backup"):
+        print(f"Backup of the previous settings: {report['backup']}")
 
 
 def cmd_doctor(args):
@@ -4715,11 +4830,11 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "transport": cmd_transport, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
+        "doctor": cmd_doctor, "vault-unify": cmd_vault_unify, "agent-permissions": cmd_agent_permissions, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,

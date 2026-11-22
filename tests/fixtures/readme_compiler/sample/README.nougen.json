@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json",
+  "badges": [
+    {
+      "image": "https://example.com/badge.svg",
+      "label": "Build status",
+      "url": "https://example.com/actions"
+    }
+  ],
+  "footer": {
+    "text": "Built with the NouGen README compiler."
+  },
+  "links": [
+    {
+      "label": "Documentation",
+      "url": "https://example.com/docs"
+    }
+  ],
+  "project": {
+    "description": "A sample project exercising every extension.",
+    "emoji": "🧪",
+    "title": "Sample Project"
+  },
+  "schema_version": 1,
+  "sections": [
+    {
+      "content": "Plain inline content section.",
+      "title": "Overview"
+    },
+    {
+      "content": "Install it, then run it.\n\n#include \"docs/install-note.md\"",
+      "title": "Quick Start"
+    },
+    {
+      "file": "docs/architecture.md",
+      "title": "Architecture"
+    },
+    {
+      "merge": [
+        "docs/part-one.md",
+        "docs/part-two.md"
+      ],
+      "title": "Combined Guide"
+    },
+    {
+      "content": "See [LICENSE](LICENSE).",
+      "title": "License"
+    }
+  ],
+  "table_of_contents": true
+}

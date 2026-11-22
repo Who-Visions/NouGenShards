@@ -26,6 +26,10 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	case "exit":
 		os.Exit(3)
+	case "mute":
+		// Stays alive and serves nothing: what a relay client looks like from outside.
+		time.Sleep(time.Hour)
+		os.Exit(0)
 	default:
 		code := http.StatusOK
 		if os.Getenv("SUP_HELPER") == "sick" {
@@ -436,5 +440,108 @@ func TestOwnLogRotatesAtItsCap(t *testing.T) {
 	old, err := os.Stat(path + ".1")
 	if err != nil || cur.Size() > 100 || old.Size() > 100 {
 		t.Fatalf("rotation: current %v, previous %v err %v", cur.Size(), old, err)
+	}
+}
+
+func TestTransportDefaultsToTunnelAndReadsRelay(t *testing.T) {
+	d := t.TempDir()
+	if transportOf(d) != "tunnel" {
+		t.Fatal("no file must mean tunnel")
+	}
+	for body, want := range map[string]string{
+		"relay\n": "relay", "\xef\xbb\xbfrelay\r\n": "relay", "tunnel\n": "tunnel",
+		"": "tunnel", "relay extra": "tunnel", "RELAY": "tunnel", "quic": "tunnel",
+	} {
+		if err := os.WriteFile(filepath.Join(d, transportFile), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := transportOf(d); got != want {
+			t.Fatalf("%q: got %s want %s", body, got, want)
+		}
+	}
+}
+
+func TestRelayLauncherRunsTheClientAndCarriesNoCredential(t *testing.T) {
+	n := Node{ID: "a", Port: 4444, Token: "node-secret", Tunnel: "tunnel-secret", Dir: t.TempDir()}
+	l := realLauncher{base: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(n.Dir, transportFile), []byte("relay\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := l.Tunnel(n, "127.0.0.1:24444")
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "-m nougen_shards.relay_client run --node-json "+filepath.Join(n.Dir, "node.json")) {
+		t.Fatalf("not the relay client: %v", cmd.Args)
+	}
+	if strings.Contains(args, "cloudflared") || strings.Contains(args, "secret") {
+		t.Fatalf("wrong program or a credential in arguments: %v", cmd.Args)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if strings.Contains(env, "TUNNEL_TOKEN=") && strings.Contains(env, "tunnel-secret") {
+		t.Fatal("the tunnel credential has no business in the relay client's environment")
+	}
+	if !strings.Contains(env, "PYTHONPATH="+filepath.Join(n.SrcDir(), "src")) || cmd.Dir != n.SrcDir() {
+		t.Fatalf("relay client would not find the package: dir %s", cmd.Dir)
+	}
+	// Control: without the file the same call is cloudflared with its token in the environment.
+	os.Remove(filepath.Join(n.Dir, transportFile))
+	plain := l.Tunnel(n, "127.0.0.1:24444")
+	if !strings.Contains(strings.Join(plain.Args, " "), "tunnel --no-autoupdate") {
+		t.Fatalf("default transport is no longer cloudflared: %v", plain.Args)
+	}
+}
+
+func TestRelayAccountIsUpWithoutAReadinessPortAndNeedsNoTunnelToken(t *testing.T) {
+	s, base := newTest(t, fakeLauncher{node: "ok", tunnel: "mute"}, fastTiming())
+	writeNode(t, base, "acct", freePort(t), "")
+	os.WriteFile(filepath.Join(base, "acct", transportFile), []byte("relay\n"), 0o600)
+	tickUntil(t, s, "relay client counted as up", func() bool {
+		st := s.Snapshot()
+		return len(st.Nodes) == 1 && st.Nodes[0].Node.State == "up" && st.Nodes[0].Tunnel.State == "up"
+	})
+	e := s.entries["acct"]
+	old := e.tun.proc
+	killGroup(old)
+	<-old.done
+	tickUntil(t, s, "relay client restarted after it died", func() bool {
+		return e.tun.proc != old && s.Snapshot().Nodes[0].Tunnel.State == "up"
+	})
+}
+
+func TestControlAMuteTunnelWithoutRelayIsNotCountedAsUp(t *testing.T) {
+	s, base := newTest(t, fakeLauncher{node: "ok", tunnel: "mute"}, fastTiming())
+	writeNode(t, base, "acct", freePort(t), "tunnel-token")
+	tickUntil(t, s, "node up", func() bool {
+		st := s.Snapshot()
+		return len(st.Nodes) == 1 && st.Nodes[0].Node.State == "up"
+	})
+	for i := 0; i < 10; i++ {
+		s.Tick(time.Now())
+		time.Sleep(40 * time.Millisecond)
+	}
+	if st := s.Snapshot().Nodes[0].Tunnel.State; st == "up" {
+		t.Fatal("a tunnel that never answers /ready was counted as up")
+	}
+}
+
+func TestRelayAddressSavedBySetupIsPassedOnAndBadOnesAreIgnored(t *testing.T) {
+	n := Node{ID: "a", Port: 4444, Token: "node-secret", Dir: t.TempDir()}
+	l := realLauncher{base: t.TempDir()}
+	os.WriteFile(filepath.Join(n.Dir, transportFile), []byte("relay\n"), 0o600)
+	if a := strings.Join(l.Tunnel(n, "x").Args, " "); strings.Contains(a, "--relay-url") {
+		t.Fatalf("no saved address, yet one was passed: %s", a)
+	}
+	os.WriteFile(filepath.Join(n.Dir, relayURLFile), []byte("\xef\xbb\xbfhttps://relay.example.test\r\n"), 0o600)
+	args := l.Tunnel(n, "x").Args
+	if args[len(args)-2] != "--relay-url" || args[len(args)-1] != "https://relay.example.test" {
+		t.Fatalf("saved address not passed on: %v", args)
+	}
+	for _, bad := range []string{
+		"http://relay.example.test", "relay.example.test", "https://a b", "https://a\nrun", "https://a\"b",
+		"-x https://a", "", "https://" + strings.Repeat("a", maxRelayURL),
+	} {
+		os.WriteFile(filepath.Join(n.Dir, relayURLFile), []byte(bad), 0o600)
+		if got := relayURL(n.Dir); got != "" {
+			t.Fatalf("%q accepted as %q", bad, got)
+		}
 	}
 }

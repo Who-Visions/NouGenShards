@@ -47,7 +47,7 @@ def test_origin_survives_a_hop_and_is_not_relabelled(on_node):
     first = NouGenMsgBus._origin_envelope({})
 
     on_node("phoebus")
-    second = NouGenMsgBus._origin_envelope(first)
+    second = NouGenMsgBus._origin_envelope(first, forwarded=True)
 
     assert second["original_sender"] == "nougen-whoart", "origin was relabelled"
     assert second["transport_machine"] == "phoebus"
@@ -59,7 +59,7 @@ def test_three_hops_keep_the_full_path(on_node):
     env = NouGenMsgBus._origin_envelope({})
     for hop in ("blade", "phoebus"):
         on_node(hop)
-        env = NouGenMsgBus._origin_envelope(env)
+        env = NouGenMsgBus._origin_envelope(env, forwarded=True)
     assert env["original_sender"] == "nougen-whoart"
     assert env["relay_path"] == ["whoart", "blade", "phoebus"]
 
@@ -68,8 +68,8 @@ def test_reenveloping_on_the_same_node_does_not_stack(on_node):
     """emit_fleet envelopes locally and per-peer in one pass."""
     on_node("whoart")
     env = NouGenMsgBus._origin_envelope({})
-    env = NouGenMsgBus._origin_envelope(env)
-    env = NouGenMsgBus._origin_envelope(env)
+    env = NouGenMsgBus._origin_envelope(env, forwarded=True)
+    env = NouGenMsgBus._origin_envelope(env, forwarded=True)
     assert env["relay_path"] == ["whoart"]
 
 
