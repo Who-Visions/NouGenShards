@@ -140,7 +140,8 @@ class WireService:
                     info["you"] = caller.address
                 return 200, info
         except (ValueError, TypeError) as exc:
-            return 400, {"error": str(exc)}
+            return 400, {"error": str(exc),
+                         "fix": "check the address, kind and in_reply_to fields; docs/nougenmsg-wire-tester.md"}
         return 404, {"error": "not found", "path": route,
                      "fix": "routes: POST /wire/send, GET /wire/inbox, POST /wire/ack, GET /wire/status/<id>, GET /wire/info"}
 

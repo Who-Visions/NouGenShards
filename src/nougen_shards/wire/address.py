@@ -64,12 +64,27 @@ class Address:
             out += "@" + self.node
         return out
 
-    def matches(self, lane: str, session: Optional[str] = None, node: Optional[str] = None) -> bool:
-        """True when a receiver (lane, session, node) should see a message sent here."""
+    def matches(self, lane: str, session: Optional[str] = None, node: Optional[str] = None,
+                model: str = "", app: bool = False) -> bool:
+        """True when a receiver (lane, session, node, model, app) should see a message sent here.
+
+        Every part this address pins must be matched by the receiver: a pinned
+        session, node, model or app prefix is never satisfied by a receiver that
+        leaves it out, so an unqualified reader can't consume another machine's,
+        session's or model's messages.
+        """
         if self.lane != lane:
+            return False
+        if self.app and not app:
+            return False
+        if self.model and self.model != (model or ""):
             return False
         if self.session and self.session != session:
             return False  # a pinned message reaches that one session, never the whole lane
-        if self.node and node and self.node != node:
+        if self.node and self.node != node:
             return False
         return True
+
+    def receives_from(self, dest: "Address") -> bool:
+        """True when this address, as a receiver, should see a message sent to ``dest``."""
+        return dest.matches(self.lane, self.session, self.node, self.model, self.app)

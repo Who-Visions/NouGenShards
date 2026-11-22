@@ -36,7 +36,7 @@ def live(monkeypatch, tmp_path):
     monkeypatch.setenv("NOUGEN_WIRE_RECEIPT_KEY", "rk")
     monkeypatch.setenv("NOUGEN_WIRE_OWNER_TOKEN", "")
     monkeypatch.setenv("NOUGEN_WIRE_GUESTS_FILE", str(guests))
-    guest = access.mint("harley", ["codex", "ollama"], days=1, path=str(guests))
+    guest = access.mint("tester-1", ["codex", "ollama"], days=1, path=str(guests))
     expired = access.mint("old", ["codex"], days=1, path=str(guests))
     data = json.loads(guests.read_text())
     for g in data["guests"]:
@@ -207,3 +207,16 @@ def test_guest_tokens_are_stored_hashed_only(tmp_path):
     assert tok not in path.read_text()
     with pytest.raises(ValueError):
         access.mint("Bad Name!", ["codex"], path=str(path))
+
+
+def test_guest_cannot_close_an_ask_it_was_never_sent(tmp_path):
+    path = str(tmp_path / "g.json")
+    tok = access.mint("tester-1", ["codex"], days=1, path=path)
+    book = GuestBook(path)
+    guest, _ = access.authenticate(tok, "fleet", book)
+    svc = WireService(Hub(WireStore(), "phoebus", b"k"), owner="", guests=book)
+    ask = svc.handle("POST", "/wire/send", {"from": "claude-app", "to": "codex", "text": "ok?", "kind": "ask"})[1]
+    code, out = svc.handle("POST", "/wire/send", {"to": "codex", "text": "done", "kind": "answer",
+                                                  "in_reply_to": ask["id"]}, caller=guest)
+    assert code == 400 and "fix" in out
+    assert svc.handle("GET", f"/wire/status/{ask['id']}")[1]["state"] == "accepted"

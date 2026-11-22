@@ -333,12 +333,89 @@ def test_model_lane_reply_comes_back_as_an_answer_and_never_loops():
         calls.append(env["id"])
         return {"pushed": True, "verified": True, "reply": "pong from gemma"}
     hub = _hub({"ollama": model, "codex": model})
-    ask = make("claude-app", "ollama:gemma4:e2b@blade", "ping", kind="ask", now=hub.clock())
+    ask = make("claude-app", f"ollama:gemma4:e2b@{hub.node}", "ping", kind="ask", now=hub.clock())
     out = hub.send(ask)
     assert out["state"] == "answered"
     back = hub.inbox("claude-app")["items"]
     assert back[0]["env"]["kind"] == "answer" and back[0]["env"]["text"] == "pong from gemma"
-    assert back[0]["env"]["from"] == "ollama:gemma4:e2b@blade"
+    assert back[0]["env"]["from"] == f"ollama:gemma4:e2b@{hub.node}"
     # model to model: the reply is pushed once and never answered again
     hub.send(make("ollama", "codex", "hello", now=hub.clock()))
     assert len(calls) == 3
+
+
+# -- review fixes: strict receiver matching, answers, claims, node pins -------
+
+def test_pinned_node_model_and_app_need_a_matching_receiver():
+    hub = Hub(WireStore(), node="phoebus", key=b"k", clock=lambda: 1000.0)
+    e1 = make("claude-app", "codex@whoart", "for whoart", now=1000.0)
+    e2 = make("claude-app", "ollama:model-a", "for model a", now=1000.0)
+    e3 = make("claude-app", "app:muse", "for the app", now=1000.0)
+    for e in (e1, e2, e3):
+        hub.send(e, push=False)
+    assert hub.inbox("codex")["items"] == []
+    assert [i["env"]["id"] for i in hub.inbox("codex@whoart")["items"]] == [e1["id"]]
+    assert hub.ack(e1["id"], "codex").get("error")
+    assert hub.inbox("ollama:model-b")["items"] == []
+    assert hub.ack(e2["id"], "ollama:model-b").get("error")
+    assert [i["env"]["id"] for i in hub.inbox("ollama:model-a")["items"]] == [e2["id"]]
+    assert hub.inbox("muse")["items"] == []
+    assert [i["env"]["id"] for i in hub.inbox("app:muse")["items"]] == [e3["id"]]
+
+
+def test_answer_closes_only_the_ask_it_answers():
+    hub = Hub(WireStore(), node="phoebus", key=b"k", clock=lambda: 1000.0)
+    ask = make("claude-code/4936@phoebus", "codex@whoart", "ok?", kind="ask", now=1000.0)
+    note = make("claude-app", "codex", "fyi", now=1000.0)
+    hub.send(ask, push=False)
+    hub.send(note, push=False)
+    for frm, to, ref in (("gemini", "ollama", ask["id"]),            # not asked
+                         ("codex@whoart", "ollama", ask["id"]),      # wrong way back
+                         ("codex", "claude-code/4936@phoebus", ask["id"]),  # node pinned
+                         ("codex", "claude-app", note["id"])):       # not an ask
+        bad = make(frm, to, "x", kind="answer", in_reply_to=ref, now=1001.0)
+        with pytest.raises(ValueError):
+            hub.send(bad, push=False)
+    assert hub.status(ask["id"])["state"] == "accepted"
+    good = make("codex@whoart", "claude-code/4936@phoebus", "yes", kind="answer", in_reply_to=ask["id"], now=1002.0)
+    hub.send(good, push=False)
+    assert hub.status(ask["id"])["state"] == "answered"
+    elsewhere = make("codex", "claude-app", "from another node's ask", kind="answer",
+                     in_reply_to="w-" + "0" * 20, now=1003.0)
+    assert hub.send(elsewhere, push=False)["state"] == "accepted"
+
+
+def test_push_in_flight_is_never_picked_up_twice():
+    import threading
+    gate, calls = threading.Event(), []
+
+    def slow(env, turn):
+        calls.append(env["id"])
+        gate.wait(5)
+        return {"pushed": True, "verified": True, "detail": "ok"}
+
+    t = [1000.0]
+    hub = Hub(WireStore(), node="phoebus", key=b"k", adapters={"codex": slow}, clock=lambda: t[0])
+    env = make("claude-app", "codex", "once", now=1000.0)
+    th = threading.Thread(target=hub.send, args=(env,))
+    th.start()
+    while not calls:
+        pass
+    assert hub.pump()["retried"] == 0
+    gate.set()
+    th.join()
+    assert calls == [env["id"]]
+    assert hub.status(env["id"])["state"] == "delivered"
+
+
+def test_message_pinned_to_another_node_never_wakes_a_local_agent():
+    calls = []
+    hub = Hub(WireStore(), node="phoebus", key=b"k", clock=lambda: 1000.0,
+              adapters={"claude-code": lambda e, t: calls.append(e) or {"pushed": True}})
+    env = make("claude-app", "claude-code@blade", "for blade", now=1000.0)
+    assert hub.send(env)["state"] == "accepted"
+    assert calls == [] and hub.pump()["retried"] == 0
+    assert [i["env"]["id"] for i in hub.inbox("claude-code@blade")["items"]] == [env["id"]]
+    local = make("claude-app", "claude-code@phoebus", "here", now=1000.0)
+    hub.send(local)
+    assert len(calls) == 1

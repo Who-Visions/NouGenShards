@@ -35,10 +35,16 @@ the cross-session model shows seven gaps:
 - `:model`: optional model tag, e.g. `ollama:gemma4:e2b`.
 - `/session`: pins one running session. A pinned message reaches only that
   session, never the whole lane.
-- `@node`: pins the machine. Without it the hub resolves the lane.
+- `@node`: pins the machine. Without it the hub resolves the lane. A hub
+  never wakes a local agent for a message pinned to another node; it waits for
+  that node's receiver.
 - `app:`: an app agent behind a desktop bridge. Always an actuator.
 
 Node and session names come from the address, never from a list in code.
+
+Every part an address pins (session, node, model, `app:`) must be named by the
+receiver too: `codex` can't read or ack a message to `codex@whoart`, and
+`ollama:model-b` can't take one meant for `ollama:model-a`.
 
 ## Envelope
 
@@ -119,7 +125,12 @@ fleet hands envelopes to a hub:
    again, so model lanes cannot loop
 6. `inbox(receiver, after)` returns open messages with the rendered turn and a
    seq cursor; `ack(id, receiver)` closes one (only its addressee can ack)
-7. an `answer` closes its ask with an `answered` receipt
+7. an `answer` closes its ask with an `answered` receipt, but only when it
+   comes from one of the ask's receivers and goes back to the ask's sender; any
+   other answer naming a stored message is refused (400). An answer to an ask
+   another node holds is delivered and closes nothing here
+7a. a push claims the message first, so a pump running beside a slow adapter
+   call never delivers it twice
 8. `status(id)` returns the state and every receipt, each re-verified
 
 Push adapters (PR B) map lanes to what exists today: `claude-code` to the

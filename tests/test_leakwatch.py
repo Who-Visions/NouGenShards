@@ -46,7 +46,11 @@ def test_growing_type_is_retained_and_traced_to_its_module_global():
 def test_fingerprint_is_stable_across_instances_of_the_same_bug():
     mod = _fake_module("lw_fake_server2")
     try:
-        w = leakwatch.LeakWatch(window=2, min_growth=10, trace_depth=6, log_path=None)
+        # A generous time budget: on a full CI run the heap holds every test's
+        # objects, and gc.get_referrers() on it can outrun the 8 s default,
+        # which returned a rootless trace and failed this test on 3.11.
+        w = leakwatch.LeakWatch(window=2, min_growth=10, trace_depth=6, log_path=None,
+                                trace_budget_s=120.0)
         mod.REQUEST_LOG.extend(_Leaky() for _ in range(20))
         a = w.leak_trace(f"{__name__}._Leaky")
         mod.REQUEST_LOG.extend(_Leaky() for _ in range(20))

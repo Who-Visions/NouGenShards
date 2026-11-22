@@ -97,9 +97,24 @@ class WireStore:
                              (new, attempts, now + backoff_s(attempts), now, env_id))
             return new
 
+    def claim(self, env_id: str, now: Optional[float] = None, lease_s: float = 600.0) -> bool:
+        """Take one open message for a push attempt, atomically.
+
+        Only one caller (send or any pump) can claim a due message: the claim
+        moves its next attempt past the lease, so a concurrent pump can't pick it
+        up while an adapter call is in flight. record_push sets the real next
+        attempt afterwards; a crash mid-push retries once the lease runs out.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE messages SET next_attempt=? WHERE id=? AND state='accepted' AND next_attempt<=?",
+                (now + lease_s, env_id, now))
+            return cur.rowcount == 1
+
     def park(self, env_id: str) -> None:
-        """Keep a message in its inbox and out of the retry queue (a pinned
-        session on a lane whose transport can't pin: it must not wake the lane)."""
+        """Keep a message in its inbox and out of the retry queue (pinned to a
+        receiver this hub's transports can't reach: it must not wake anyone else)."""
         with self._lock:
             self._db.execute("UPDATE messages SET next_attempt=expires WHERE id=?", (env_id,))
 
@@ -126,7 +141,8 @@ class WireStore:
                 "SELECT receipt FROM receipts WHERE id=? ORDER BY rid", (env_id,))]
 
     def inbox(self, lane: str, session: Optional[str] = None, node: Optional[str] = None,
-              after: int = 0, limit: int = 25, include_acked: bool = False) -> List[Dict[str, Any]]:
+              after: int = 0, limit: int = 25, include_acked: bool = False,
+              model: str = "", app: bool = False) -> List[Dict[str, Any]]:
         """Open messages for one receiver, oldest first, by seq cursor."""
         states = OPEN + (("acked", "answered") if include_acked else ())
         marks = ",".join("?" * len(states))
@@ -137,7 +153,7 @@ class WireStore:
         out = []
         for seq, raw, state in rows:
             env = json.loads(raw)
-            if Address.parse(env["to"]).matches(lane, session, node):
+            if Address.parse(env["to"]).matches(lane, session, node, model, app):
                 out.append({"seq": seq, "state": state, "env": env})
                 if len(out) >= max(1, min(int(limit), 100)):
                     break

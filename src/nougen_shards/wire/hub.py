@@ -51,6 +51,8 @@ class Hub:
              proof: str = "") -> Dict[str, Any]:
         E.validate(env)
         now = self.clock()
+        if env["kind"] == "answer":
+            self._check_answer(env)
         if float(env["expires"]) <= now:
             return {"id": env["id"], "state": "expired", "receipts": []}
         verdict = guard.check(env, allow_actions=allow_actions)
@@ -73,9 +75,28 @@ class Hub:
         return {"id": env["id"], "state": state, "duplicate": False, "guard": verdict.as_dict(),
                 "receipts": self.store.receipts(env["id"])}
 
+    def _check_answer(self, answer: Dict[str, Any]) -> None:
+        """An answer may close only an ask it really answers.
+
+        When the referenced message is in this hub, it must be an ask, the
+        answer must come from one of the ask's receivers, and it must go back to
+        the ask's sender. An answer to an ask this hub never saw (asked through
+        another node) is delivered as is and closes nothing here.
+        """
+        ask = self.store.get(str(answer["in_reply_to"]))
+        if ask is None:
+            return
+        a = ask["env"]
+        if a["kind"] != "ask":
+            raise ValueError(f"in_reply_to {a['id']} is not an ask; send a msg instead")
+        if not Address.parse(answer["from"]).receives_from(Address.parse(a["to"])):
+            raise ValueError(f"{answer['from']} was not asked {a['id']}; only {a['to']} can answer it")
+        if not Address.parse(answer["to"]).receives_from(Address.parse(a["from"])):
+            raise ValueError(f"an answer to {a['id']} goes back to {a['from']}, not {answer['to']}")
+
     def _close_ask(self, answer: Dict[str, Any]) -> None:
         ask = self.store.get(str(answer["in_reply_to"]))
-        if ask and ask["state"] not in ("answered", "expired"):
+        if ask and ask["env"]["kind"] == "ask" and ask["state"] not in ("answered", "expired"):
             self.store.set_state(ask["env"]["id"], "answered", self.clock(), acked_by=answer["from"])
             self._receipt(ask["env"], "answered", f"by {answer['from']} in {answer['id']}")
 
@@ -85,11 +106,19 @@ class Hub:
         adapter = self.adapters.get(to.lane)
         if adapter is None:
             return "accepted"  # pull lane: waits in its inbox for the receiver to read and ack
+        if to.node and to.node != self.node:
+            # Pinned to another machine: this hub's transports are local only, so
+            # they would wake the wrong agent. It waits for that node's receiver.
+            self.store.park(env["id"])
+            return "accepted"
         if to.session and not getattr(adapter, "pins_session", False):
             # A pinned message reaches only that session. This transport can only
             # wake the whole lane, so the message waits in that session's inbox.
             self.store.park(env["id"])
             return "accepted"
+        if not self.store.claim(env["id"], self.clock()):
+            row = self.store.get(env["id"])
+            return row["state"] if row else "unknown"  # another send or pump holds it
         try:
             res = adapter(env, E.render_turn(env)) or {}
         except Exception as exc:  # pylint: disable=broad-except
@@ -135,7 +164,7 @@ class Hub:
     # -- receiver side -----------------------------------------------------
     def inbox(self, receiver: str, after: int = 0, limit: int = 25) -> Dict[str, Any]:
         who = Address.parse(receiver)
-        items = self.store.inbox(who.lane, who.session, who.node, after, limit)
+        items = self.store.inbox(who.lane, who.session, who.node, after, limit, model=who.model, app=who.app)
         for it in items:
             it["turn"] = E.render_turn(it["env"])
         return {"receiver": str(who), "items": items, "next_after": items[-1]["seq"] if items else int(after)}
@@ -145,7 +174,7 @@ class Hub:
         if row is None:
             return {"id": env_id, "state": "unknown"}
         who = Address.parse(receiver)
-        if not Address.parse(row["env"]["to"]).matches(who.lane, who.session, who.node):
+        if not who.receives_from(Address.parse(row["env"]["to"])):
             return {"id": env_id, "state": row["state"], "error": "not addressed to this receiver"}
         if row["state"] in ("acked", "answered"):
             return {"id": env_id, "state": row["state"], "duplicate": True}
