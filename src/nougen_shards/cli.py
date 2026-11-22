@@ -610,11 +610,11 @@ def cmd_setup(args):
             return 2
         code = input("Invite code: ").strip()
     try:
-        print("Setting up NouGen on this computer...")
-        cmd_init(argparse.Namespace(defaults=True, no_onboarding=False, json=False))
         print("Joining your NouGen node...")
         join_url = os.environ.get("NOUGEN_JOIN_URL", "")
         values = tenant_onboard.redeem_invite(code, join_url)
+        print("Setting up NouGen on this computer...")
+        cmd_init(argparse.Namespace(defaults=True, no_onboarding=False, json=False))
         kit_dir = tenant_onboard.write_kit(values["tenant_id"], values["token"], values["tunnel_token"],
                                            values["port"], root=Path.home() / ".nougen")
     except tenant_onboard.OnboardError as exc:
