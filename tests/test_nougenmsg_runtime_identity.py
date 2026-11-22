@@ -206,8 +206,12 @@ def test_started_at_falls_back_to_record_file_time(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     path = store / "rec.json"
     os.utime(path, (1600000000, 1600000000))
+    st = os.stat(path)
+    # Where the OS keeps a creation time (Windows, macOS) the resolver
+    # prefers it, and utime cannot set it: compare against what stat reports.
+    expected = float(getattr(st, "st_birthtime", st.st_mtime))
     started = resolve_session_started_at(_SID)
-    assert started is not None and abs(started - 1600000000) < 2
+    assert started is not None and abs(started - expected) < 2
 
 
 def test_started_at_unknown_session_stays_none(monkeypatch, tmp_path):

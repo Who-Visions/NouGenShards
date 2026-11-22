@@ -131,7 +131,11 @@ def _discover_session_stores() -> List[str]:
             base = os.path.join(home, entry)
             if not os.path.isdir(base):
                 continue
-            for child in sorted(os.listdir(base)):
+            try:
+                children = sorted(os.listdir(base))
+            except OSError:
+                continue  # one unreadable dot-dir must not end the scan
+            for child in children:
                 if "session" in child.lower():
                     _add(os.path.join(base, child))
     except OSError:
