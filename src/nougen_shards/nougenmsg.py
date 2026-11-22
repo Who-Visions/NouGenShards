@@ -52,10 +52,12 @@ def resolve_session() -> str:
 def resolve_session_title(session_id: str = "") -> str:
     """The human title of this session, or "" when nothing knows it.
 
-    Order: NOUGEN_SESSION_TITLE, then the Claude Code session registry entry
-    for `session_id` (~/.claude/sessions/*.json, field "name"), then the
-    NouGen cc_sessions registry entry (field "title" or "name"). Never invents
-    a title: an unknown session stays "" so the label falls back to sid8.
+    Order: NOUGEN_SESSION_TITLE, then the session's record in whichever
+    session store runtime discovery finds on this box (the Claude Code
+    registry and the NouGen cc_sessions registry are two of the stores
+    discovery reaches, not special cases), reading whichever title-shaped
+    field the record carries. Never invents a title: an unknown session
+    stays "" so the label falls back to sid8.
     """
     if _tenant_scope():
         # A tenant request must never read the owner's session-title env, the
@@ -67,33 +69,217 @@ def resolve_session_title(session_id: str = "") -> str:
     sid = (session_id or resolve_session()).strip()
     if not sid:
         return ""
-    base = os.environ.get("NOUGEN_CLAUDE_SESSIONS_DIR") or os.path.join(
-        os.path.expanduser("~"), ".claude", "sessions")
-    for path in sorted(glob.glob(os.path.join(base, "*.json"))):
+    # Universal pass (GM order 2026-11-22): providers that expose no title
+    # env are still discoverable -- find the session's record in whichever
+    # session store this box actually has and read whichever title-shaped
+    # field the record itself carries. No provider is named anywhere in the
+    # discovery; see _discover_session_stores.
+    record, _path = _discover_session_record(sid)
+    if record:
+        name = _first_field(record, _TITLE_FIELDS)
+        if name:
+            return name
+    return ""
+
+
+# --- Universal session discovery (GM order 2026-11-22) ---------------------
+# Providers disagree about everything here: some export a session id, some
+# keep a session registry on disk, some expose neither a title nor a start
+# time. Nothing below names a provider. Stores are discovered at runtime
+# (env-named directories, then any "sessions"-shaped directory under the
+# home dot-dirs), records are matched by whichever id-shaped field they
+# carry, and titles / start times are read from whichever title-shaped or
+# time-shaped field the record itself carries. A source that does not
+# answer leaves the value unknown -- discovery never invents one.
+
+_TITLE_FIELDS = ("name", "title", "label", "summary", "description", "headline")
+_ID_FIELDS = ("sessionId", "session_id", "id")
+_START_FIELDS = (
+    "started_at", "start_time", "started", "created_at", "created",
+    "first_seen", "begin", "ts", "timestamp",
+)
+
+
+def _discover_session_stores() -> List[str]:
+    """Session-store directories that exist on this box right now.
+
+    Order: directories named by env vars (any var ending in SESSIONS_DIR or
+    SESSION_DIR, plus the two NouGen vars), then a bounded scan of home
+    dot-dirs for a child directory whose name contains "session". Env wins
+    because an explicit pointer outranks a guess; the scan is what makes a
+    provider nobody configured still discoverable.
+    """
+    stores: List[str] = []
+    seen = set()
+
+    def _add(path: str) -> None:
+        path = os.path.expanduser(path.strip())
+        if path and path not in seen and os.path.isdir(path):
+            seen.add(path)
+            stores.append(path)
+
+    for key, value in sorted(os.environ.items()):
+        if value and (key.endswith("SESSIONS_DIR") or key.endswith("SESSION_DIR")):
+            _add(value)
+    _add(os.path.join(os.path.expanduser("~"), ".claude", "sessions"))
+    try:
+        home = os.path.expanduser("~")
+        for entry in sorted(os.listdir(home)):
+            if not entry.startswith("."):
+                continue
+            base = os.path.join(home, entry)
+            if not os.path.isdir(base):
+                continue
+            for child in sorted(os.listdir(base)):
+                if "session" in child.lower():
+                    _add(os.path.join(base, child))
+    except OSError:
+        pass
+    return stores
+
+
+def _iter_store_records(store: str):
+    """Yield (record dict, file path) for every JSON record in a store."""
+    for path in sorted(glob.glob(os.path.join(store, "*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and str(data.get("sessionId") or "") == sid:
-            name = str(data.get("name") or data.get("title") or "").strip()
-            if name:
-                return name
+        if isinstance(data, dict):
+            yield data, path
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    yield item, path
+
+
+def _cc_registry_entries() -> List[Tuple[dict, str]]:
+    """(entry, path) pairs from the NouGen cc_sessions registry, if present."""
+    reg_path = os.environ.get("NOUGEN_CC_SESSIONS") or os.path.join(
+        _home(), "cc_sessions.json")
     try:
-        reg_path = os.environ.get("NOUGEN_CC_SESSIONS") or os.path.join(_home(), "cc_sessions.json")
         with open(reg_path, encoding="utf-8") as fh:
             reg = json.load(fh)
-        sessions = reg.get("sessions") if isinstance(reg.get("sessions"), dict) else reg
-        for key, entry in (sessions or {}).items():
-            if not isinstance(entry, dict):
-                continue
-            if sid in (key, str(entry.get("session_id") or ""), str(entry.get("sessionId") or "")):
-                name = str(entry.get("title") or entry.get("name") or "").strip()
-                if name:
-                    return name
-    except (OSError, ValueError, AttributeError):
-        pass
+    except (OSError, ValueError):
+        return []
+    sessions = reg.get("sessions") if isinstance(reg, dict) else None
+    if isinstance(sessions, dict):
+        return [(entry, reg_path) for entry in sessions.values()
+                if isinstance(entry, dict)]
+    if isinstance(reg, dict):
+        return [(entry, reg_path) for entry in reg.values()
+                if isinstance(entry, dict)]
+    return []
+
+
+def _record_matches(record: dict, sid: str) -> bool:
+    return any(str(record.get(field) or "") == sid for field in _ID_FIELDS)
+
+
+def _first_field(record: dict, fields) -> str:
+    for field in fields:
+        value = str(record.get(field) or "").strip()
+        if value:
+            return value
     return ""
+
+
+def _parse_time(value) -> Optional[float]:
+    """Epoch seconds from a number, a numeric string, or an ISO string."""
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        try:
+            from datetime import datetime
+
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _discover_session_record(session_id: str = "") -> Tuple[dict, str]:
+    """The discovered record for `session_id` across every store, or ({}, "").
+
+    One discovery pass shared by the title and start-time resolvers, so the
+    two can never disagree about which session a record belongs to.
+    """
+    if _tenant_scope():
+        # Same boundary as resolve_session_title: a tenant request never
+        # reads the owner's session env, registries, or session stores.
+        return {}, ""
+    sid = (session_id or resolve_session()).strip()
+    if not sid:
+        return {}, ""
+    for store in _discover_session_stores():
+        for record, path in _iter_store_records(store):
+            if _record_matches(record, sid):
+                return record, path
+    for entry, path in _cc_registry_entries():
+        if _record_matches(entry, sid):
+            return entry, path
+    return {}, ""
+
+
+def resolve_session_started_at(session_id: str = "") -> Optional[float]:
+    """When this session started (epoch seconds), or None when unknown.
+
+    Discovered at runtime, in order: an env var naming the start (any var
+    containing both SESSION and START, plus NOUGEN_SESSION_STARTED_AT), then
+    a time-shaped field on the session's discovered record, then the
+    record file's own creation time (birthtime where the OS keeps one,
+    else mtime). Stamped once at the origin; receivers render the age at
+    display time, so the value never goes stale inside a stored message.
+    """
+    if _tenant_scope():
+        return None
+    for key, value in sorted(os.environ.items()):
+        if value and (key == "NOUGEN_SESSION_STARTED_AT"
+                      or ("SESSION" in key and "START" in key)):
+            parsed = _parse_time(value)
+            if parsed is not None:
+                return parsed
+    record, path = _discover_session_record(session_id)
+    if record:
+        for field in _START_FIELDS:
+            parsed = _parse_time(record.get(field))
+            if parsed is not None:
+                return parsed
+        if path:
+            try:
+                stat = os.stat(path)
+                return float(getattr(stat, "st_birthtime", stat.st_mtime))
+            except OSError:
+                pass
+    return None
+
+
+def format_session_age(started_at, now: Optional[float] = None) -> str:
+    """A compact age ("12m", "3h20m", "2d4h") or "" when the start is unknown.
+
+    Rendered by the receiver from the stamped start, never stamped as text:
+    a stored message read tomorrow must show tomorrow's age.
+    """
+    start = _parse_time(started_at)
+    if start is None:
+        return ""
+    seconds = int((now if now is not None else time.time()) - start)
+    if seconds < 0:
+        return ""
+    if seconds < 3600:
+        return f"{max(seconds // 60, 1)}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+    return f"{seconds // 86400}d{(seconds % 86400) // 3600}h"
 
 
 def resolve_origin_host() -> str:
@@ -430,6 +616,9 @@ def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
         who = str(origin.get("session_title") or "").strip() or (sid[:8] if sid else "")
         if who:
             label = f"{label} · {who}"
+        age = format_session_age(origin.get("session_started_at"))
+        if age:
+            label = f"{label} · up {age}"
         mid = str(origin.get("machine_id") or "").strip()
         if mid and mid != "unknown":
             label = f"{label} [{mid[:8]}]"
@@ -1432,16 +1621,20 @@ class NouGenMsgBus:
                                   "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
         session_title = supplied.get("session_title")
+        session_started_at = supplied.get("session_started_at")
         if not forwarded and not _tenant_scope():
             # This process is the origin: discover who is speaking instead of
             # waiting to be told. A forwarded envelope keeps its upstream
             # session fields untouched; the receiver never stamps its own.
             session_id = session_id or resolve_session() or None
             session_title = session_title or (resolve_session_title(session_id or "") or None)
+            if session_started_at is None:
+                session_started_at = resolve_session_started_at(session_id or "")
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": session_title,
+            "session_started_at": session_started_at,
             "machine": sender_machine,
             "machine_id": sender_id,
             "node_source": None if forwarded else ident["node_source"],
