@@ -17,7 +17,7 @@
 #include "../src/ngs_internal.h"
 #include <stdio.h>
 
-#define MV_MAX_FILES 64
+#define MV_MAX_FILES 256
 #define MV_MAX_OPS 4096
 
 typedef struct { int is_trunc; uint64_t off; uint8_t *data; size_t n; } mv_op;
@@ -70,7 +70,7 @@ static void mv_reserve(mv_node *n, size_t need) {
   }
 }
 
-static int mv_open(const char *path, int create, ngs__file **out) {
+static int mv_open_u(const char *path, int create, ngs__file **out) {
   mv_node *n = mv_find(path);
   *out = NULL;
   if (!n) {
@@ -84,8 +84,8 @@ static int mv_open(const char *path, int create, ngs__file **out) {
   (*out)->n = n;
   return NGS_OK;
 }
-static int mv_close(ngs__file *f) { if (f) { if (f->n) f->n->locked = 0; free(f); } return NGS_OK; }
-static int mv_pread(ngs__file *f, void *buf, size_t n, uint64_t off, size_t *got) {
+static int mv_close_u(ngs__file *f) { if (f) { if (f->n) f->n->locked = 0; free(f); } return NGS_OK; }
+static int mv_pread_u(ngs__file *f, void *buf, size_t n, uint64_t off, size_t *got) {
   mv_node *x = f->n;
   if (mv_dead) return NGS_IOERR;
   *got = 0;
@@ -95,7 +95,7 @@ static int mv_pread(ngs__file *f, void *buf, size_t n, uint64_t off, size_t *got
   *got = n;
   return NGS_OK;
 }
-static int mv_pwrite(ngs__file *f, const void *buf, size_t n, uint64_t off) {
+static int mv_pwrite_u(ngs__file *f, const void *buf, size_t n, uint64_t off) {
   mv_node *x = f->n;
   mv_op *op;
   int rc;
@@ -131,7 +131,7 @@ static void mv_clear_ops(mv_node *x) {
   for (i = 0; i < x->n_ops; i++) free(x->ops[i].data);
   x->n_ops = 0;
 }
-static int mv_sync(ngs__file *f) {
+static int mv_sync_u(ngs__file *f) {
   mv_node *x = f->n;
   int rc;
   if ((rc = mv_tick())) return rc;
@@ -142,7 +142,7 @@ static int mv_sync(ngs__file *f) {
   mv_clear_ops(x);
   return NGS_OK;
 }
-static int mv_truncate(ngs__file *f, uint64_t size) {
+static int mv_truncate_u(ngs__file *f, uint64_t size) {
   mv_node *x = f->n;
   int rc;
   mv_op *op;
@@ -155,14 +155,14 @@ static int mv_truncate(ngs__file *f, uint64_t size) {
   op->is_trunc = 1; op->off = size; op->data = NULL; op->n = 0;
   return NGS_OK;
 }
-static int mv_size(ngs__file *f, uint64_t *out) { if (mv_dead) return NGS_IOERR; *out = f->n->cur_n; return NGS_OK; }
-static int mv_mkdir(const char *p) {
+static int mv_size_u(ngs__file *f, uint64_t *out) { if (mv_dead) return NGS_IOERR; *out = f->n->cur_n; return NGS_OK; }
+static int mv_mkdir_u(const char *p) {
   int rc;
   if (mv_find(p)) return NGS_OK;
   if ((rc = mv_tick())) return rc;
   return mv_new(p, 1) ? NGS_OK : NGS_IOERR;
 }
-static int mv_sync_dir(const char *p) {
+static int mv_sync_dir_u(const char *p) {
   int i, rc;
   size_t L = strlen(p);
   if ((rc = mv_tick())) return rc;
@@ -173,18 +173,34 @@ static int mv_sync_dir(const char *p) {
   { mv_node *d = mv_find(p); if (d) d->durable_exists = 1; }
   return NGS_OK;
 }
-static int mv_exists(const char *p, int *out) { *out = mv_find(p) != NULL; return NGS_OK; }
-static int mv_lock(ngs__file *f) {
+static int mv_exists_u(const char *p, int *out) { *out = mv_find(p) != NULL; return NGS_OK; }
+static int mv_lock_u(ngs__file *f) {
   if (mv_dead) return NGS_IOERR;
   if (f->n->locked) return NGS_BUSY;
   f->n->locked = 1;
   return NGS_OK;
 }
-static int mv_random(void *buf, size_t n) {
+static int mv_random_u(void *buf, size_t n) {
   size_t i;
   for (i = 0; i < n; i++) ((uint8_t *)buf)[i] = (uint8_t)mv_rand();
   return NGS_OK;
 }
+
+/* every call holds one lock: the engine now fsyncs while other threads write */
+#include <pthread.h>
+static pthread_mutex_t mv_mu = PTHREAD_MUTEX_INITIALIZER;
+static int mv_open(const char *path, int create, ngs__file **out) { int r; pthread_mutex_lock(&mv_mu); r = mv_open_u(path, create, out); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_close(ngs__file *f) { int r; pthread_mutex_lock(&mv_mu); r = mv_close_u(f); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_pread(ngs__file *f, void *buf, size_t n, uint64_t off, size_t *got) { int r; pthread_mutex_lock(&mv_mu); r = mv_pread_u(f, buf, n, off, got); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_pwrite(ngs__file *f, const void *buf, size_t n, uint64_t off) { int r; pthread_mutex_lock(&mv_mu); r = mv_pwrite_u(f, buf, n, off); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_sync(ngs__file *f) { int r; pthread_mutex_lock(&mv_mu); r = mv_sync_u(f); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_truncate(ngs__file *f, uint64_t size) { int r; pthread_mutex_lock(&mv_mu); r = mv_truncate_u(f, size); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_size(ngs__file *f, uint64_t *out) { int r; pthread_mutex_lock(&mv_mu); r = mv_size_u(f, out); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_mkdir(const char *p) { int r; pthread_mutex_lock(&mv_mu); r = mv_mkdir_u(p); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_sync_dir(const char *p) { int r; pthread_mutex_lock(&mv_mu); r = mv_sync_dir_u(p); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_exists(const char *p, int *out) { int r; pthread_mutex_lock(&mv_mu); r = mv_exists_u(p, out); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_lock(ngs__file *f) { int r; pthread_mutex_lock(&mv_mu); r = mv_lock_u(f); pthread_mutex_unlock(&mv_mu); return r; }
+static int mv_random(void *buf, size_t n) { int r; pthread_mutex_lock(&mv_mu); r = mv_random_u(buf, n); pthread_mutex_unlock(&mv_mu); return r; }
 
 static const ngs__vfs mv_vfs = { mv_open, mv_close, mv_pread, mv_pwrite, mv_sync, mv_truncate, mv_size,
                                  mv_mkdir, mv_sync_dir, mv_exists, mv_lock, mv_random };

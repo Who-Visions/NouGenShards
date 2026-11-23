@@ -8,6 +8,7 @@
 #include <math.h>
 
 static int checks, failures;
+static int quick;   /* NGS_TEST_QUICK=1: fewer trials (sanitizer runs), same paths */
 #define CHECK(c) do { checks++; if (!(c)) { failures++; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 #define S(lit) ((ngs_str){ lit, sizeof(lit) - 1 })
 
@@ -209,7 +210,7 @@ static void test_misuse(void) {
 static void test_bitflips(int *refused, int *truncated, int *trials) {
   ngs_id ids[12];
   int t;
-  for (t = 0; t < 4000; t++) {
+  for (t = 0; t < (quick ? 200 : 4000); t++) {
     ngs *db;
     mv_node *seg;
     size_t pos;
@@ -312,16 +313,16 @@ static void *writer_thread(void *p) {
 }
 static void test_threads(void) {
   ngs *db;
-  pthread_t th[6];
-  thr_arg args[6];
+  pthread_t th[8];
+  thr_arg args[8];
   int i, j;
   mv_reset();
   db = open_db("/db", NGS_OPEN_READWRITE | NGS_OPEN_CREATE);
   if (!db) { CHECK(0); return; }
-  for (i = 0; i < 6; i++) { memset(&args[i], 0, sizeof args[i]); args[i].db = db; args[i].t = i; pthread_create(&th[i], NULL, writer_thread, &args[i]); }
-  for (i = 0; i < 6; i++) pthread_join(th[i], NULL);
+  for (i = 0; i < 8; i++) { memset(&args[i], 0, sizeof args[i]); args[i].db = db; args[i].t = i; pthread_create(&th[i], NULL, writer_thread, &args[i]); }
+  for (i = 0; i < 8; i++) pthread_join(th[i], NULL);
   CHECK(ngs_flush(db) == NGS_OK);
-  for (i = 0; i < 6; i++) {
+  for (i = 0; i < 8; i++) {
     CHECK(args[i].ok == 50);
     for (j = 0; j < 50; j++) { ngs_fact *f = NULL; CHECK(ngs_get(db, &args[i].ids[j], &f) == NGS_OK); ngs_free(f); }
   }
@@ -392,7 +393,7 @@ static void test_crash_suite(long *points, long *runs) {
   total = mv_ops;
   *points = total;
   for (k = 1; k <= total; k++) {
-    for (seed = 0; seed < 20; seed++) {
+    for (seed = 0; seed < (quick ? 3 : 20); seed++) {
       ngs *db;
       int i, rc;
       ngs_open_opts o = NGS_OPEN_OPTS_INIT;
@@ -453,6 +454,7 @@ static void test_crash_suite(long *points, long *runs) {
 int main(void) {
   int refused = 0, truncated = 0, trials = 0;
   long points = 0, runs = 0;
+  quick = getenv("NGS_TEST_QUICK") != NULL;
   ngs__vfs_set(&mv_vfs);
   test_roundtrip();
   test_batch_scan_and_segments();
@@ -462,7 +464,7 @@ int main(void) {
   test_bitflips(&refused, &truncated, &trials);
   test_crash_suite(&points, &runs);
   printf("bit flips: %d trials, %d refused (open or verify), %d truncated (acked facts lost)\n", trials, refused, truncated);
-  printf("crash suite: %ld injection points x 20 power-loss seeds = %ld runs\n", points, runs);
+  printf("crash suite: %ld injection points x %d power-loss seeds = %ld runs\n", points, quick ? 3 : 20, runs);
   printf("ngs M1 tests: %d checks, %d failures\n", checks, failures);
   mv_reset();
   return failures ? 1 : 0;

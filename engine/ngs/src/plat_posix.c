@@ -157,6 +157,19 @@ void ngs__mutex_free(ngs__mutex *m) { if (m) { pthread_mutex_destroy(&m->m); fre
 void ngs__mutex_lock(ngs__mutex *m) { pthread_mutex_lock(&m->m); }
 void ngs__mutex_unlock(ngs__mutex *m) { pthread_mutex_unlock(&m->m); }
 
+struct ngs__cond { pthread_cond_t c; };
+int ngs__cond_new(ngs__cond **out) {
+  ngs__cond *c = (ngs__cond *)malloc(sizeof *c);
+  *out = NULL;
+  if (!c) return NGS_NOMEM;
+  if (pthread_cond_init(&c->c, NULL) != 0) { free(c); return NGS_ERROR; }
+  *out = c;
+  return NGS_OK;
+}
+void ngs__cond_free(ngs__cond *c) { if (c) { pthread_cond_destroy(&c->c); free(c); } }
+void ngs__cond_wait(ngs__cond *c, ngs__mutex *m) { pthread_cond_wait(&c->c, &m->m); }
+void ngs__cond_broadcast(ngs__cond *c) { pthread_cond_broadcast(&c->c); }
+
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 void ngs__global_lock(void) { pthread_mutex_lock(&g_lock); }
 void ngs__global_unlock(void) { pthread_mutex_unlock(&g_lock); }

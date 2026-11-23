@@ -69,14 +69,18 @@ typedef struct {
 typedef struct {
   uint32_t   no;          /* file number NNNNNN */
   ngs__file *f;
-  uint64_t   size;        /* bytes of valid data */
+  uint64_t   size;        /* bytes reserved by writers (end of the log) */
+  uint64_t   written;     /* bytes written, as a contiguous prefix */
   uint64_t   synced;      /* bytes known durable */
+  int        syncing;     /* a group-commit fsync is in flight */
   uint8_t    writer[32];
 } seg_t;
 
 struct ngs {
   const ngs__vfs *vfs;
   ngs__mutex *mu;
+  ngs__cond  *cv;          /* writers wait here for their turn and for a flush */
+  int         rotating;    /* a writer is closing the active segment: reserve nothing */
   char       *dir;
   int32_t     flags;
   int         state_rc;    /* nonzero: open failed, or a write left the log unsafe */
@@ -381,7 +385,7 @@ static int add_seg(ngs *db, uint32_t no, ngs__file *f, uint64_t size, const uint
   seg_t *s;
   if ((rc = grow((void **)&db->segs, &db->cap_segs, db->n_segs + 1, sizeof *db->segs))) return rc;
   s = &db->segs[db->n_segs++];
-  s->no = no; s->f = f; s->size = size; s->synced = size;
+  s->no = no; s->f = f; s->size = size; s->written = size; s->synced = size; s->syncing = 0;
   memcpy(s->writer, writer, 32);
   return NGS_OK;
 }
@@ -496,14 +500,14 @@ static int replay_seg(ngs *db, uint32_t si, int last, int writable) {
     ** record-free segment */
     if (last && n < SEG_HDR + REC_OVERHEAD) {
       free(b);
-      if (!writable) { s->size = s->synced = SEG_HDR; return NGS_OK; }
+      if (!writable) { s->size = s->written = s->synced = SEG_HDR; return NGS_OK; }
       if ((rc = db->vfs->truncate(s->f, 0)) == 0) {
         uint8_t h[SEG_HDR];
         seg_header(h, db->n_facts, db->pub);
         if ((rc = db->vfs->pwrite(s->f, h, SEG_HDR, 0)) == 0) rc = db->vfs->sync(s->f);
         memcpy(s->writer, db->pub, 32);
       }
-      s->size = s->synced = SEG_HDR;
+      s->size = s->written = s->synced = SEG_HDR;
       return rc;
     }
     free(b);
@@ -578,7 +582,7 @@ static int replay_seg(ngs *db, uint32_t si, int last, int writable) {
     }
     n = cut;
   }
-  s->size = s->synced = n;
+  s->size = s->written = s->synced = n;
 out:
   free(pend);
   free(b);
@@ -671,7 +675,7 @@ NGS_API int ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out) {
   db->flags = o.flags;
   db->seg_bytes = o.segment_bytes ? o.segment_bytes : (uint64_t)64 << 20;
   if (db->seg_bytes < 4096) db->seg_bytes = 4096;
-  if ((rc = ngs__mutex_new(&db->mu))) { db->state_rc = rc; return rc; }
+  if ((rc = ngs__mutex_new(&db->mu)) || (rc = ngs__cond_new(&db->cv))) { db->state_rc = rc; return rc; }
   db->dir = (char *)malloc(strlen(dir) + 1);
   if (!db->dir) { db->state_rc = NGS_NOMEM; return NGS_NOMEM; }
   strcpy(db->dir, dir);
@@ -736,7 +740,7 @@ NGS_API int ngs_close(ngs *db) {
   if (!db) return NGS_OK;
   for (i = 0; i < db->n_segs; i++) {
     if (db->segs[i].f) {
-      if (db->segs[i].synced < db->segs[i].size && !db->state_rc) {
+      if (db->segs[i].synced < db->segs[i].written && !db->state_rc) {
         r = db->vfs->sync(db->segs[i].f);
         if (r && !rc) rc = r;
       }
@@ -748,6 +752,7 @@ NGS_API int ngs_close(ngs *db) {
   ngs__wipe(db->seed, sizeof db->seed);
   free(db->chains); free(db->segs); free(db->facts); free(db->slots); free(db->dir);
   ngs__mutex_free(db->mu);
+  ngs__cond_free(db->cv);
   s = slot_for(db, 0);
   if (s) { s->db = NULL; s->msg[0] = 0; }
   free(db);
@@ -767,9 +772,9 @@ static int sync_active(ngs *db) {
   int rc;
   if (!db->n_segs) return NGS_OK;
   s = &db->segs[db->n_segs - 1];
-  if (s->synced == s->size) return NGS_OK;
-  if ((rc = db->vfs->sync(s->f))) { db->state_rc = NGS_IOERR; return fail(db, rc, "fsync failed; the handle is now read-only"); }
-  s->synced = s->size;
+  if (s->synced >= s->written) return NGS_OK;
+  if ((rc = db->vfs->sync(s->f))) { db->state_rc = NGS_IOERR; ngs__cond_broadcast(db->cv); return fail(db, rc, "fsync failed; the handle is now read-only"); }
+  s->synced = s->written;
   return NGS_OK;
 }
 
@@ -874,113 +879,181 @@ static void encode_fields(ngs__buf *o, const ngs_fact_in *in, const uint8_t writ
   }
 }
 
-typedef struct { ngs_id id; long chain; uint64_t seq; uint64_t off; uint32_t len; ngs_time t_record; } staged_t;
+/* ---- write path: reserve, sign in parallel, write in order, share fsyncs ----
+** 1. Under the lock (about 10 us per fact): assign t_record, seq and prev,
+**    encode, hash the id, and reserve the record's bytes at the end of the
+**    log. The chain state advances here, so the next writer chains to us.
+** 2. Without the lock: Ed25519-sign each id (the slow part) and finish the
+**    CRC. The signature is a fixed 64 bytes and not part of the id, so the
+**    reservation is exact and many threads sign at once.
+** 3. Under the lock, in reservation order: pwrite, then publish to the index
+**    (so the index stays in log order and readers never see unwritten bytes).
+** 4. Group commit: the first waiter whose bytes are not durable becomes the
+**    leader and fsyncs everything written so far, with the lock released;
+**    the others wait for that flush instead of issuing their own. */
+typedef struct { ngs_id id; long chain; uint64_t seq; uint64_t off; uint32_t len; ngs_time t_record; size_t rec_start, sig_pos; } staged_t;
 
-static int remember_locked(ngs *db, const ngs_fact_in *src, size_t n, int32_t flags, ngs_id *out_ids) {
+static int wait_turn(ngs *db, uint32_t si, uint64_t base) {
+  while (!db->state_rc && db->segs[si].written != base) ngs__cond_wait(db->cv, db->mu);
+  return db->state_rc;
+}
+
+static int wait_durable(ngs *db, uint32_t si, uint64_t end) {
+  while (!db->state_rc && db->segs[si].synced < end) {
+    seg_t *s = &db->segs[si];
+    if (!s->syncing) {
+      uint64_t upto = s->written;
+      ngs__file *f = s->f;
+      int rc;
+      s->syncing = 1;
+      ngs__mutex_unlock(db->mu);
+      rc = db->vfs->sync(f);
+      ngs__mutex_lock(db->mu);
+      s = &db->segs[si];                       /* segs may have been reallocated */
+      s->syncing = 0;
+      if (rc) { db->state_rc = NGS_IOERR; ngs__cond_broadcast(db->cv); return fail(db, rc, "fsync failed; the handle is now read-only"); }
+      if (upto > s->synced) s->synced = upto;
+      ngs__cond_broadcast(db->cv);
+    } else {
+      ngs__cond_wait(db->cv, db->mu);
+    }
+  }
+  return db->state_rc;
+}
+
+NGS_API int ngs_remember_many(ngs *db, const ngs_fact_in *src, size_t n, int32_t flags, ngs_id *out_ids) {
   ngs__buf rec = {0, 0, 0, 0}, fields = {0, 0, 0, 0};
   staged_t *st = NULL;
   ngs_fact_in in;
   size_t i, k;
   int rc = NGS_OK;
-  seg_t *s;
-  uint64_t base, synced_upto;
+  uint32_t si;
+  uint64_t base, synced_upto, end;
   ngs_time now;
+  if (!db || (!src && n)) return NGS_MISUSE;
+  if (db->state_rc) return db->state_rc;
+  if (flags & ~NGS_WRITE_NO_SYNC) return fail(db, NGS_MISUSE, "unknown write flags");
+  clear_err(db);
   if (!db->have_key || !(db->flags & NGS_OPEN_READWRITE)) return fail(db, NGS_MISUSE, "handle is read-only");
   if (n == 0) return NGS_OK;
   if (n > SIZE_MAX / sizeof *st) return NGS_NOMEM;
   for (i = 0; i < n; i++) if ((rc = validate_in(db, &src[i], &in))) return rc;
   st = (staged_t *)calloc(n, sizeof *st);
   if (!st) return NGS_NOMEM;
-  s = &db->segs[db->n_segs - 1];
-  if (s->size > SEG_HDR && s->size >= db->seg_bytes) {
-    if ((rc = sync_active(db)) || (rc = seg_rotate(db))) goto out;
-    s = &db->segs[db->n_segs - 1];
+
+  /* ---- 1. reserve ---- */
+  ngs__mutex_lock(db->mu);
+  if (db->state_rc) { rc = db->state_rc; goto unlock_out; }
+  for (;;) {
+    seg_t *s = &db->segs[db->n_segs - 1];
+    if (db->state_rc) { rc = db->state_rc; goto unlock_out; }
+    if (db->rotating) { ngs__cond_wait(db->cv, db->mu); continue; }
+    if (s->size > SEG_HDR && s->size >= db->seg_bytes) {
+      /* Freeze the segment (nobody reserves while `rotating`), wait until
+      ** every reserved byte is written, make it durable, then open the next.
+      ** wait_turn releases the lock, which is why the freeze is needed. */
+      si = (uint32_t)(db->n_segs - 1);
+      db->rotating = 1;
+      rc = wait_turn(db, si, db->segs[si].size);
+      if (rc == 0 && (rc = sync_active(db)) == 0) rc = seg_rotate(db);
+      db->rotating = 0;
+      ngs__cond_broadcast(db->cv);
+      if (rc) goto unlock_out;
+      continue;
+    }
+    break;
   }
-  base = s->size;
-  synced_upto = s->synced;
+  si = (uint32_t)(db->n_segs - 1);
+  base = db->segs[si].size;
+  synced_upto = db->segs[si].synced;
   now = wall_us();
   for (i = 0; i < n; i++) {
     ngs_time t_record, t_event, valid_from;
     uint64_t seq;
     const uint8_t *prev;
-    uint8_t sig[64], hdr[5], crcb[4];
+    uint8_t zsig[64], hdr[5], crcb[4];
     long ck;
     size_t start;
-    uint32_t crc;
     validate_in(db, &src[i], &in);
-    /* t_record: the engine clock, strictly increasing per writer */
-    t_record = now > db->last_t_record ? now : db->last_t_record + 1;
-    db->last_t_record = t_record;     /* stays monotonic even if this write fails */
+    t_record = now > db->last_t_record ? now : db->last_t_record + 1;   /* engine clock, strictly increasing */
+    db->last_t_record = t_record;
     t_event = in.t_event == NGS_TIME_NOW ? t_record : in.t_event;
     valid_from = in.valid_from == NGS_TIME_NOW ? t_event : in.valid_from;
     ck = chain_get(db, db->pub, in.ns.p, in.ns.n);
-    if (ck < 0) { rc = NGS_NOMEM; goto out; }
+    if (ck < 0) { rc = NGS_NOMEM; goto unlock_out; }
     seq = db->chains[ck].seq + 1;
     prev = db->chains[ck].last.b;
     for (k = i; k > 0; k--) if (st[k - 1].chain == ck) { seq = st[k - 1].seq + 1; prev = st[k - 1].id.b; break; }
     fields.n = 0;
     encode_fields(&fields, &in, db->pub, seq, prev, t_event, t_record, valid_from);
-    if (fields.oom) { rc = NGS_NOMEM; goto out; }
+    if (fields.oom) { rc = NGS_NOMEM; goto unlock_out; }
     ngs__blake3_hash(fields.p, fields.n, st[i].id.b);
-    ngs__ed25519_sign(sig, st[i].id.b, 32, db->seed, db->pub);
-    /* record: len | type | payload | crc */
+    memset(zsig, 0, sizeof zsig);
     start = rec.n;
-    ngs__buf_put(&rec, hdr, 5);                 /* patched below */
+    memset(hdr, 0, sizeof hdr);
+    ngs__buf_put(&rec, hdr, 5);                         /* len | type, patched below */
     ngs__cbor_head(&rec, 4, 5);
     ngs__buf_put(&rec, fields.p, fields.n);
-    ngs__cbor_bytes(&rec, sig, 64);
+    ngs__cbor_head(&rec, 2, 64);
+    st[i].sig_pos = rec.n;                              /* signature lands here in step 2 */
+    ngs__buf_put(&rec, zsig, 64);
     ngs__cbor_bytes(&rec, in.body.p, in.body.n);
     ngs__cbor_uint(&rec, (uint64_t)(n - 1 - i));
     ngs__cbor_uint(&rec, synced_upto);
-    if (rec.oom) { rc = NGS_NOMEM; goto out; }
-    if (rec.n - start - 5 > 0xffffffffu - REC_OVERHEAD) { rc = fail(db, NGS_TOOBIG, "record too large"); goto out; }
+    if (rec.oom) { rc = NGS_NOMEM; goto unlock_out; }
+    if (rec.n - start - 5 > 0xffffffffu - REC_OVERHEAD) { rc = fail(db, NGS_TOOBIG, "record too large"); goto unlock_out; }
     put_le(rec.p + start, (uint64_t)(rec.n - start - 5), 4);
     rec.p[start + 4] = REC_FACT;
-    crc = ngs__crc32c(0, rec.p + start + 4, rec.n - start - 4);
-    put_le(crcb, crc, 4);
-    ngs__buf_put(&rec, crcb, 4);
-    if (rec.oom) { rc = NGS_NOMEM; goto out; }
-    st[i].chain = ck; st[i].seq = seq; st[i].off = base + start;
+    memset(crcb, 0, sizeof crcb);
+    ngs__buf_put(&rec, crcb, 4);                        /* CRC, patched in step 2 */
+    if (rec.oom) { rc = NGS_NOMEM; goto unlock_out; }
+    st[i].chain = ck; st[i].seq = seq; st[i].off = base + start; st[i].rec_start = start;
     st[i].len = (uint32_t)(rec.n - start); st[i].t_record = t_record;
   }
-  /* one write for the whole batch, then the sync that makes it durable */
-  rc = db->vfs->pwrite(s->f, rec.p, rec.n, base);
-  if (rc == 0 && !(flags & NGS_WRITE_NO_SYNC)) rc = db->vfs->sync(s->f);
-  if (rc) {
-    /* Nothing was acknowledged. Cut the partial write back off so the log
-    ** stays a clean prefix; if even that fails the handle stops writing. */
-    if (db->vfs->truncate(s->f, base) != 0) db->state_rc = NGS_IOERR;
-    rc = fail(db, rc, "write or fsync failed; nothing from this call was committed");
-    goto out;
+  for (i = 0; i < n; i++) {                             /* the next writer chains to these */
+    db->chains[st[i].chain].seq = st[i].seq;
+    db->chains[st[i].chain].last = st[i].id;
   }
-  s->size = base + rec.n;
-  if (!(flags & NGS_WRITE_NO_SYNC)) s->synced = s->size;
+  db->segs[si].size = base + rec.n;
+  end = base + rec.n;
+  ngs__mutex_unlock(db->mu);
+
+  /* ---- 2. sign and checksum, in parallel with other writers ---- */
+  for (i = 0; i < n; i++) {
+    size_t a = st[i].rec_start, len = st[i].len;
+    ngs__ed25519_sign(rec.p + st[i].sig_pos, st[i].id.b, 32, db->seed, db->pub);
+    put_le(rec.p + a + len - 4, ngs__crc32c(0, rec.p + a + 4, len - 8), 4);
+  }
+
+  /* ---- 3. write in reservation order, publish ---- */
+  ngs__mutex_lock(db->mu);
+  if ((rc = wait_turn(db, si, base))) goto unlock_out;
+  if ((rc = db->vfs->pwrite(db->segs[si].f, rec.p, rec.n, base))) {
+    /* nothing after us is written yet (writes go in order), so cutting back
+    ** to our start leaves a clean prefix; the handle stops writing either way */
+    db->vfs->truncate(db->segs[si].f, base);
+    db->state_rc = NGS_IOERR;
+    ngs__cond_broadcast(db->cv);
+    rc = fail(db, rc, "write failed; nothing from this call was committed");
+    goto unlock_out;
+  }
+  db->segs[si].written = end;
   for (i = 0; i < n; i++) {
     fact_ref r;
-    chain_t *c = &db->chains[st[i].chain];
-    c->seq = st[i].seq;
-    c->last = st[i].id;
-    r.id = st[i].id; r.seg = (uint32_t)(db->n_segs - 1); r.off = st[i].off; r.len = st[i].len;
+    r.id = st[i].id; r.seg = si; r.off = st[i].off; r.len = st[i].len;
     r.t_record = st[i].t_record; r.chain = (uint32_t)st[i].chain;
-    if ((rc = idx_add(db, &r))) { db->state_rc = rc; goto out; }
-    if (out_ids) out_ids[i] = st[i].id;
+    if ((rc = idx_add(db, &r))) { db->state_rc = rc; ngs__cond_broadcast(db->cv); goto unlock_out; }
   }
-out:
+  ngs__cond_broadcast(db->cv);
+
+  /* ---- 4. group commit ---- */
+  if (!(flags & NGS_WRITE_NO_SYNC) && (rc = wait_durable(db, si, end))) goto unlock_out;
+  if (out_ids) for (i = 0; i < n; i++) out_ids[i] = st[i].id;
+unlock_out:
+  ngs__mutex_unlock(db->mu);
   ngs__buf_free(&rec);
   ngs__buf_free(&fields);
   free(st);
-  return rc;
-}
-
-NGS_API int ngs_remember_many(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags, ngs_id *out_ids) {
-  int rc;
-  if (!db || (!in && n)) return NGS_MISUSE;
-  if (db->state_rc) return db->state_rc;
-  if (flags & ~NGS_WRITE_NO_SYNC) return fail(db, NGS_MISUSE, "unknown write flags");
-  ngs__mutex_lock(db->mu);
-  clear_err(db);
-  rc = remember_locked(db, in, n, flags, out_ids);
-  ngs__mutex_unlock(db->mu);
   return rc;
 }
 
