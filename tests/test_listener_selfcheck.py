@@ -61,3 +61,49 @@ def test_probe_listener_real_socket():
     finally:
         srv.close()
     assert node_app._probe_listener(port) is False
+
+
+def _probe_false(monkeypatch):
+    monkeypatch.setenv("NGS_PORT", "4444")
+    monkeypatch.setenv("NOUGEN_LISTENER_SELFCHECK_S", "0.02")
+    monkeypatch.setenv("NOUGEN_LISTENER_SELFCHECK_FAILS", "3")
+    monkeypatch.setattr(node_app, "_probe_listener", lambda port, timeout_s=2.0: False)
+
+
+def test_refusals_during_warmup_are_not_counted(monkeypatch):
+    """Blade 2026-11-22: the boot vector-cache build pegged the CPU, the self-connect
+    timed out 3x, and the node killed itself mid-warm-up. While warming, don't count."""
+    _reset(monkeypatch)
+    _probe_false(monkeypatch)
+    monkeypatch.setenv("NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S", "60")
+    monkeypatch.setattr(node_app, "_WARMUP_STATE", {"status": "warming"})
+    exits = []
+    node_app._start_listener_selfcheck(exit_fn=exits.append)
+    time.sleep(0.3)
+    st = node_app.listener_selfcheck_status()
+    assert exits == [] and st["consecutive_failures"] == 0 and st["deferred_during_warmup"] >= 3
+
+
+def test_grace_expires_then_dead_listener_still_exits(monkeypatch):
+    _reset(monkeypatch)
+    _probe_false(monkeypatch)
+    monkeypatch.setenv("NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S", "0.05")
+    monkeypatch.setattr(node_app, "_WARMUP_STATE", {"status": "warming"})
+    exits = []
+    node_app._start_listener_selfcheck(exit_fn=exits.append)
+    t0 = time.monotonic()
+    while not exits and time.monotonic() - t0 < 3:
+        time.sleep(0.01)
+    assert exits == [3]
+
+
+def test_after_warmup_refusals_count_again(monkeypatch):
+    _reset(monkeypatch)
+    _probe_false(monkeypatch)
+    monkeypatch.setattr(node_app, "_WARMUP_STATE", {"status": "warm"})
+    exits = []
+    node_app._start_listener_selfcheck(exit_fn=exits.append)
+    t0 = time.monotonic()
+    while not exits and time.monotonic() - t0 < 3:
+        time.sleep(0.01)
+    assert exits == [3]

@@ -89,8 +89,12 @@ def test_machine_conflict_still_recorded_alongside_origin(on_node):
     assert env["original_sender"] == "nougen-phoebus"
 
 
-def test_session_identity_is_still_not_invented(on_node):
-    """Stamping the sender must not fake a session id."""
+def test_session_identity_is_still_not_invented(on_node, monkeypatch, tmp_path):
+    """Stamping the sender must not fake a session id: with no env or registry
+    naming one, it stays unknown (runtime discovery never guesses)."""
+    for var in ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID", "NOUGEN_SESSION_TITLE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NOUGEN_CLAUDE_SESSIONS_DIR", str(tmp_path))
     on_node("whoart")
     env = NouGenMsgBus._origin_envelope({})
     assert env["session_id"] is None

@@ -24,20 +24,20 @@ Computed by `evals/destiny10_audit.py` from `evals/results/destiny_bench_*.json`
 | prompt_only | 3 | 100-100 | 1729-1732 |
 | shards_first | 3 | 100-100 | 337-343 |
 
-## Rescue and Harm (per task count, shards_first vs each control)
+## Rescue and Harm (shards_first vs each control)
 
-Counts are derived from done totals because both controls and shards_first run the same 100 tasks.
+Exact when both runs stored `done_goals`; otherwise a lower bound from done totals (same 100 tasks in every arm).
 
-| Seed | vs | Rescue (fails there, passes shards_first) | Harm (passes there, fails shards_first) |
-|---|---|---|---|
-| 1085 | no_memory | at least 100 | at least 0 |
-| 1085 | prompt_only | at least 0 | at least 0 |
-| 1086 | no_memory | at least 100 | at least 0 |
-| 1086 | prompt_only | at least 0 | at least 0 |
-| 1087 | no_memory | at least 100 | at least 0 |
-| 1087 | prompt_only | at least 0 | at least 0 |
+| Seed | vs | Rescue (fails there, passes shards_first) | Harm (passes there, fails shards_first) | Basis |
+|---|---|---|---|---|
+| 1085 | no_memory | at least 100 | at least 0 | bound from totals |
+| 1085 | prompt_only | at least 0 | at least 0 | bound from totals |
+| 1086 | no_memory | at least 100 | at least 0 | bound from totals |
+| 1086 | prompt_only | at least 0 | at least 0 | bound from totals |
+| 1087 | no_memory | at least 100 | at least 0 | bound from totals |
+| 1087 | prompt_only | at least 0 | at least 0 | bound from totals |
 
-Per-task outcomes were not stored, so these are lower bounds from totals. Equal totals do not rule out offsetting rescue and harm.
+Rows marked 'bound from totals' predate per-task storage. Equal totals do not rule out offsetting rescue and harm; rerun those arms to make them exact.
 
 ## Required events
 

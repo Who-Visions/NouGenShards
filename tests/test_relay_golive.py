@@ -102,7 +102,7 @@ def test_release_predating_merge_is_reported():
 
 
 def test_newer_release_means_bump():
-    rel = [{"tagName": "supervisor-v1.3.2", "isDraft": False}, {"tagName": "supervisor-v1.4.0", "isDraft": False}]
+    rel = [{"tagName": "supervisor-v1.3.2", "isDraft": False}, {"tagName": "supervisor-v99.0.0", "isDraft": False}]
     rc, lines = run(FakeRun(releases=rel))
     assert "BUMP NEEDED" in lines[2]
 

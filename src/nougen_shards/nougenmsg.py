@@ -24,14 +24,19 @@ from . import target_resolver
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-_SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
+# First match wins. Each coding agent sets its own id in its own process;
+# NOUGEN_SESSION / NOUGEN_SESSION_ID override for any other harness.
+_SESSION_VARS = ("NOUGEN_SESSION", "NOUGEN_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
+                 "CODEX_SESSION_ID", "CODEX_THREAD_ID", "GEMINI_SESSION_ID",
+                 "ANTIGRAVITY_SESSION_ID")
 
 
 def resolve_session() -> str:
     """Which SESSION on this lane is speaking, or "" when nothing knows.
 
-    A NouGenMsg payload names a BOX at best (get_current_node's three-way
-    hardcoded branch) and a connector's own label at worst. Several sessions
+    A NouGenMsg payload names a BOX at best (whatever get_current_node
+    resolves from the local fleet_hosts.json and the hostname) and a
+    connector's own label at worst. Several sessions
     run on one box under one lane name, so a message can be delivered and
     credited to the wrong writer with nothing in the record to catch it.
     Measured on blade 2026-09-08: 124 relay legs under a single byline in one
@@ -49,12 +54,60 @@ def resolve_session() -> str:
     return ""
 
 
+def resolve_session_title(session_id: str = "") -> str:
+    """The human title of this session, or "" when nothing knows it.
+
+    Order: NOUGEN_SESSION_TITLE, then the Claude Code session registry entry
+    for `session_id` (~/.claude/sessions/*.json, field "name"), then the
+    NouGen cc_sessions registry entry (field "title" or "name"). Never invents
+    a title: an unknown session stays "" so the label falls back to sid8.
+    """
+    if _tenant_scope():
+        # A tenant request must never read the owner's session-title env, the
+        # owner's ~/.claude/sessions, or the owner's cc_sessions registry.
+        return ""
+    env = os.environ.get("NOUGEN_SESSION_TITLE", "").strip()
+    if env:
+        return env
+    sid = (session_id or resolve_session()).strip()
+    if not sid:
+        return ""
+    base = os.environ.get("NOUGEN_CLAUDE_SESSIONS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude", "sessions")
+    for path in sorted(glob.glob(os.path.join(base, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and str(data.get("sessionId") or "") == sid:
+            name = str(data.get("name") or data.get("title") or "").strip()
+            if name:
+                return name
+    try:
+        reg_path = os.environ.get("NOUGEN_CC_SESSIONS") or os.path.join(_home(), "cc_sessions.json")
+        with open(reg_path, encoding="utf-8") as fh:
+            reg = json.load(fh)
+        sessions = reg.get("sessions") if isinstance(reg.get("sessions"), dict) else reg
+        for key, entry in (sessions or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            if sid in (key, str(entry.get("session_id") or ""), str(entry.get("sessionId") or "")):
+                name = str(entry.get("title") or entry.get("name") or "").strip()
+                if name:
+                    return name
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ""
+
+
 def resolve_origin_host() -> str:
     """The physical box this message was written on, regardless of its label.
 
-    Deliberately NOT get_current_node(): that returns one of three hardcoded
-    names, and a connector-written message inherits whichever branch happens
-    to fire rather than saying where it actually ran. This asks the OS.
+    Deliberately NOT get_current_node(): that resolves a fleet label from
+    the local fleet_hosts.json / hostname match, and a connector-written
+    message inherits that label rather than saying where it actually ran.
+    This asks the OS.
     Named `origin_host` because `origin` already means the original-sender
     routing block in this payload shape, and overloading it would silently
     change meaning for every existing consumer.
@@ -403,13 +456,23 @@ def display_sender(origin: Optional[Dict[str, Any]] = None) -> str:
     origin = origin or {}
     sender = str(origin.get("original_sender") or "").strip()
     machine = str(origin.get("machine") or "").strip()
+    if machine.lower() == "unknown":
+        # An unstamped machine is absence, not a name: never print it as a
+        # prefix ("unknown/claude-app/..."). The tag below says so instead.
+        machine = ""
     if sender and machine and machine not in sender:
         sender = f"{machine}/{sender}"
     label = sender or machine
     if label:
+        if not machine:
+            label = f"{label} (machine unstamped)"
+        sid = str(origin.get("session_id") or "").strip()
+        who = str(origin.get("session_title") or "").strip() or (sid[:8] if sid else "")
+        if who:
+            label = f"{label} · {who}"
         mid = str(origin.get("machine_id") or "").strip()
         if mid and mid != "unknown":
-            label = f"{label} [{mid}]"
+            label = f"{label} [{mid[:8]}]"
         # Envelopes are unsigned: only a sender this process stamped itself is
         # shown as fact. Everything else is a claim and says so, until a
         # signature check can mark it verified.
@@ -966,9 +1029,79 @@ class AgentPinger:
     # whoart's card is 6141 MiB. The qat build fits at 4.34 GB and is why
     # CLAUDE.md Rule 0.5.1 pins it as the resident local lane; plain e2b is
     # 7.16 GB and does NOT fit, so a fleet-wide "gemma4:e2b" default points
-    # whoart at a model a gigabyte larger than its VRAM.
-    _OLLAMA_DEFAULTS = {"whoart": "gemma4:e2b-qat"}
+    # whoart at a model a gigabyte larger than its VRAM. A hard-coded
+    # per-machine map rots exactly as fast as the tags do, so the default is
+    # DISCOVERED from the serving node's own /api/tags at call time (below):
+    # no machine names, only the node's live inventory.
     _OLLAMA_FALLBACK = "gemma4:e2b"
+    # e2b-class = the model's tag carries an e2b segment (gemma4:e2b,
+    # gemma4:e2b-qat, solai:e2b, ...). A name pattern, never a machine name.
+    _E2B_CLASS = re.compile(r"(?:^|:)e2b(?:[-:.]|$)")
+
+    @staticmethod
+    def _ollama_installed(node: str, is_local: bool) -> List[Dict[str, Any]]:
+        """The serving node's /api/tags model entries, or [] when it cannot
+        be asked. Local: the discovered client URL (ollama_host), the same
+        resolution ping_ollama dials. Remote: ssh + curl against the node's
+        own loopback, the same transport ping_ollama uses for its remote
+        /api/generate. Any failure reads as "no tags" and the caller falls
+        back -- discovery must never break the ping path.
+        """
+        try:
+            if is_local:
+                base = "http://127.0.0.1:11434"
+                try:
+                    from .ollama_host import discover_ollama_url  # pylint: disable=import-outside-toplevel
+                    base = discover_ollama_url() or base
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                req = urllib.request.Request(base.rstrip("/") + "/api/tags")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    data = json.loads(r.read().decode())
+            else:
+                res = subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                     "--", node, "curl -sS -m 5 http://127.0.0.1:11434/api/tags"],
+                    creationflags=_NO_WINDOW,
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                )
+                data = json.loads(res.stdout)
+            models = data.get("models")
+            return models if isinstance(models, list) else []
+        except Exception:  # pylint: disable=broad-except
+            return []
+
+    @staticmethod
+    def _discover_ollama_model(node: str, is_local: bool) -> Optional[str]:
+        """The serving node's own e2b-class chat model, from its live tags.
+
+        The stock family (the fallback's family) wins first; within a tier a
+        quantized (qat) build wins, then the smallest build -- the
+        constrained card is the whole reason the tags diverged, and the qat
+        build is the one that fits it. Returns None when the node holds no
+        e2b-class tag, leaving the fallback to speak for it.
+        """
+        stock_family = AgentPinger._OLLAMA_FALLBACK.split(":", 1)[0]
+        candidates: List[Tuple[int, int, float, str]] = []
+        for entry in AgentPinger._ollama_installed(node, is_local):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name or not AgentPinger._E2B_CLASS.search(name):
+                continue
+            try:
+                size = float(entry.get("size") or 0) or float("inf")
+            except (TypeError, ValueError):
+                size = float("inf")
+            family, _, tag = name.partition(":")
+            tier = 0 if family == stock_family else 1
+            qat_rank = 0 if "qat" in tag else 1
+            candidates.append((tier, qat_rank, size, name))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][3]
 
     @staticmethod
     def _default_ollama_model(node: str) -> str:
@@ -976,15 +1109,73 @@ class AgentPinger:
         that will actually serve this request.
 
         A single fleet-wide default cannot be correct: the nodes hold
-        different tags, and whoart's 6141 MiB card only fits the quantized
-        build. Key off the serving machine instead.
+        different tags, and a constrained card only fits the quantized
+        build. Resolution: NOUGEN_LOCAL_E2B_MODEL (this box's own slot
+        build, local targets only) -> the serving node's live /api/tags
+        (see _discover_ollama_model) -> _OLLAMA_FALLBACK when the node
+        cannot be asked. Keyed off the serving machine's inventory, never
+        off a machine name.
         """
         current = get_current_node()
         is_local = node in ("local", "", None, current)
+        if is_local:
+            # The slot names a tag on THIS box; a remote node may not hold it.
+            slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL")
+            if slot:
+                return slot
         machine = current if is_local else node
-        # The slot names a tag on THIS box; a remote node may not hold it.
-        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
+        key = str(machine or "local")
+        hit = AgentPinger._PICK_CACHE.get(key)
+        if hit and time.monotonic() - hit[1] < AgentPinger._PICK_TTL_S:
+            return hit[0]
+        picked = AgentPinger._discover_ollama_model(machine, is_local)
+        if picked:
+            AgentPinger._PICK_CACHE[key] = (picked, time.monotonic())
+            AgentPinger._remember_pick(key, picked)
+            return picked
+        # Discovery failed (ssh down, node asleep) or found no e2b tag. The
+        # last model this node actually served is still the right size for
+        # its card; the generic fallback is only for a node never reached.
+        return AgentPinger._last_good_pick(key) or AgentPinger._OLLAMA_FALLBACK
+
+    # A remote pick costs an ssh round trip; tags change rarely.
+    _PICK_TTL_S = 300.0
+    _PICK_CACHE: Dict[str, Tuple[str, float]] = {}
+
+    @staticmethod
+    def _pick_file() -> Path:
+        # Always the user's ~/.nougen, never NOUGEN_HOME: on some nodes that
+        # points at a repo checkout, and this file must not land in a tree.
+        override = os.environ.get("NOUGEN_OLLAMA_PICKS_FILE")
+        return Path(override) if override else Path.home() / ".nougen" / "ollama_default_picks.json"
+
+    @staticmethod
+    def _last_good_pick(key: str) -> Optional[str]:
+        try:
+            v = json.loads(AgentPinger._pick_file().read_text(encoding="utf-8")).get(key)
+            return v if isinstance(v, str) and v else None
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    @staticmethod
+    def _remember_pick(key: str, model: str) -> None:
+        try:
+            f = AgentPinger._pick_file()
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:  # pylint: disable=broad-except
+                data = {}
+            if data.get(key) == model:
+                return
+            data[key] = model
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_name(f"{f.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, f)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,
@@ -1189,7 +1380,10 @@ class NouGenMsgBus:
         return path
 
     # Short lane names for sender labels ("blade-agy", not "blade-antigravity").
-    _LANE_ALIASES = {"antigravity": "agy", "claude-code": "claude", "claude-cli": "claude"}
+    _LANE_ALIASES = {"antigravity": "agy", "claude-code": "claude"}
+    # Claude Code reports which surface it runs on; the lane keeps the split so a
+    # desktop-app session and a terminal session on one box stay distinguishable.
+    _ENTRYPOINT_LANES = (("desktop", "claude-app"), ("cli", "claude-cli"), ("sdk", "claude-sdk"))
 
     @classmethod
     def _sender_lane(cls, supplied: Dict[str, Any]) -> Optional[str]:
@@ -1200,7 +1394,8 @@ class NouGenMsgBus:
         Claude session as agy. No API-key guessing -- an unknown lane stays None."""
         lane = (supplied.get("lane") or os.environ.get("NOUGEN_LANE") or "").strip().lower()
         if not lane and (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT")):
-            lane = "claude"
+            entry = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").strip().lower()
+            lane = next((name for key, name in cls._ENTRYPOINT_LANES if key in entry), "claude")
         lane = lane or (os.environ.get("NOUGEN_AGENT") or "").strip().lower()
         if lane.startswith("nougen-"):
             lane = lane[len("nougen-"):]
@@ -1277,10 +1472,17 @@ class NouGenMsgBus:
                 conflicts.append({"field": "machine", "claimed": claimed_machine,
                                   "transport_observed": sender_machine})
         session_id = supplied.get("session_id")
+        session_title = supplied.get("session_title")
+        if not forwarded and not _tenant_scope():
+            # This process is the origin: discover who is speaking instead of
+            # waiting to be told. A forwarded envelope keeps its upstream
+            # session fields untouched; the receiver never stamps its own.
+            session_id = session_id or resolve_session() or None
+            session_title = session_title or (resolve_session_title(session_id or "") or None)
         return {
             "id": supplied.get("id"),
             "session_id": session_id,
-            "session_title": supplied.get("session_title"),
+            "session_title": session_title,
             "machine": sender_machine,
             "machine_id": sender_id,
             "node_source": None if forwarded else ident["node_source"],
@@ -1482,7 +1684,7 @@ class NouGenMsgBus:
 
     _REMOTE_SCRIPTS = {
         "blade": "python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py",
-        "whoart": "python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py",
+        "whoart": "python %USERPROFILE%/.nougen/src/nougenshards/tools/nougenmsg.py",
     }
     # A bare `python3` is a coin flip on a box with more than one interpreter.
     # phoebus has /usr/bin/python3 (3.9, numpy present) and

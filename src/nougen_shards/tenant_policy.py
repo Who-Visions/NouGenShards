@@ -73,6 +73,8 @@ OWNER_ONLY: frozenset[str] = frozenset({
     "mrsb_recall", "mrsb_recurse",
     # shared stores not yet bound to active_home() (see wargames/ledger.md)
     "arxiv_research", "arxiv_capabilities", "arxiv_radar", "arxiv_lab_watch", "arxiv_paper",
+    # Context7 docs lookup runs on the owner's Keymaker key (CONTEXT7_API_KEY)
+    "context7_search", "context7_resolve", "context7_docs", "context7_usage",
     "semantic_context_assemble", "context_task_checkpoint", "context_task_current",
     "context_feedback", "context_correct", "context_session_assemble",
     # host toolchains (lean, z3, benchmarks, RSI, control plane)
