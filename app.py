@@ -1102,6 +1102,12 @@ def _start_recall_warmup() -> None:
 _LISTENER_SELFCHECK_S_FALLBACK = 60.0
 _LISTENER_SELFCHECK_FAILS_FALLBACK = 3
 _LISTENER_SELFCHECK_EXIT_CODE = 3
+#: While the recall warm-up is running (status "warming"), refused self-checks
+#: are logged but not counted, for at most this many seconds. Blade 2026-11-22:
+#: the boot-time vector cache build pegged the CPU, the 2 s self-connect timed
+#: out three times, and the node os._exit(3)ed mid-warm-up with nothing to
+#: restart it. Env NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S wins; 0 disables.
+_LISTENER_SELFCHECK_WARMUP_GRACE_S_FALLBACK = 900.0
 _LISTENER_STATE: dict = {"status": "pending", "port": None, "consecutive_failures": 0, "checks": 0}
 
 
@@ -1129,6 +1135,16 @@ def listener_selfcheck_status() -> dict:
     return dict(_LISTENER_STATE)
 
 
+def _selfcheck_in_warmup_grace(grace_s: float, started: float) -> bool:
+    """True while a refused self-check should be forgiven: the recall warm-up
+    is actively running and the grace window since self-check start is open."""
+    if grace_s <= 0:
+        return False
+    if _WARMUP_STATE.get("status") != "warming":
+        return False
+    return (time.monotonic() - started) < grace_s
+
+
 def _start_listener_selfcheck(exit_fn=None) -> None:
     """Exit the process when our own accept loop is dead.
 
@@ -1148,7 +1164,10 @@ def _start_listener_selfcheck(exit_fn=None) -> None:
     fails_needed = _env_int("NOUGEN_LISTENER_SELFCHECK_FAILS", _LISTENER_SELFCHECK_FAILS_FALLBACK)
     _exit = exit_fn or os._exit  # pylint: disable=protected-access
     log = logging.getLogger(__name__)
-    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval, "fails_needed": fails_needed})
+    grace_s = _env_float("NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S", _LISTENER_SELFCHECK_WARMUP_GRACE_S_FALLBACK)
+    started = time.monotonic()
+    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval,
+                            "fails_needed": fails_needed, "warmup_grace_s": grace_s})
 
     def _run():
         # First probe only after one interval: the socket is not bound until
@@ -1159,6 +1178,11 @@ def _start_listener_selfcheck(exit_fn=None) -> None:
             _LISTENER_STATE["checks"] += 1
             if ok:
                 _LISTENER_STATE["consecutive_failures"] = 0
+                continue
+            if _selfcheck_in_warmup_grace(grace_s, started):
+                _LISTENER_STATE["deferred_during_warmup"] = _LISTENER_STATE.get("deferred_during_warmup", 0) + 1
+                log.warning("listener self-check: 127.0.0.1:%d refused during recall warm-up; "
+                            "not counted (grace %.0fs)", port, grace_s)
                 continue
             _LISTENER_STATE["consecutive_failures"] += 1
             log.warning("listener self-check: 127.0.0.1:%d refused (%d/%d)", port,
