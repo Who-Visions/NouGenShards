@@ -942,7 +942,22 @@ class AgentPinger:
     # per-machine map rots exactly as fast as the tags do, so the default is
     # DISCOVERED from the serving node's own /api/tags at call time (below):
     # no machine names, only the node's live inventory.
-    _OLLAMA_FALLBACK = "gemma4:e2b"
+    # The fallback speaks only when the serving node cannot be asked at all
+    # (discovery returned nothing). It names the QAT build: the plain e2b is
+    # 7.16 GB and does not fit the fleet's most constrained card (whoart,
+    # 6141 MiB), so defaulting to it aimed the weakest node at a model it
+    # cannot load. The qat build is the one tag class every e2b node can
+    # either serve or fail honestly on; discovery still wins whenever the
+    # node answers, so this only governs the unanswerable case.
+    _OLLAMA_FALLBACK = "gemma4:e2b-qat"
+    # Per-node /api/tags cache: discovery otherwise pays a full ssh round
+    # trip (up to the 10 s timeout) on EVERY ping. 60 s is short enough that
+    # a pulled model shows up within a minute, long enough to keep a burst
+    # of pings off the wire. Keyed by node name; values are (monotonic_ts,
+    # models list). Failures cache as [] too -- an unreachable node should
+    # not be re-probed per ping either.
+    _TAGS_TTL_S = 60.0
+    _tags_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
     # e2b-class = the model's tag carries an e2b segment (gemma4:e2b,
     # gemma4:e2b-qat, solai:e2b, ...). A name pattern, never a machine name.
     _E2B_CLASS = re.compile(r"(?:^|:)e2b(?:[-:.]|$)")
@@ -955,7 +970,15 @@ class AgentPinger:
         own loopback, the same transport ping_ollama uses for its remote
         /api/generate. Any failure reads as "no tags" and the caller falls
         back -- discovery must never break the ping path.
+
+        Results (including failures, as []) are cached per node for
+        _TAGS_TTL_S seconds: a burst of pings must not each pay an ssh
+        round trip to re-ask a question whose answer cannot have changed.
         """
+        cache_key = "local" if is_local else str(node)
+        hit = AgentPinger._tags_cache.get(cache_key)
+        if hit is not None and (time.monotonic() - hit[0]) < AgentPinger._TAGS_TTL_S:
+            return hit[1]
         try:
             if is_local:
                 base = "http://127.0.0.1:11434"
@@ -969,15 +992,19 @@ class AgentPinger:
                     data = json.loads(r.read().decode())
             else:
                 res = subprocess.run(
-                    ["ssh", "--", node, "curl -sS http://127.0.0.1:11434/api/tags"],
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                     "--", node, "curl -sS http://127.0.0.1:11434/api/tags"],
                     creationflags=_NO_WINDOW,
                     capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=10,
                 )
                 data = json.loads(res.stdout)
             models = data.get("models")
-            return models if isinstance(models, list) else []
+            result = models if isinstance(models, list) else []
+            AgentPinger._tags_cache[cache_key] = (time.monotonic(), result)
+            return result
         except Exception:  # pylint: disable=broad-except
+            AgentPinger._tags_cache[cache_key] = (time.monotonic(), [])
             return []
 
     @staticmethod

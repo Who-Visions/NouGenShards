@@ -94,6 +94,12 @@ def test_explicit_model_argument_still_wins(monkeypatch):
     assert not calls
 
 
-def test_unknown_node_falls_back_to_the_widely_present_tag(monkeypatch):
+def test_unknown_node_falls_back_to_the_tag_that_fits_the_smallest_card(monkeypatch):
+    # Doctrine reversed from "widely present" (gemma4:e2b): the plain e2b is
+    # 7.16 GB and cannot load on the fleet's 6141 MiB card at all, while the
+    # qat build (4.34 GB) is servable wherever an e2b-class model runs. The
+    # fallback only speaks when the node cannot be asked, so it must name
+    # the tag that fails nowhere on size.
     monkeypatch.setattr("nougen_shards.nougenmsg.get_current_node", lambda: "whoart")
-    assert AgentPinger._default_ollama_model("some-new-node") == "gemma4:e2b"
+    assert AgentPinger._default_ollama_model("some-new-node") == "gemma4:e2b-qat"
+
