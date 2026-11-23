@@ -165,6 +165,30 @@ pub const NGS_MARK_NOT_USED: i32 = 0;
 pub const NGS_MARK_USED: i32 = 1;
 
 #[repr(C)]
+pub struct ngs_head {
+    pub writer: ngs_pubkey,
+    pub ns: ngs_str,
+    pub seq: u64,
+}
+
+#[repr(C)]
+pub struct ngs_quarantine_entry {
+    pub id: ngs_id,
+    pub rc: i32,
+    pub reason: [c_char; 120],
+}
+
+#[repr(C)]
+pub struct ngs_sync_report {
+    pub size: u32,
+    pub applied: u64,
+    pub duplicates: u64,
+    pub quarantined: u64,
+    pub entries: *mut ngs_quarantine_entry,
+    pub n_entries: usize,
+}
+
+#[repr(C)]
 pub struct ngs_stats_t {
     pub size: u32,
     pub facts: u64,
@@ -1207,13 +1231,13 @@ pub unsafe extern "C" fn ngs_iter_close(it: *mut ngs_iter) {
 #[no_mangle]
 pub unsafe extern "C" fn ngs_verify(
     db: *mut ngs,
-    _ckpt: *const u8,
-    _len: usize,
+    ckpt: *const u8,
+    len: usize,
 ) -> c_int {
     if db.is_null() {
         return NGS_MISUSE;
     }
-    let mut g = match (*db).inner.lock() {
+    let g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1228,6 +1252,20 @@ pub unsafe extern "C" fn ngs_verify(
         ParseLogResult::Ok { facts, had_torn_tail, .. } => {
             if had_torn_tail || facts.len() != g.facts.len() {
                 return NGS_CORRUPT;
+            }
+            if !ckpt.is_null() && len > 0 {
+                if len != 44 {
+                    return NGS_CORRUPT;
+                }
+                let cslice = std::slice::from_raw_parts(ckpt, len);
+                if &cslice[0..4] != b"CKPT" {
+                    return NGS_CORRUPT;
+                }
+                let c_count = u64::from_le_bytes(cslice[4..12].try_into().unwrap()) as usize;
+                let c_id = &cslice[12..44];
+                if c_count != g.facts.len() || c_id != g.last_id.b {
+                    return NGS_CORRUPT;
+                }
             }
             NGS_OK
         }
@@ -1749,18 +1787,300 @@ unsafe fn recall_impl(
     NGS_OK
 }
 
-// ---------- Outside-M4 Stubs (clean NGS_MISUSE) ----------
+// ---------- M5: Redact, Grant, Checkpoint, Rebuild, Federation ----------
 #[no_mangle]
-pub extern "C" fn ngs_redact(_db: *mut ngs, _id: *const ngs_id, _reason: ngs_str) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_redact(db: *mut ngs, id: *const ngs_id, _reason: ngs_str) -> c_int {
+    if db.is_null() || id.is_null() {
+        return NGS_MISUSE;
+    }
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    if g.readonly {
+        return NGS_NOGRANT;
+    }
+    let idx = match g.index.get(&*id) {
+        Some(&i) => i,
+        None => return NGS_NOTFOUND,
+    };
+    g.facts[idx].body.clear();
+    g.facts[idx].redacted = 1;
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_grant(_db: *mut ngs, _ns: ngs_str, _writer: *const ngs_pubkey, _out: *mut ngs_id) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_grant(
+    db: *mut ngs,
+    ns: ngs_str,
+    writer: *const ngs_pubkey,
+    out_grant_id: *mut ngs_id,
+) -> c_int {
+    if db.is_null() || writer.is_null() {
+        return NGS_MISUSE;
+    }
+    let ns_bytes = match str_to_vec(ns) {
+        Ok(v) => v,
+        Err(rc) => return rc,
+    };
+    let g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    if g.readonly {
+        return NGS_NOGRANT;
+    }
+    let mut buf = Vec::with_capacity(64 + ns_bytes.len());
+    buf.extend_from_slice(b"NGS-GRANT-V1");
+    buf.extend_from_slice(&ns_bytes);
+    buf.extend_from_slice(&(*writer).b);
+    buf.extend_from_slice(&now_us().to_le_bytes());
+    if !out_grant_id.is_null() {
+        *out_grant_id = ngs_id { b: sha256(&buf) };
+    }
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_checkpoint(_db: *mut ngs, _ckpt: *mut *mut u8, _len: *mut usize) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_checkpoint(
+    db: *mut ngs,
+    ckpt: *mut *mut u8,
+    len: *mut usize,
+) -> c_int {
+    if db.is_null() || ckpt.is_null() || len.is_null() {
+        return NGS_MISUSE;
+    }
+    *ckpt = ptr::null_mut();
+    *len = 0;
+    let g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    let base = ngs_alloc_block(44);
+    if base.is_null() {
+        return NGS_NOMEM;
+    }
+    ptr::copy_nonoverlapping(b"CKPT".as_ptr(), base, 4);
+    ptr::copy_nonoverlapping((g.facts.len() as u64).to_le_bytes().as_ptr(), base.add(4), 8);
+    ptr::copy_nonoverlapping(g.last_id.b.as_ptr(), base.add(12), 32);
+    *ckpt = base;
+    *len = 44;
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_rebuild(_db: *mut ngs) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_rebuild(db: *mut ngs) -> c_int {
+    if db.is_null() {
+        return NGS_MISUSE;
+    }
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    g.index.clear();
+    for i in 0..g.facts.len() {
+        let id = g.facts[i].id;
+        g.index.insert(id, i);
+    }
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_heads(_db: *mut ngs, _heads: *mut *mut c_void, _n: *mut usize) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_heads(
+    db: *mut ngs,
+    heads: *mut *mut ngs_head,
+    n: *mut usize,
+) -> c_int {
+    if db.is_null() || heads.is_null() || n.is_null() {
+        return NGS_MISUSE;
+    }
+    *heads = ptr::null_mut();
+    *n = 0;
+    let g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    let mut map: HashMap<(ngs_pubkey, Vec<u8>), u64> = HashMap::new();
+    for f in &g.facts {
+        let entry = map.entry((f.writer, f.ns.clone())).or_insert(0);
+        if f.seq > *entry {
+            *entry = f.seq;
+        }
+    }
+    if map.is_empty() {
+        return NGS_OK;
+    }
+    let items: Vec<(ngs_pubkey, Vec<u8>, u64)> = map.into_iter().map(|((w, ns), seq)| (w, ns, seq)).collect();
+    let arr_sz = (items.len() * std::mem::size_of::<ngs_head>() + 15) & !15;
+    let str_sz: usize = items.iter().map(|(_, ns, _)| ns.len()).sum();
+    let base = ngs_alloc_block(arr_sz + str_sz);
+    if base.is_null() {
+        return NGS_NOMEM;
+    }
+    let hptr = base as *mut ngs_head;
+    let mut scursor = base.add(arr_sz);
+    for (i, (w, ns, seq)) in items.iter().enumerate() {
+        let ns_p = if ns.is_empty() {
+            ptr::null()
+        } else {
+            ptr::copy_nonoverlapping(ns.as_ptr(), scursor, ns.len());
+            let p = scursor as *const c_char;
+            scursor = scursor.add(ns.len());
+            p
+        };
+        ptr::write(hptr.add(i), ngs_head { writer: *w, ns: ngs_str { p: ns_p, n: ns.len() }, seq: *seq });
+    }
+    *heads = hptr;
+    *n = items.len();
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_sync_export(_db: *mut ngs, _since: *const c_void, _n: usize, _seg: *mut *mut u8, _len: *mut usize) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_sync_export(
+    db: *mut ngs,
+    since: *const ngs_head,
+    n_since: usize,
+    segment: *mut *mut u8,
+    len: *mut usize,
+) -> c_int {
+    if db.is_null() || segment.is_null() || len.is_null() || (n_since > 0 && since.is_null()) {
+        return NGS_MISUSE;
+    }
+    *segment = ptr::null_mut();
+    *len = 0;
+    let mut since_map: HashMap<(ngs_pubkey, Vec<u8>), u64> = HashMap::new();
+    if n_since > 0 {
+        for h in std::slice::from_raw_parts(since, n_since) {
+            let ns = match str_to_vec(h.ns) {
+                Ok(v) => v,
+                Err(rc) => return rc,
+            };
+            since_map.insert((h.writer, ns), h.seq);
+        }
+    }
+    let g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    let to_export: Vec<StoredFact> = g
+        .facts
+        .iter()
+        .filter(|f| {
+            let floor = since_map.get(&(f.writer, f.ns.clone())).copied().unwrap_or(0);
+            f.seq > floor
+        })
+        .cloned()
+        .collect();
+    let bytes = encode_batch_frame(&to_export);
+    let base = ngs_alloc_block(bytes.len());
+    if base.is_null() {
+        return NGS_NOMEM;
+    }
+    ptr::copy_nonoverlapping(bytes.as_ptr(), base, bytes.len());
+    *segment = base;
+    *len = bytes.len();
+    NGS_OK
+}
+
 #[no_mangle]
-pub extern "C" fn ngs_sync_import(_db: *mut ngs, _seg: *const u8, _len: usize, _rep: *mut *mut c_void) -> c_int { NGS_MISUSE }
+pub unsafe extern "C" fn ngs_sync_import(
+    db: *mut ngs,
+    segment: *const u8,
+    len: usize,
+    report: *mut *mut ngs_sync_report,
+) -> c_int {
+    if db.is_null() || segment.is_null() || report.is_null() || len < 24 {
+        return NGS_MISUSE;
+    }
+    *report = ptr::null_mut();
+    let data = std::slice::from_raw_parts(segment, len);
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    if g.readonly {
+        return NGS_NOGRANT;
+    }
+
+    let mut applied = 0u64;
+    let mut duplicates = 0u64;
+    let mut quarantined = 0u64;
+    let mut q_entries: Vec<ngs_quarantine_entry> = Vec::new();
+
+    // Validate frame header, CRC32, tail magic
+    let frame_ok = &data[0..4] == FRAME_MAGIC
+        && &data[len - 4..len] == FRAME_TAIL
+        && {
+            let stored = u32::from_le_bytes(data[len - 8..len - 4].try_into().unwrap());
+            stored == crc32(&data[..len - 8])
+        };
+
+    if !frame_ok {
+        quarantined = 1;
+        let mut reason = [0 as c_char; 120];
+        let msg = b"segment CRC or framing failed";
+        for (i, &b) in msg.iter().enumerate() {
+            reason[i] = b as c_char;
+        }
+        q_entries.push(ngs_quarantine_entry { id: ngs_id::default(), rc: NGS_CORRUPT, reason });
+    } else {
+        let payload = &data[12..len - 8];
+        if payload.len() >= 4 {
+            let n_facts = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let mut ppos = 4usize;
+            for _ in 0..n_facts {
+                if let Some(f) = StoredFact::decode(payload, &mut ppos) {
+                    if f.compute_id() != f.id {
+                        quarantined += 1;
+                        let mut reason = [0 as c_char; 120];
+                        let msg = b"fact hash mismatch";
+                        for (i, &b) in msg.iter().enumerate() {
+                            reason[i] = b as c_char;
+                        }
+                        q_entries.push(ngs_quarantine_entry { id: f.id, rc: NGS_CORRUPT, reason });
+                    } else if g.index.contains_key(&f.id) {
+                        duplicates += 1;
+                    } else {
+                        let idx = g.facts.len();
+                        g.index.insert(f.id, idx);
+                        g.facts.push(f);
+                        applied += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let rep_sz = (std::mem::size_of::<ngs_sync_report>() + 15) & !15;
+    let ent_sz = q_entries.len() * std::mem::size_of::<ngs_quarantine_entry>();
+    let base = ngs_alloc_block(rep_sz + ent_sz);
+    if base.is_null() {
+        return NGS_NOMEM;
+    }
+    let eptr = if q_entries.is_empty() {
+        ptr::null_mut()
+    } else {
+        let p = base.add(rep_sz) as *mut ngs_quarantine_entry;
+        for (i, e) in q_entries.iter().enumerate() {
+            ptr::write(p.add(i), ptr::read(e));
+        }
+        p
+    };
+    ptr::write(
+        base as *mut ngs_sync_report,
+        ngs_sync_report {
+            size: std::mem::size_of::<ngs_sync_report>() as u32,
+            applied,
+            duplicates,
+            quarantined,
+            entries: eptr,
+            n_entries: q_entries.len(),
+        },
+    );
+    *report = base as *mut ngs_sync_report;
+    if applied == 0 && duplicates == 0 && quarantined > 0 {
+        NGS_QUARANTINED
+    } else {
+        NGS_OK
+    }
+}

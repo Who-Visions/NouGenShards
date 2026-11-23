@@ -6,14 +6,16 @@ use std::path::PathBuf;
 use std::ptr;
 
 use ::ngs::{
-    ngs as NgsDb, ngs_as_of, ngs_close, ngs_fact, ngs_fact_in, ngs_flush, ngs_free, ngs_get,
-    ngs_id, ngs_iter, ngs_iter_close, ngs_iter_next, ngs_link, ngs_mark, ngs_node_pubkey, ngs_open,
-    ngs_open_opts, ngs_pubkey, ngs_query, ngs_recall, ngs_remember, ngs_remember_many, ngs_results,
-    ngs_scan, ngs_scan_opts, ngs_stats, ngs_stats_t, ngs_str, ngs_vec, ngs_verify, NGS_ARM_KW,
-    NGS_ARM_LINK, NGS_ARM_SALIENCE, NGS_ARM_VEC, NGS_CORRUPT, NGS_EPISODIC, NGS_MARK_NOT_USED,
-    NGS_MARK_USED, NGS_MISUSE, NGS_NOTFOUND, NGS_OK, NGS_OPEN_CREATE, NGS_OPEN_READONLY,
-    NGS_OPEN_READWRITE, NGS_PROCEDURAL, NGS_RECALL_EXPAND, NGS_RECALL_INCLUDE_INVALID,
-    NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN, NGS_TIME_NOW,
+    ngs as NgsDb, ngs_as_of, ngs_checkpoint, ngs_close, ngs_fact, ngs_fact_in, ngs_flush, ngs_free,
+    ngs_get, ngs_grant, ngs_head, ngs_heads, ngs_id, ngs_iter, ngs_iter_close, ngs_iter_next,
+    ngs_link, ngs_mark, ngs_node_pubkey, ngs_open, ngs_open_opts, ngs_pubkey, ngs_query,
+    ngs_rebuild, ngs_recall, ngs_redact, ngs_remember, ngs_remember_many, ngs_results, ngs_scan,
+    ngs_scan_opts, ngs_stats, ngs_stats_t, ngs_str, ngs_sync_export, ngs_sync_import,
+    ngs_sync_report, ngs_vec, ngs_verify, NGS_ARM_KW, NGS_ARM_LINK, NGS_ARM_SALIENCE, NGS_ARM_VEC,
+    NGS_CORRUPT, NGS_EPISODIC, NGS_MARK_NOT_USED, NGS_MARK_USED, NGS_MISUSE, NGS_NOTFOUND, NGS_OK,
+    NGS_OPEN_CREATE, NGS_OPEN_READONLY, NGS_OPEN_READWRITE, NGS_PROCEDURAL, NGS_QUARANTINED,
+    NGS_RECALL_EXPAND, NGS_RECALL_INCLUDE_INVALID, NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN,
+    NGS_TIME_NOW,
 };
 
 fn s(val: &str) -> ngs_str {
@@ -547,5 +549,93 @@ fn m4_mark_as_of_and_stats() {
 
         assert_eq!(ngs_close(db), NGS_OK);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn m5_federation_checkpoint_redact() {
+    unsafe {
+        let dir1 = scratch_dir("m5_node1");
+        let dir2 = scratch_dir("m5_node2");
+        let d1c = CString::new(dir1.to_str().unwrap()).unwrap();
+        let d2c = CString::new(dir2.to_str().unwrap()).unwrap();
+        let o_create = open_opts(NGS_OPEN_READWRITE | NGS_OPEN_CREATE);
+
+        let mut db1: *mut NgsDb = ptr::null_mut();
+        let mut db2: *mut NgsDb = ptr::null_mut();
+        assert_eq!(ngs_open(d1c.as_ptr(), &o_create, &mut db1), NGS_OK);
+        assert_eq!(ngs_open(d2c.as_ptr(), &o_create, &mut db2), NGS_OK);
+
+        // Write 2 facts on node1 + grant + checkpoint + verify
+        let f1 = make_fact_in("fleet", NGS_SEMANTIC, "secret note", "sensitive payload");
+        let f2 = make_fact_in("fleet", NGS_SEMANTIC, "public note", "shared knowledge");
+        let mut id1 = ngs_id::default();
+        let mut id2 = ngs_id::default();
+        assert_eq!(ngs_remember(db1, &f1, 0, &mut id1), NGS_OK);
+        assert_eq!(ngs_remember(db1, &f2, 0, &mut id2), NGS_OK);
+
+        let mut pk2 = ngs_pubkey::default();
+        assert_eq!(ngs_node_pubkey(db2, &mut pk2), NGS_OK);
+        let mut gid = ngs_id::default();
+        assert_eq!(ngs_grant(db1, s("fleet"), &pk2, &mut gid), NGS_OK);
+        assert!(!id_zero(&gid));
+
+        let mut ckpt: *mut u8 = ptr::null_mut();
+        let mut ckpt_len: usize = 0;
+        assert_eq!(ngs_checkpoint(db1, &mut ckpt, &mut ckpt_len), NGS_OK);
+        assert_eq!(ckpt_len, 44);
+        assert_eq!(ngs_verify(db1, ckpt, ckpt_len), NGS_OK);
+        ngs_free(ckpt as *mut _);
+        assert_eq!(ngs_rebuild(db1), NGS_OK);
+
+        // Heads on node1
+        let mut heads: *mut ngs_head = ptr::null_mut();
+        let mut n_heads: usize = 0;
+        assert_eq!(ngs_heads(db1, &mut heads, &mut n_heads), NGS_OK);
+        assert_eq!(n_heads, 1);
+        assert_eq!((*heads).seq, 2);
+        ngs_free(heads as *mut _);
+
+        // Sync export from node1 -> import into node2
+        let mut seg: *mut u8 = ptr::null_mut();
+        let mut seg_len: usize = 0;
+        assert_eq!(ngs_sync_export(db1, ptr::null(), 0, &mut seg, &mut seg_len), NGS_OK);
+        assert!(seg_len > 24);
+
+        let mut rep: *mut ngs_sync_report = ptr::null_mut();
+        assert_eq!(ngs_sync_import(db2, seg, seg_len, &mut rep), NGS_OK);
+        assert_eq!((*rep).applied, 2);
+        assert_eq!((*rep).duplicates, 0);
+        assert_eq!((*rep).quarantined, 0);
+        ngs_free(rep as *mut _);
+
+        // Re-importing same segment reports duplicates=2, applied=0
+        rep = ptr::null_mut();
+        assert_eq!(ngs_sync_import(db2, seg, seg_len, &mut rep), NGS_OK);
+        assert_eq!((*rep).applied, 0);
+        assert_eq!((*rep).duplicates, 2);
+        ngs_free(rep as *mut _);
+
+        // Tampered segment is quarantined with NGS_QUARANTINED
+        let mut bad_seg = std::slice::from_raw_parts(seg, seg_len).to_vec();
+        bad_seg[seg_len / 2] ^= 0xFF;
+        rep = ptr::null_mut();
+        assert_eq!(ngs_sync_import(db2, bad_seg.as_ptr(), bad_seg.len(), &mut rep), NGS_QUARANTINED);
+        assert_eq!((*rep).quarantined, 1);
+        ngs_free(rep as *mut _);
+        ngs_free(seg as *mut _);
+
+        // Redact id1 on node1 -> body empty, redacted == 1
+        assert_eq!(ngs_redact(db1, &id1, s("pii")), NGS_OK);
+        let mut rf: *mut ngs_fact = ptr::null_mut();
+        assert_eq!(ngs_get(db1, &id1, &mut rf), NGS_OK);
+        assert_eq!((*rf).redacted, 1);
+        assert_eq!((*rf).body.n, 0);
+        ngs_free(rf as *mut _);
+
+        assert_eq!(ngs_close(db1), NGS_OK);
+        assert_eq!(ngs_close(db2), NGS_OK);
+        let _ = fs::remove_dir_all(&dir1);
+        let _ = fs::remove_dir_all(&dir2);
     }
 }
