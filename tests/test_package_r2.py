@@ -170,6 +170,13 @@ def test_publish_share_install_round_trip(tmp_path, monkeypatch):
         got = pr.install_from(link["link"], str(tmp_path / "tester"))
         assert {r["state"] for r in got["repos"].values()} == {"installed"}
         assert (tmp_path / "tester" / mesh.REPOS["relay"] / "src" / "app.py").read_text() == "print('hi')\n"
+        stale = tmp_path / "tester" / mesh.REPOS["relay"] / "src" / "gone.py"
+        stale.write_text("deleted upstream\n")
+        forced = pr.install_from(link["link"], str(tmp_path / "tester"), force=True)
+        assert {r["state"] for r in forced["repos"].values()} == {"installed"}
+        assert not stale.exists()  # a forced reinstall replaces the tree, it does not overlay it
+        assert (tmp_path / "tester" / mesh.REPOS["relay"] / ".nougen-dist.json").exists()
+        assert not [p for p in (tmp_path / "tester").iterdir() if p.name.startswith(".nougen-stage-")]
     finally:
         srv.shutdown()
 
@@ -182,3 +189,24 @@ def test_publish_refuses_a_tampered_tarball(tmp_path, monkeypatch):
     with pytest.raises(pr.R2Error):
         pr.publish(str(tmp_path / "dist"), settings={"endpoint": "http://127.0.0.1:9", "bucket": "b", "prefix": "p",
                                                      "signer": pr._Signer("a", "s"), "region": "auto"})
+
+
+def test_pack_cache_follows_the_exclude_globs(tmp_path, monkeypatch):
+    repos = _package(tmp_path, {"src/app.py": "x = 1\n", "logs/run.txt": "runtime\n"}, monkeypatch)
+    first = pr.pack(None, str(tmp_path / "dist"), only=["relay"])
+    pkg_file = repos / mesh.REPOS["shards"] / "nougen.package.json"
+    pkg = json.loads(pkg_file.read_text())
+    pkg["repos"]["relay"]["exclude"] = []
+    pkg_file.write_text(json.dumps(pkg))
+    second = pr.pack(None, str(tmp_path / "dist"), only=["relay"])
+    assert first["repos"]["relay"]["file"] != second["repos"]["relay"]["file"]
+    import tarfile
+    with tarfile.open(tmp_path / "dist" / second["repos"]["relay"]["file"]) as tf:
+        assert any(n.endswith("logs/run.txt") for n in tf.getnames())
+
+
+def test_sync_refuses_to_publish_when_a_repo_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(pr, "pack", lambda *a, **k: {"ok": False, "refused": {}, "missing": ["relay"], "repos": {}})
+    monkeypatch.setattr(pr, "publish", lambda *a, **k: pytest.fail("publish must not run"))
+    out = pr.sync(str(tmp_path / "repos"), pull=False)
+    assert not out["ok"] and out["missing"] == ["relay"] and out["uploaded"] == []

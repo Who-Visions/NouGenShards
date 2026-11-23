@@ -318,7 +318,10 @@ def pack(repos_dir: Optional[str] = None, out_dir: Optional[str] = None, *, only
         spec = entries.get(name) if isinstance(entries.get(name), dict) else {}
         excludes = [f":(exclude,glob){g}" for g in spec.get("exclude") or []]
         folder = mesh.REPOS[name]
-        fname = f"{name}-{sha[:12]}.tar.gz"
+        # The archive's identity is the commit plus the excludes that shaped it,
+        # so changing a repo's exclude globs never reuses a stale cached tarball.
+        xid = f"-x{_h(json.dumps(sorted(excludes)).encode())[:8]}" if excludes else ""
+        fname = f"{name}-{sha[:12]}{xid}.tar.gz"
         target = out / fname
         if not target.exists():
             tmp = target.with_suffix(".part")
@@ -457,8 +460,19 @@ def install_from(link: str, dest: str, *, only: Optional[List[str]] = None, forc
         if _h(data) != row["sha256"]:
             out[name] = {"state": "checksum_mismatch"}
             continue
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-            _safe_extract(tf, root)
+        # Unpack beside the target, then swap it in whole, so a forced reinstall
+        # drops files the new revision deleted instead of overlaying them.
+        with tempfile.TemporaryDirectory(prefix=".nougen-stage-", dir=root) as stage:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                _safe_extract(tf, Path(stage))
+            fresh = Path(stage) / row["folder"]
+            if not fresh.is_dir():
+                out[name] = {"state": "bad_archive"}
+                continue
+            if folder.exists():
+                old = Path(stage) / ".previous"
+                folder.replace(old)
+            fresh.replace(folder)
         (folder / ".nougen-dist.json").write_text(json.dumps(
             {"commit": row["commit"], "sha256": row["sha256"], "committed": row["committed"]}) + "\n", encoding="utf-8")
         out[name] = {"state": "installed", "path": str(folder), "commit": row["commit"][:12]}
@@ -486,8 +500,9 @@ def sync(repos_dir: Optional[str] = None, *, pull: bool = True, dry_run: bool = 
             pulled[name] = "ok" if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
     with tempfile.TemporaryDirectory(prefix="nougen-dist-") as tmp:
         packed = pack(None, tmp, ref="default", near=near)
-        if packed["refused"]:
-            return {"ok": False, "pulled": pulled, "refused": packed["refused"], "uploaded": []}
+        if not packed["ok"]:  # a refused or missing repo would publish an incomplete manifest
+            return {"ok": False, "pulled": pulled, "refused": packed["refused"], "missing": packed["missing"],
+                    "uploaded": []}
         res = publish(tmp, dry_run=dry_run)
     return {"ok": True, "pulled": pulled, "missing": packed["missing"], **res}
 
