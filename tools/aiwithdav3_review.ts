@@ -109,7 +109,17 @@ try {
   const found = (await $`find ${HOME + "/The Observatory"} -maxdepth 3 -type d -iname ${name}`.quiet().nothrow()).stdout.toString().split("\n").filter((d) => d && existsSync(`${d}/.git`));
   for (const d of found)
     for (const x of [".venv", "node_modules"]) if (existsSync(`${d}/${x}`) && !existsSync(`${W}/${x}`)) await $`ln -s ${d}/${x} ${W}/${x}`.quiet().nothrow();
-  const gate = await $`${HOME}/.nougen/bin/local_gate.sh ${W}`.quiet().nothrow();
+  // The gate gets a minimal, clean environment, never this process's own. Bun
+  // auto-loads .env from its cwd, and this process also carries GH_TOKEN and
+  // provider keys; tests must never see any of them. With them inherited, the
+  // keymaker, exposure-guard and vault-discovery tests read live secrets, failed
+  // while the same commit passed the land gate, and printed the values into the log.
+  const cleanEnv: Record<string, string> = {};
+  for (const k of ["HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TERM"]) {
+    const v = process.env[k];
+    if (v !== undefined) cleanEnv[k] = v;
+  }
+  const gate = await $`${HOME}/.nougen/bin/local_gate.sh ${W}`.cwd(W).env(cleanEnv).quiet().nothrow();
   const gateLine = gate.stdout.toString().split("\n").filter((l) => l.startsWith("GATE ")).pop() || "GATE ?";
   log(gateLine);
   if (gate.exitCode !== 0 || gateLine.includes("GATE NONE")) stop(`local gate not green: ${gateLine}`);

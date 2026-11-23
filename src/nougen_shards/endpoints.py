@@ -38,6 +38,15 @@ def _from_file(key: str) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def resolve_raw(key: str):
+    """The endpoints file's value for ``key`` as stored (list, dict or string), or None."""
+    try:
+        data = json.loads(endpoints_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data.get(key) if isinstance(data, dict) else None
+
+
 def resolve(key: str) -> Optional[str]:
     """Return the configured value for ``key``, or None when unset."""
     env_name = _ENV.get(key)

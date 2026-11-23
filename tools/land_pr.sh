@@ -41,7 +41,11 @@ $GATE_OUT
 
 # ---- non-Claude review, then approval on READY at this head
 # aiwithdav3 failsafe reviewer: gate + codex/agy/NouGenOpen lanes + NouGenOpen supervisor; approves only on READY.
-RV=$($HOME/.bun/bin/bun $HOME/.nougen/bin/aiwithdav3_review.ts $R $N 2>&1); RVC=$?
+# Run bun from the PR's temp dir: bun auto-loads any .env in its cwd into process.env,
+# and the reviewer's gate inherits it. Run from a workspace whose .env holds live keys,
+# the gate's tests read real OPENAI/HF/HUD values (failing 9 tests and printing the
+# values into the gate log, 2026-11-23). $WORK has no .env.
+RV=$(cd "$WORK" && $HOME/.bun/bin/bun $HOME/.nougen/bin/aiwithdav3_review.ts $R $N 2>&1); RVC=$?
 print -r -- "$RV" | tail -3
 # The reviewer's own verdict decides: an older approval must not carry a PR past a failed review.
 [ $RVC -eq 0 ] || { echo "#$N not merged: aiwithdav3 review did not approve this head"; exit 1; }
