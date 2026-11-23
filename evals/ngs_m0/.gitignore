@@ -1,0 +1,3 @@
+# Label sets are derived from private shards: generate locally, never commit.
+labeled_v*.json
+paraphrases_v*.json
