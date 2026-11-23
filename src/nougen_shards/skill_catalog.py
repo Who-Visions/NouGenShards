@@ -70,7 +70,7 @@ def status() -> dict[str, Any]:
             "workflow_count": 0,
         }
 
-    discovered = skills.discover([root])
+    discovered = skills.discover([root / "skills"])
     manifest_paths = {
         str((root / record["path"] / "SKILL.md").resolve())
         for record in records
