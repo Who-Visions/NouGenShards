@@ -245,3 +245,25 @@ def test_guard_allows_review_cases(cmd):
 
 def test_bare_push_after_unresolvable_cd_is_refused():
     assert bash_guard.check("cd $X && git push", ROOT, root=ROOT, branch="lane/x")
+
+
+# Second review round on PR 1110 (aiwithdav3 P2s): HEAD resolves to the current
+# branch, and only the real git subcommand decides whether it is a push.
+def test_push_of_head_resolves_to_the_current_branch():
+    assert bash_guard.check("git push origin HEAD", ROOT, root=ROOT, branch="main")
+    assert bash_guard.check("git push origin @", ROOT, root=ROOT, branch="main")
+    assert bash_guard.check("git push origin HEAD", ROOT, root=ROOT, branch="lane/x") is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "git commit -m push",
+    "git checkout -b push",
+    "git log --grep push",
+])
+def test_push_as_an_argument_is_not_a_push(cmd):
+    assert bash_guard.check(cmd, ROOT, root=ROOT, branch="main") is None
+
+
+def test_global_options_before_push_are_skipped():
+    assert bash_guard.check("git -c core.x=1 push origin main", ROOT, root=ROOT, branch="lane/x")
+    assert bash_guard.check("git --no-pager push origin HEAD:main", ROOT, root=ROOT, branch="lane/x")

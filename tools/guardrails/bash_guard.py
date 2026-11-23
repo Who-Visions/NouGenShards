@@ -73,9 +73,32 @@ def _norm(path: str, cwd: str) -> str | None:
 # shifted the positionals and the guard dropped the real refspec as "the remote".
 _PUSH_VALUE_OPTS = {"--repo", "-o", "--push-option", "--receive-pack", "--exec"}
 
+# git's global options before the subcommand (git --help); the ones listed in
+# _GIT_VALUE_OPTS take the next argument as their value.
+_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 
-def _check_push(tok: list[str], cwd: str | None, branch: str | None) -> str | None:
-    args = tok[tok.index("push") + 1:]
+
+def _git_subcommand(tok: list[str]) -> tuple[str | None, int, str | None]:
+    """(subcommand, its index in tok, the -C directory or None). Only the real
+    subcommand counts: `git commit -m push` or `git checkout -b push` are not
+    pushes just because the word appears as an argument."""
+    i, cdir = 1, None
+    while i < len(tok):
+        a = tok[i]
+        if a in _GIT_VALUE_OPTS:
+            if a == "-C" and i + 1 < len(tok):
+                cdir = tok[i + 1]
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        return a, i, cdir
+    return None, -1, cdir
+
+
+def _check_push(tok: list[str], cwd: str | None, branch: str | None, at: int | None = None) -> str | None:
+    args = tok[(tok.index("push") if at is None else at) + 1:]
     prot = protected_branches()
     for a in args:
         if a == "--force" or (re.fullmatch(r"-[a-zA-Z]*f[a-zA-Z]*", a) is not None):
@@ -102,6 +125,11 @@ def _check_push(tok: list[str], cwd: str | None, branch: str | None) -> str | No
         for r in refs:
             dest = r.split(":")[-1]
             dest = dest[len("refs/heads/"):] if dest.startswith("refs/heads/") else dest
+            if dest in ("HEAD", "@"):
+                # `git push origin HEAD` pushes the current branch under its own name
+                if cwd is None and branch is None:
+                    return "push of HEAD after a cd that cannot be resolved; name the branch"
+                dest = branch if branch is not None else _git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
             if dest in prot:
                 return f"push to protected branch '{dest}' is blocked; open a PR"
     else:
@@ -159,8 +187,13 @@ def check(command: str, cwd: str, root: str | None = None,
             # a new directory is a new repo: the caller's branch no longer applies
             branch = None if cur_cwd != cwd else branch
             continue
-        if head == "git" and "push" in tok:
-            why = _check_push(tok, cur_cwd, branch)
+        sub, at, cdir = _git_subcommand(tok) if head == "git" else (None, -1, None)
+        if sub == "push":
+            push_cwd, push_branch = cur_cwd, branch
+            if cdir is not None:          # git -C <dir> push: that repo's branch, not ours
+                push_cwd = _norm(cdir, cur_cwd) if cur_cwd is not None else None
+                push_branch = None if push_cwd != cur_cwd else branch
+            why = _check_push(tok, push_cwd, push_branch, at)
             if why:
                 return why
         if head in ("rm", "rmdir", "remove-item", "del", "rd"):
