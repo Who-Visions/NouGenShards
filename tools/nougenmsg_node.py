@@ -346,6 +346,20 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
     })
 
 
+def _stamp_peer(addr: str) -> None:
+    """Tell the bus which TCP peer this request came from (server-side fact).
+
+    Lets a forwarded message with no sender machine be labelled with the
+    fleet node that owns the peer's LAN address instead of "unknown". Loopback
+    (the tunnel) and unlisted addresses stay "unknown". See nougenmsg.node_for_peer.
+    """
+    try:
+        from nougen_shards import nougenmsg as _bus
+        _bus.PEER.addr = str(addr or "")
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def _env_path(key: str, *default_parts: str) -> Path:
     """Path from ``key`` if set, else ``~`` joined with ``default_parts``."""
     raw = os.environ.get(key, "").strip()
@@ -740,13 +754,31 @@ def elevated_state(message_id: str) -> "dict | None":
         return dict(outcome) if outcome is not None else None
 
 
+def _delivery_label(msg: dict) -> str:
+    """The banner label for a delivered message, via display_sender.
+
+    Resolves from the sender's origin envelope (machine, lane, session, machine
+    id) so a session reads who actually wrote it, not a bare sender string a
+    bridge typed. Falls back to the raw sender only if the import fails.
+    """
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
+    try:
+        from nougen_shards.nougenmsg import display_sender  # noqa: E402
+        return display_sender(origin)
+    except Exception:
+        return str(msg.get("sender", "unknown"))
+
+
 def _run_elevated(msg: dict) -> None:
     try:
         verdict = gate_and_deliver(
             str(msg.get("text", "")), str(msg.get("sender", "unknown")),
             message_id=msg.get("message_id"),  # honored if the sender provides one
             origin=str(msg.get("origin", "peer")),
-            origin_proof=msg.get("origin_proof"))
+            origin_proof=msg.get("origin_proof"),
+            label=_delivery_label(msg))  # banner only; authorization reads the raw sender
         # Waking STARTS an agent where delivery only reaches one that is
         # already live, so it runs strictly after the same gates and only
         # on their approval. Never reachable for an unapproved message,
@@ -1106,6 +1138,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self._reject_unauthorized():
             return
+        _stamp_peer(self.client_address[0] if self.client_address else "")
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"

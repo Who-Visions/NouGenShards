@@ -1170,7 +1170,94 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
         return None
 
 
+ENV_READ_TIMEOUT = "NOUGEN_KEYMAKER_READ_TIMEOUT_S"
+_READ_TIMEOUT_DEFAULT_S = 15.0
+
+#: Readers that outlived their timeout and are still blocked, by secret name.
+#: A stuck reader is never duplicated: while one is alive for a key, later
+#: calls for that key return None at once instead of starting another thread
+#: (review on PR 1202: context7 reads its key on every tool call, so an
+#: unbounded spawn would leak one blocked thread per call). The total is also
+#: capped, so a node where every read blocks holds at most this many threads.
+_STUCK_READERS: dict = {}
+_STUCK_READERS_MAX = 8
+_STUCK_LOCK = __import__("threading").Lock()
+
+
+def _read_timeout_s() -> float:
+    """Hard ceiling for one get_secret call; <= 0 disables the watchdog."""
+    try:
+        return float(os.environ.get(ENV_READ_TIMEOUT, "") or _READ_TIMEOUT_DEFAULT_S)
+    except ValueError:
+        return _READ_TIMEOUT_DEFAULT_S
+
+
 def get_secret(key: str) -> Optional[str]:
+    """Retrieves a secret value by key, bounded by a hard timeout.
+
+    A read that blocks (measured on a macOS launchd job, 2026-11-22: no return
+    in 40-50 s even with the probe off) used to hang every caller, including the
+    fleet node's tool dispatch. The real read now runs on a daemon thread; if it
+    has not finished within NOUGEN_KEYMAKER_READ_TIMEOUT_S (default 15 s, <= 0
+    disables) this returns None, logs where the thread is stuck so the cause can
+    be found, and never blocks the caller. Exceptions from the read propagate
+    unchanged (VaultDivergenceError stays loud).
+    """
+    timeout = _read_timeout_s()
+    if timeout <= 0:
+        return _get_secret_unbounded(key)
+    import contextvars  # pylint: disable=import-outside-toplevel
+    import threading  # pylint: disable=import-outside-toplevel
+    # One reader per key, registered BEFORE it can block, so concurrent callers
+    # in the timeout window share it instead of racing past the dedupe and cap
+    # (second review on PR 1202). Entries: key -> (thread, box).
+    with _STUCK_LOCK:
+        for name, (thread, _b) in list(_STUCK_READERS.items()):
+            if not thread.is_alive():
+                del _STUCK_READERS[name]   # finished (on time or late); forget it
+        entry = _STUCK_READERS.get(key)
+        if entry is None:
+            if len(_STUCK_READERS) >= _STUCK_READERS_MAX:
+                logger.error("keymaker read of '%s' skipped: %d readers already in flight or blocked; "
+                             "returning None", key, len(_STUCK_READERS))
+                return None
+            box: dict = {}
+            ctx = contextvars.copy_context()  # tenant context is a contextvar; keep it
+
+            def _run():
+                try:
+                    box["value"] = ctx.run(_get_secret_unbounded, key)
+                except BaseException as exc:  # pylint: disable=broad-except
+                    box["error"] = exc
+
+            worker = threading.Thread(target=_run, name=f"keymaker-read-{key}", daemon=True)
+            _STUCK_READERS[key] = (worker, box)
+            worker.start()
+        else:
+            worker, box = entry           # share the reader already in flight
+            if box.get("stuck"):
+                logger.error("keymaker read of '%s' skipped: its reader is still blocked; "
+                             "returning None without waiting", key)
+                return None
+    worker.join(timeout)
+    if worker.is_alive():
+        box["stuck"] = True
+        import sys  # pylint: disable=import-outside-toplevel
+        import traceback  # pylint: disable=import-outside-toplevel
+        frame = sys._current_frames().get(worker.ident)  # pylint: disable=protected-access
+        where = "".join(traceback.format_stack(frame)) if frame is not None else "(no frame)"
+        logger.error("keymaker read of '%s' did not finish in %.0fs; returning None. "
+                     "The reader is stuck here:\n%s", key, timeout, where)
+        return None
+    with _STUCK_LOCK:
+        if _STUCK_READERS.get(key, (None,))[0] is worker:
+            del _STUCK_READERS[key]
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _get_secret_unbounded(key: str) -> Optional[str]:
     """Retrieves a secret value by key, via probe-chain discovery.
 
     Checks environment variables first (Rule 0.0: env -> config -> runtime probe),

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from nougen_shards import nougenmsg
 from nougen_shards.nougenmsg import AgentPinger
 
 # Tags actually installed, measured per node on 2026-09-05.
@@ -30,6 +31,22 @@ INSTALLED = {
     "phoebus": {"gemma4:e2b", "gemma4:e4b", "solai:latest", "kaedracode:e2b",
                 "gemma2:2b"},
 }
+
+
+@pytest.fixture(autouse=True)
+def _serve_installed_tags(monkeypatch):
+    """Serve the measured table through the discovery seam.
+
+    _default_ollama_model discovers the default from the serving node's
+    live /api/tags (AgentPinger._ollama_installed); stub that seam with the
+    measured inventory so these tests pin the SELECTION, not the network.
+    """
+    def fake_installed(node, is_local):
+        machine = nougenmsg.get_current_node() if is_local else node
+        return [{"name": name} for name in INSTALLED.get(machine, set())]
+
+    monkeypatch.setattr(AgentPinger, "_ollama_installed",
+                        staticmethod(fake_installed))
 
 
 @pytest.mark.parametrize("machine", sorted(INSTALLED))
@@ -80,3 +97,9 @@ def test_explicit_model_argument_still_wins(monkeypatch):
 def test_unknown_node_falls_back_to_the_widely_present_tag(monkeypatch):
     monkeypatch.setattr("nougen_shards.nougenmsg.get_current_node", lambda: "whoart")
     assert AgentPinger._default_ollama_model("some-new-node") == "gemma4:e2b"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pick_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_OLLAMA_PICKS_FILE", str(tmp_path / "picks.json"))
+    monkeypatch.setattr(nougenmsg.AgentPinger, "_PICK_CACHE", {})

@@ -33,3 +33,30 @@ def test_stadium_check_counts_shards_and_survives_dead_ollama(monkeypatch, tmp_p
     assert out["coach_box_tokens"] == session_probe.COACH_BOX_TOKENS
     assert out["vault"] == {"path": str(tmp_path), "dbs": 2, "shards": 5, "errors": []}
     assert out["ollama"]["up"] is False and out["ollama"]["error"]
+
+
+def test_repo_git_status_survives_a_git_timeout(monkeypatch, tmp_path):
+    """A git call that times out must not crash the session-close sweep."""
+    import subprocess
+
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=kw.get("timeout", 0))
+
+    monkeypatch.setattr(session_probe.subprocess, "run", boom)
+    out = session_probe._repo_git_status(tmp_path)
+    assert out["branch"] == "unknown" and out["dirty"] == 0 and out["unpushed"] == 0
+
+
+def test_repo_git_status_timeout_is_env_configurable(monkeypatch, tmp_path):
+    seen = []
+
+    def fake(*a, **kw):
+        seen.append(kw.get("timeout"))
+        raise OSError("no git")
+
+    monkeypatch.setattr(session_probe.subprocess, "run", fake)
+    monkeypatch.setenv("NOUGEN_PROBE_GIT_TIMEOUT", "30")
+    session_probe._repo_git_status(tmp_path)
+    monkeypatch.setenv("NOUGEN_PROBE_GIT_TIMEOUT", "bogus")
+    session_probe._repo_git_status(tmp_path)
+    assert seen[0] == 30.0 and seen[-1] == 8.0
