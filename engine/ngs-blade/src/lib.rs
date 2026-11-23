@@ -161,6 +161,26 @@ pub const NGS_RECALL_EXPAND: i32 = 0x0001;
 pub const NGS_RECALL_INCLUDE_INVALID: i32 = 0x0002;
 pub const NGS_RECALL_NO_BODY: i32 = 0x0004;
 
+pub const NGS_MARK_NOT_USED: i32 = 0;
+pub const NGS_MARK_USED: i32 = 1;
+
+#[repr(C)]
+pub struct ngs_stats_t {
+    pub size: u32,
+    pub facts: u64,
+    pub invalidated: u64,
+    pub links: u64,
+    pub redacted: u64,
+    pub log_bytes: u64,
+    pub derived_bytes: u64,
+    pub vec_indexes: u64,
+    pub facts_missing_vec: u64,
+    pub quarantined_segments: u64,
+    pub recalls: u64,
+    pub abstentions: u64,
+    pub timeouts: u64,
+}
+
 #[repr(C)]
 pub struct ngs_query {
     pub size: u32,
@@ -378,6 +398,7 @@ struct StoredFact {
     title: Vec<u8>,
     body: Vec<u8>,
     vecs: Vec<StoredVec>,
+    salience: f32,
 }
 
 impl StoredFact {
@@ -468,6 +489,7 @@ impl StoredFact {
             title,
             body,
             vecs: Vec::new(),
+            salience: 0.5,
         })
     }
 
@@ -655,6 +677,9 @@ struct DbInner {
     links: Vec<StoredLink>,
     last_id: ngs_id,
     next_seq: u64,
+    recalls: u64,
+    abstentions: u64,
+    timeouts: u64,
     last_err: CString,
 }
 
@@ -855,6 +880,9 @@ pub unsafe extern "C" fn ngs_open(
             links: Vec::new(),
             last_id,
             next_seq,
+            recalls: 0,
+            abstentions: 0,
+            timeouts: 0,
             last_err: CString::new("").unwrap(),
         }),
     });
@@ -892,7 +920,7 @@ pub unsafe extern "C" fn ngs_node_pubkey(db: *mut ngs, out: *mut ngs_pubkey) -> 
     if db.is_null() || out.is_null() {
         return NGS_MISUSE;
     }
-    let g = match (*db).inner.lock() {
+    let mut g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1034,6 +1062,7 @@ pub unsafe extern "C" fn ngs_remember_many(
             title,
             body,
             vecs,
+            salience: if item.salience0 < 0.0 { 0.5 } else { item.salience0.clamp(0.0, 1.0) },
         };
         f.id = f.compute_id();
         if !item.supersedes.is_null() {
@@ -1086,7 +1115,7 @@ pub unsafe extern "C" fn ngs_get(
         return NGS_MISUSE;
     }
     *out = ptr::null_mut();
-    let g = match (*db).inner.lock() {
+    let mut g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1126,7 +1155,7 @@ pub unsafe extern "C" fn ngs_scan(
         (nsf, wf, (*opts).since, (*opts).until)
     };
 
-    let g = match (*db).inner.lock() {
+    let mut g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1184,7 +1213,7 @@ pub unsafe extern "C" fn ngs_verify(
     if db.is_null() {
         return NGS_MISUSE;
     }
-    let g = match (*db).inner.lock() {
+    let mut g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1294,6 +1323,84 @@ pub unsafe extern "C" fn ngs_recall(
     q: *const ngs_query,
     out: *mut *mut ngs_results,
 ) -> c_int {
+    recall_impl(db, None, None, q, out)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ngs_as_of(
+    db: *mut ngs,
+    t_valid: i64,
+    t_record: i64,
+    q: *const ngs_query,
+    out: *mut *mut ngs_results,
+) -> c_int {
+    recall_impl(db, Some(t_valid), Some(t_record), q, out)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ngs_mark(db: *mut ngs, id: *const ngs_id, mark: i32) -> c_int {
+    if db.is_null() || id.is_null() || (mark != NGS_MARK_USED && mark != NGS_MARK_NOT_USED) {
+        return NGS_MISUSE;
+    }
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    if g.readonly {
+        return NGS_NOGRANT;
+    }
+    let idx = match g.index.get(&*id) {
+        Some(&i) => i,
+        None => return NGS_NOTFOUND,
+    };
+    let s = &mut g.facts[idx].salience;
+    if mark == NGS_MARK_USED {
+        *s = (*s + 0.15).min(1.0);
+    } else {
+        *s = (*s - 0.15).max(0.0);
+    }
+    NGS_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ngs_stats(db: *mut ngs, out: *mut ngs_stats_t) -> c_int {
+    if db.is_null() || out.is_null() || ((*out).size as usize) < std::mem::size_of::<ngs_stats_t>() {
+        return NGS_MISUSE;
+    }
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    let log_bytes = fs::metadata(g.dir.join("ngs.log")).map(|m| m.len()).unwrap_or(0);
+    let invalidated = g.facts.iter().filter(|f| f.valid_to != NGS_TIME_MAX).count() as u64;
+    let redacted = g.facts.iter().filter(|f| f.redacted != 0).count() as u64;
+    let missing_vec = g.facts.iter().filter(|f| f.vecs.is_empty()).count() as u64;
+    let active_links = g.links.iter().filter(|l| l.valid).count() as u64;
+    *out = ngs_stats_t {
+        size: std::mem::size_of::<ngs_stats_t>() as u32,
+        facts: g.facts.len() as u64,
+        invalidated,
+        links: active_links,
+        redacted,
+        log_bytes,
+        derived_bytes: 0,
+        vec_indexes: 1,
+        facts_missing_vec: missing_vec,
+        quarantined_segments: 0,
+        recalls: g.recalls,
+        abstentions: g.abstentions,
+        timeouts: g.timeouts,
+    };
+    NGS_OK
+}
+
+unsafe fn recall_impl(
+    db: *mut ngs,
+    as_of_valid: Option<i64>,
+    as_of_record: Option<i64>,
+    q: *const ngs_query,
+    out: *mut *mut ngs_results,
+) -> c_int {
     if db.is_null() || q.is_null() || out.is_null() {
         return NGS_MISUSE;
     }
@@ -1344,7 +1451,7 @@ pub unsafe extern "C" fn ngs_recall(
     let started = Instant::now();
     let now = now_us();
 
-    let g = match (*db).inner.lock() {
+    let mut g = match (*db).inner.lock() {
         Ok(g) => g,
         Err(_) => return NGS_ERROR,
     };
@@ -1364,7 +1471,16 @@ pub unsafe extern "C" fn ngs_recall(
             timed_out = 1;
             break;
         }
-        let is_invalid = if f.valid_to != NGS_TIME_MAX { 1 } else { 0 };
+        let is_invalid = if let (Some(tv), Some(tr)) = (as_of_valid, as_of_record) {
+            if tr != NGS_TIME_MAX && f.t_record > tr {
+                continue;
+            }
+            if f.valid_from <= tv && tv < f.valid_to { 0 } else { 1 }
+        } else if f.valid_to != NGS_TIME_MAX {
+            1
+        } else {
+            0
+        };
         if is_invalid != 0 && !include_invalid {
             continue;
         }
@@ -1416,8 +1532,8 @@ pub unsafe extern "C" fn ngs_recall(
         let age_days = age_us / 86_400_000_000.0;
         let recency_score = (1.0 / (1.0 + age_days / 30.0)) as f32;
 
-        // Salience arm: default 0.5
-        let salience_score = 0.5f32;
+        // Salience arm: live fact salience (updated by ngs_mark)
+        let salience_score = f.salience;
 
         let arm = [vec_score, kw_score, recency_score, salience_score, 0.0f32];
         let w_vec = if q_vec.is_some() { weights[NGS_ARM_VEC] } else { 0.0 };
@@ -1471,7 +1587,16 @@ pub unsafe extern "C" fn ngs_recall(
                 existing.score = (existing.score + lscore * 0.25).min(1.0);
             } else if let Some(&fidx) = g.index.get(&nid) {
                 let f = &g.facts[fidx];
-                let is_invalid = if f.valid_to != NGS_TIME_MAX { 1 } else { 0 };
+                let is_invalid = if let (Some(tv), Some(tr)) = (as_of_valid, as_of_record) {
+            if tr != NGS_TIME_MAX && f.t_record > tr {
+                continue;
+            }
+            if f.valid_from <= tv && tv < f.valid_to { 0 } else { 1 }
+        } else if f.valid_to != NGS_TIME_MAX {
+            1
+        } else {
+            0
+        };
                 if is_invalid != 0 && !include_invalid {
                     continue;
                 }
@@ -1612,19 +1737,23 @@ pub unsafe extern "C" fn ngs_recall(
         },
     );
 
+    drop(candidates);
+    g.recalls += 1;
+    if abstained != 0 {
+        g.abstentions += 1;
+    }
+    if timed_out != 0 {
+        g.timeouts += 1;
+    }
     *out = base as *mut ngs_results;
     NGS_OK
 }
 
-// ---------- Outside-M3 Stubs (clean NGS_MISUSE) ----------
+// ---------- Outside-M4 Stubs (clean NGS_MISUSE) ----------
 #[no_mangle]
 pub extern "C" fn ngs_redact(_db: *mut ngs, _id: *const ngs_id, _reason: ngs_str) -> c_int { NGS_MISUSE }
 #[no_mangle]
 pub extern "C" fn ngs_grant(_db: *mut ngs, _ns: ngs_str, _writer: *const ngs_pubkey, _out: *mut ngs_id) -> c_int { NGS_MISUSE }
-#[no_mangle]
-pub extern "C" fn ngs_as_of(_db: *mut ngs, _tv: i64, _tr: i64, _q: *const c_void, _out: *mut *mut c_void) -> c_int { NGS_MISUSE }
-#[no_mangle]
-pub extern "C" fn ngs_mark(_db: *mut ngs, _id: *const ngs_id, _mark: i32) -> c_int { NGS_MISUSE }
 #[no_mangle]
 pub extern "C" fn ngs_checkpoint(_db: *mut ngs, _ckpt: *mut *mut u8, _len: *mut usize) -> c_int { NGS_MISUSE }
 #[no_mangle]
@@ -1635,5 +1764,3 @@ pub extern "C" fn ngs_heads(_db: *mut ngs, _heads: *mut *mut c_void, _n: *mut us
 pub extern "C" fn ngs_sync_export(_db: *mut ngs, _since: *const c_void, _n: usize, _seg: *mut *mut u8, _len: *mut usize) -> c_int { NGS_MISUSE }
 #[no_mangle]
 pub extern "C" fn ngs_sync_import(_db: *mut ngs, _seg: *const u8, _len: usize, _rep: *mut *mut c_void) -> c_int { NGS_MISUSE }
-#[no_mangle]
-pub extern "C" fn ngs_stats(_db: *mut ngs, _out: *mut c_void) -> c_int { NGS_MISUSE }

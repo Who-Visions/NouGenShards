@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::ptr;
 
 use ::ngs::{
-    ngs as NgsDb, ngs_close, ngs_fact, ngs_fact_in, ngs_flush, ngs_free, ngs_get, ngs_id,
-    ngs_iter, ngs_iter_close, ngs_iter_next, ngs_link, ngs_node_pubkey, ngs_open, ngs_open_opts,
-    ngs_pubkey, ngs_query, ngs_recall, ngs_remember, ngs_remember_many, ngs_results, ngs_scan,
-    ngs_scan_opts, ngs_str, ngs_vec, ngs_verify, NGS_ARM_KW, NGS_ARM_LINK, NGS_ARM_VEC,
-    NGS_CORRUPT, NGS_EPISODIC, NGS_MISUSE, NGS_NOTFOUND, NGS_OK, NGS_OPEN_CREATE,
-    NGS_OPEN_READONLY, NGS_OPEN_READWRITE, NGS_PROCEDURAL, NGS_RECALL_EXPAND,
-    NGS_RECALL_INCLUDE_INVALID, NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN, NGS_TIME_NOW,
+    ngs as NgsDb, ngs_as_of, ngs_close, ngs_fact, ngs_fact_in, ngs_flush, ngs_free, ngs_get,
+    ngs_id, ngs_iter, ngs_iter_close, ngs_iter_next, ngs_link, ngs_mark, ngs_node_pubkey, ngs_open,
+    ngs_open_opts, ngs_pubkey, ngs_query, ngs_recall, ngs_remember, ngs_remember_many, ngs_results,
+    ngs_scan, ngs_scan_opts, ngs_stats, ngs_stats_t, ngs_str, ngs_vec, ngs_verify, NGS_ARM_KW,
+    NGS_ARM_LINK, NGS_ARM_SALIENCE, NGS_ARM_VEC, NGS_CORRUPT, NGS_EPISODIC, NGS_MARK_NOT_USED,
+    NGS_MARK_USED, NGS_MISUSE, NGS_NOTFOUND, NGS_OK, NGS_OPEN_CREATE, NGS_OPEN_READONLY,
+    NGS_OPEN_READWRITE, NGS_PROCEDURAL, NGS_RECALL_EXPAND, NGS_RECALL_INCLUDE_INVALID,
+    NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN, NGS_TIME_NOW,
 };
 
 fn s(val: &str) -> ngs_str {
@@ -459,6 +460,90 @@ fn m3_vector_and_link_expand() {
         assert_eq!(hits[1].id, id_b);
         assert!(hits[1].arm[NGS_ARM_LINK] > 0.5);
         ngs_free(res as *mut _);
+
+        assert_eq!(ngs_close(db), NGS_OK);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn m4_mark_as_of_and_stats() {
+    unsafe {
+        let dir = scratch_dir("m4_mark_asof");
+        let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
+        let o_create = open_opts(NGS_OPEN_READWRITE | NGS_OPEN_CREATE);
+        let mut db: *mut NgsDb = ptr::null_mut();
+        assert_eq!(ngs_open(dir_c.as_ptr(), &o_create, &mut db), NGS_OK);
+
+        // Two facts with identical text; mark A USED and B NOT_USED -> A outranks B via SALIENCE
+        let mut fa = make_fact_in("fb", NGS_SEMANTIC, "policy rule", "production deploy policy");
+        fa.t_event = 1_000;
+        fa.valid_from = 1_000;
+        let mut id_a = ngs_id::default();
+        assert_eq!(ngs_remember(db, &fa, 0, &mut id_a), NGS_OK);
+
+        let mut fb = make_fact_in("fb", NGS_SEMANTIC, "policy rule", "production deploy policy");
+        fb.t_event = 1_000;
+        fb.valid_from = 1_000;
+        let mut id_b = ngs_id::default();
+        assert_eq!(ngs_remember(db, &fb, 0, &mut id_b), NGS_OK);
+
+        assert_eq!(ngs_mark(db, &id_a, NGS_MARK_USED), NGS_OK);
+        assert_eq!(ngs_mark(db, &id_b, NGS_MARK_NOT_USED), NGS_OK);
+
+        // Unknown id returns NGS_NOTFOUND
+        let unk = ngs_id { b: [0x99; 32] };
+        assert_eq!(ngs_mark(db, &unk, NGS_MARK_USED), NGS_NOTFOUND);
+
+        let q = ngs_query {
+            size: std::mem::size_of::<ngs_query>() as u32,
+            ns: s("fb"),
+            kinds: 0,
+            text: s("policy rule"),
+            vec: ptr::null(),
+            since: NGS_TIME_MIN,
+            until: NGS_TIME_MAX,
+            tags: ptr::null(),
+            n_tags: 0,
+            k: 5,
+            deadline_ms: 50,
+            fusion: 0,
+            weights: ptr::null(),
+            flags: 0,
+            token_budget: 0,
+            tokenizer_id: ngs_str { p: ptr::null(), n: 0 },
+            min_confidence: -1.0,
+        };
+        let mut res: *mut ngs_results = ptr::null_mut();
+        assert_eq!(ngs_recall(db, &q, &mut res), NGS_OK);
+        let hits = std::slice::from_raw_parts((*res).hits, (*res).n);
+        assert_eq!(hits[0].id, id_a);
+        assert!(hits[0].arm[NGS_ARM_SALIENCE] > hits[1].arm[NGS_ARM_SALIENCE]);
+        ngs_free(res as *mut _);
+
+        // Bi-temporal ngs_as_of: at t_valid=500 (before valid_from=1000) -> 0 hits; at t_valid=1500 -> 2 hits
+        res = ptr::null_mut();
+        assert_eq!(ngs_as_of(db, 500, NGS_TIME_MAX, &q, &mut res), NGS_OK);
+        assert_eq!((*res).n, 0);
+        ngs_free(res as *mut _);
+
+        res = ptr::null_mut();
+        assert_eq!(ngs_as_of(db, 1500, NGS_TIME_MAX, &q, &mut res), NGS_OK);
+        assert_eq!((*res).n, 2);
+        ngs_free(res as *mut _);
+
+        // ngs_stats reports accurate counters
+        let mut st = ngs_stats_t {
+            size: std::mem::size_of::<ngs_stats_t>() as u32,
+            facts: 0, invalidated: 0, links: 0, redacted: 0, log_bytes: 0,
+            derived_bytes: 0, vec_indexes: 0, facts_missing_vec: 0,
+            quarantined_segments: 0, recalls: 0, abstentions: 0, timeouts: 0,
+        };
+        assert_eq!(ngs_stats(db, &mut st), NGS_OK);
+        assert_eq!(st.facts, 2);
+        assert_eq!(st.recalls, 3);
+        assert_eq!(st.abstentions, 1);
+        assert!(st.log_bytes > 0);
 
         assert_eq!(ngs_close(db), NGS_OK);
         let _ = fs::remove_dir_all(&dir);
