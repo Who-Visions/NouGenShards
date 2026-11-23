@@ -17,7 +17,10 @@ if grep -nE '#include <(unistd|windows|locale|signal|setjmp|ctype|wchar|fenv|tgm
 echo "5. amalgamation builds alone"
 python3 tool/amalgamate.py
 cmp -s dist/ngs.h include/ngs.h
-(cd dist && $CC $W -c nougenshards.c -o "$T/amal.o")
+(cd dist && $CC $W -c nougenshards.c -o "$T/amal.o" && $CC $W -O2 -c nougenshards.c -o "$T/amal2.o")
+(cd dist && $CC -std=c17 -Wall -Wextra -pedantic -Werror -fsyntax-only nougenshards.c)
+echo "5b. amalgamation compiles as C++11 (embedders that build with a C++ compiler)"
+(cd dist && c++ -std=c++11 -Wall -Wextra -pedantic -Werror -x c++ -c nougenshards.c -o "$T/amalpp.o")
 echo "6. crypto against independent oracles"
 $CC $W -O2 -Iinclude test/crypto_vec.c src/crypto.c src/plat_posix.c -o "$T/cv"
 python3 test/crypto_oracle.py "$T/cv"

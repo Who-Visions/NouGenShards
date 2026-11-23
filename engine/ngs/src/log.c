@@ -109,8 +109,8 @@ struct ngs_iter {
 ** Per handle AND per thread (ngs.h contract): each thread keeps a few slots
 ** keyed by handle. */
 typedef struct { const ngs *db; char msg[256]; } err_slot;
-static _Thread_local err_slot tls_err[4];
-static _Thread_local unsigned tls_next;
+static NGS__THREAD_LOCAL err_slot tls_err[4];
+static NGS__THREAD_LOCAL unsigned tls_next;
 
 static err_slot *slot_for(const ngs *db, int make) {
   unsigned i;
@@ -1098,7 +1098,13 @@ static int build_fact(const fact_ref *r, const dec_t *d, ngs_fact **out) {
   char *tp;
   if (d->n_tags > (SIZE_MAX / 2) / sizeof(ngs_str)) return NGS_NOMEM;
   rd.p = d->tags; rd.end = d->tags + d->tags_len; rd.err = 0;
-  for (i = 0; i < d->n_tags; i++) { const char *t; size_t tl; ngs__cbor_get_text(&rd, &t, &tl); tag_txt += tl + 1; }
+  /* decode_fact already validated the tags; check again anyway, so a broken
+  ** invariant reads as corruption instead of a read of unset values */
+  for (i = 0; i < d->n_tags; i++) {
+    const char *t = NULL; size_t tl = 0;
+    if (ngs__cbor_get_text(&rd, &t, &tl)) return NGS_CORRUPT;
+    tag_txt += tl + 1;
+  }
   o_tags = sz;   sz = ALIGN16(sz + (size_t)d->n_tags * sizeof(ngs_str));
   o_ns = sz;     sz += d->ns_len + 1;
   o_title = sz;  sz += d->title_len + 1;
@@ -1124,9 +1130,10 @@ static int build_fact(const fact_ref *r, const dec_t *d, ngs_fact **out) {
   tp = (char *)p + o_tagtxt;
   rd.p = d->tags; rd.end = d->tags + d->tags_len; rd.err = 0;
   for (i = 0; i < d->n_tags; i++) {
-    const char *t; size_t tl;
-    ngs__cbor_get_text(&rd, &t, &tl);
-    memcpy(tp, t, tl); tags[i].p = tp; tags[i].n = tl; tp += tl + 1;
+    const char *t = NULL; size_t tl = 0;
+    if (ngs__cbor_get_text(&rd, &t, &tl)) { free(p); return NGS_CORRUPT; }
+    if (tl) memcpy(tp, t, tl);
+    tags[i].p = tp; tags[i].n = tl; tp += tl + 1;
   }
   f->tags = d->n_tags ? tags : NULL; f->n_tags = (size_t)d->n_tags;
   if (d->attrs_len) memcpy(p + o_attrs, d->attrs, d->attrs_len);
