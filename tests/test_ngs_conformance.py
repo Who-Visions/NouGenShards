@@ -157,3 +157,50 @@ def test_engine_behaviour_m1(tmp_path: Path) -> None:
         f"engine crashed (rc={run.returncode}):\n{run.stdout}{run.stderr}"
     )
     assert not fails, "\n".join(fails)
+
+
+CRASH = ROOT / "tests" / "ngs_conformance" / "crash.c"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="crash injection uses fork and SIGKILL")
+def test_engine_crash_injection(tmp_path: Path) -> None:
+    """SIGKILL a writer mid-batch, repeatedly; acked facts survive, batches stay atomic."""
+    amalg = _amalgamation()
+    if amalg is None:
+        pytest.skip("no engine amalgamation on this branch")
+    exe = shutil.which("cc")
+    if exe is None:
+        pytest.skip("cc not installed")
+    binary = tmp_path / "crash"
+    build = subprocess.run(
+        [
+            exe,
+            "-std=c11",
+            "-O1",
+            "-w",
+            f"-I{HEADER_DIR}",
+            str(CRASH),
+            str(amalg),
+            "-o",
+            str(binary),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    rounds = os.environ.get("NGS_CRASH_ROUNDS", "30")
+    seed = os.environ.get("NGS_CRASH_SEED", "1085")
+    run = subprocess.run(
+        [str(binary), str(tmp_path / "db"), rounds, seed],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    print(run.stdout)
+    fails = [line for line in run.stdout.splitlines() if line.startswith("FAIL")]
+    assert "SUMMARY" in run.stdout, (
+        f"crash driver died (rc={run.returncode}):\n{run.stdout}{run.stderr}"
+    )
+    assert not fails, "\n".join(fails)
