@@ -9,7 +9,8 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOLS = ("arxiv_radar", "arxiv_lab_watch", "arxiv_paper", "morph_gate")
+TOOLS = ("arxiv_radar", "arxiv_lab_watch", "arxiv_paper", "morph_gate",
+         "context7_search", "context7_resolve", "context7_docs", "context7_usage")
 CONTROL_PLANE_TOOLS = (
     "control_plane_context_select",
     "control_plane_pareto_route",

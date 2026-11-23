@@ -66,6 +66,14 @@ def isolated_vector_sidecar(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_recall_budget(tmp_path_factory, monkeypatch):
+    """Learned recall-hook budget samples must never land in the real ~/.nougen/state,
+    and one test's samples must never change another test's budget."""
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_BUDGET_STATE",
+                       str(tmp_path_factory.mktemp("recall-budget") / "recall_hook_budget.json"))
+
+
+@pytest.fixture(autouse=True)
 def dpapi_stand_in(monkeypatch):
     """Returns ``apply(module)`` so tests that reload keymaker can re-patch it."""
     def apply(module):

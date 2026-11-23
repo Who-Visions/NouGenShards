@@ -14,7 +14,7 @@
 // Auth: KV RELAY_AUTH key "relay:<id>" holds the sha256 hex of the node's existing join
 // token (written at provisioning; see relayAuthRecord). The token itself is never stored.
 //
-// Free plan only: one SQLite-backed Durable Object per node, hibernatable WebSockets,
+// One SQLite-backed Durable Object per node (Workers Paid since 2026-11-22), hibernatable WebSockets,
 // auto-responded heartbeats so an idle node costs no DO wall time.
 
 const ENC = new TextEncoder();
