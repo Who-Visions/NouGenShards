@@ -524,7 +524,7 @@ Everything outside the standard is one small internal interface (`src/plat.h`), 
 | make a write durable | `fflush` empties the C buffer only | `fdatasync` (Linux), `fsync`; on macOS `fcntl(F_FULLFSYNC)` | `FlushFileBuffers` |
 | atomic replace, directory durability | no atomic-rename contract, no directory sync | `rename`, then `fsync` of the directory | `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and `MOVEFILE_WRITE_THROUGH` |
 | truncate a torn tail | none | `ftruncate` | `SetFilePointerEx` + `SetEndOfFile` |
-| single-writer lock (`LOCK`) | none | `fcntl(F_SETLK)` | `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` and `LOCKFILE_FAIL_IMMEDIATELY` |
+| single-writer lock (`LOCK`) | none | `flock(LOCK_EX \| LOCK_NB)`, not `fcntl(F_SETLK)`: an `fcntl` record lock belongs to the process, so a second `open` in the same process does not conflict with it, and closing any descriptor on the file drops it. `flock` belongs to the open file description, so both cases behave. Linux may use `F_OFD_SETLK` instead; both avoid the per-process trap | `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` and `LOCKFILE_FAIL_IMMEDIATELY` (per handle, so a second open in the same process also conflicts) |
 | read-only mapping of immutable files | none | `mmap(PROT_READ, MAP_SHARED)` | `CreateFileMappingW` + `MapViewOfFile` |
 | monotonic clock (deadlines, `t_record` ordering) | `timespec_get` is wall time only | `clock_gettime(CLOCK_MONOTONIC)` | `QueryPerformanceCounter` |
 | entropy for key generation | `rand` is not a CSPRNG | `getrandom` (Linux), `getentropy` (macOS) | `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` |
