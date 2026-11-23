@@ -1208,31 +1208,40 @@ def get_secret(key: str) -> Optional[str]:
         return _get_secret_unbounded(key)
     import contextvars  # pylint: disable=import-outside-toplevel
     import threading  # pylint: disable=import-outside-toplevel
-    box: dict = {}
-    ctx = contextvars.copy_context()  # tenant context is a contextvar; keep it
-
-    def _run():
-        try:
-            box["value"] = ctx.run(_get_secret_unbounded, key)
-        except BaseException as exc:  # pylint: disable=broad-except
-            box["error"] = exc
-
+    # One reader per key, registered BEFORE it can block, so concurrent callers
+    # in the timeout window share it instead of racing past the dedupe and cap
+    # (second review on PR 1202). Entries: key -> (thread, box).
     with _STUCK_LOCK:
-        for name, thread in list(_STUCK_READERS.items()):
+        for name, (thread, _b) in list(_STUCK_READERS.items()):
             if not thread.is_alive():
-                del _STUCK_READERS[name]   # it finished late; forget it
-        if key in _STUCK_READERS or len(_STUCK_READERS) >= _STUCK_READERS_MAX:
-            logger.error("keymaker read of '%s' skipped: %s; returning None without a new reader",
-                         key, "a previous reader for this key is still blocked"
-                         if key in _STUCK_READERS else
-                         f"{len(_STUCK_READERS)} readers are already blocked")
-            return None
-    worker = threading.Thread(target=_run, name=f"keymaker-read-{key}", daemon=True)
-    worker.start()
+                del _STUCK_READERS[name]   # finished (on time or late); forget it
+        entry = _STUCK_READERS.get(key)
+        if entry is None:
+            if len(_STUCK_READERS) >= _STUCK_READERS_MAX:
+                logger.error("keymaker read of '%s' skipped: %d readers already in flight or blocked; "
+                             "returning None", key, len(_STUCK_READERS))
+                return None
+            box: dict = {}
+            ctx = contextvars.copy_context()  # tenant context is a contextvar; keep it
+
+            def _run():
+                try:
+                    box["value"] = ctx.run(_get_secret_unbounded, key)
+                except BaseException as exc:  # pylint: disable=broad-except
+                    box["error"] = exc
+
+            worker = threading.Thread(target=_run, name=f"keymaker-read-{key}", daemon=True)
+            _STUCK_READERS[key] = (worker, box)
+            worker.start()
+        else:
+            worker, box = entry           # share the reader already in flight
+            if box.get("stuck"):
+                logger.error("keymaker read of '%s' skipped: its reader is still blocked; "
+                             "returning None without waiting", key)
+                return None
     worker.join(timeout)
     if worker.is_alive():
-        with _STUCK_LOCK:
-            _STUCK_READERS[key] = worker
+        box["stuck"] = True
         import sys  # pylint: disable=import-outside-toplevel
         import traceback  # pylint: disable=import-outside-toplevel
         frame = sys._current_frames().get(worker.ident)  # pylint: disable=protected-access
@@ -1240,6 +1249,9 @@ def get_secret(key: str) -> Optional[str]:
         logger.error("keymaker read of '%s' did not finish in %.0fs; returning None. "
                      "The reader is stuck here:\n%s", key, timeout, where)
         return None
+    with _STUCK_LOCK:
+        if _STUCK_READERS.get(key, (None,))[0] is worker:
+            del _STUCK_READERS[key]
     if "error" in box:
         raise box["error"]
     return box.get("value")

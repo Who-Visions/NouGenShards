@@ -119,3 +119,55 @@ def test_reader_that_finishes_late_frees_its_slot(monkeypatch):
     release.set()
     time.sleep(0.2)
     assert keymaker.get_secret("K2") == "fresh"
+
+
+def test_concurrent_callers_share_one_reader(monkeypatch):
+    """Second review on PR 1202: callers arriving inside the timeout window must
+    not each start a reader (the old check-then-act race)."""
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(keymaker, "_STUCK_READERS", {})
+    monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "0.5")
+
+    def slow(key):
+        calls.append(key)
+        release.wait(30)
+        return "v"
+
+    monkeypatch.setattr(keymaker, "_get_secret_unbounded", slow)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(keymaker.get_secret("RACE")))
+               for _ in range(6)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(5)
+        assert calls == ["RACE"]
+        assert results == [None] * 6
+    finally:
+        release.set()
+
+
+def test_concurrent_callers_get_the_value_when_it_arrives_in_time(monkeypatch):
+    gate = threading.Event()
+    calls = []
+    monkeypatch.setattr(keymaker, "_STUCK_READERS", {})
+    monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "5")
+
+    def read(key):
+        calls.append(key)
+        gate.wait(5)
+        return "shared"
+
+    monkeypatch.setattr(keymaker, "_get_secret_unbounded", read)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(keymaker.get_secret("SH")))
+               for _ in range(4)]
+    for t in threads:
+        t.start()
+    time.sleep(0.2)
+    gate.set()
+    for t in threads:
+        t.join(5)
+    assert calls == ["SH"] and results == ["shared"] * 4
