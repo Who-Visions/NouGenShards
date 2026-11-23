@@ -338,7 +338,7 @@ static void test_threads(void) {
 ** there and exact, every batch is all-or-nothing, and the log takes new
 ** writes. Each kill point runs with several power-loss seeds. */
 #define WL_STEPS 14
-typedef struct { ngs_id id; char body[48]; } ack_t;
+typedef struct { ngs_id id; char body[64]; } ack_t;
 
 static int run_workload(ack_t *acked, int *n_acked) {
   ngs *db;

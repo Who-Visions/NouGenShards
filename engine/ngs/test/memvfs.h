@@ -216,7 +216,7 @@ static void mv_crash(void) {
     if (!x->durable_exists && (mv_rand() & 1)) { mv_clear_ops(x); free(x->cur); free(x->dur); x->used = 0; continue; }
     x->cur_n = 0;
     mv_reserve(x, x->dur_n + 1);
-    memcpy(x->cur, x->dur, x->dur_n);
+    if (x->dur_n) memcpy(x->cur, x->dur, x->dur_n);
     x->cur_n = x->dur_n;
     for (k = 0; k < x->n_ops; k++) {
       mv_op *op = &x->ops[k];

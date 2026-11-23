@@ -49,10 +49,17 @@ Every other function returns `NGS_MISUSE`. `supersedes` on a fact is `NGS_MISUSE
    record that already holds a 512-byte-aligned run of 32 or more zero bytes would still read as
    torn.
 2. `plat_win32.c` is not written: the platform layer is POSIX only, built and tested on macOS
-   x86_64 (Apple clang 17). Not built with gcc or on Linux yet.
+   x86_64 (Apple clang 17) and on Linux x86_64 (GCC 13.3, gate green; Clang 18 green apart from
+   the ASan step, whose runtime that box lacked). The amalgamation also compiles as C++11.
 3. One mutex per handle, and one write + fsync per call: no group commit yet (M2).
 4. Open checks CRC, decode, id and chain for every record, but not signatures (cost);
    `ngs_verify` checks signatures.
+
+## 50K scorecard
+
+`bench/bench_50k.c`, results in `bench/SCORECARD-50K.md`: 4.1K to 4.2K facts/s ingest (signing
+bound), 6.2K/s durable with 8 writers, 250K gets/s, 0.15 s reopen at 50K facts, 754 signature
+verifies/s.
 
 ## Gate
 

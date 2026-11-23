@@ -22,6 +22,14 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Thread-local storage: C11 keyword, or C++11's spelling when the amalgamation
+** is compiled as C++ (embedders that build everything with a C++ compiler). */
+#if defined(__cplusplus)
+#  define NGS__THREAD_LOCAL thread_local
+#else
+#  define NGS__THREAD_LOCAL _Thread_local
+#endif
+
 /* ---------- platform layer (SPEC 15): the only OS-specific surface ----------
 ** Every function returns 0 or a NGS_* error code. A test VFS replaces the
 ** whole table, which is how the crash harness injects at every function. */
