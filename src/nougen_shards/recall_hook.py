@@ -165,6 +165,18 @@ def _compact(shard: dict, snippet: int) -> dict:
     }
 
 
+#: How long an empty in-process answer keeps waiting for a warm remote lane.
+#: Covers a healthy node (~0.45 s) and the gateway round trip with margin.
+DEFAULT_EMPTY_GRACE_MS = 1200
+
+
+def _empty_grace_s() -> float:
+    try:
+        return max(0, int(os.environ.get("NOUGEN_RECALL_HOOK_EMPTY_GRACE_MS", DEFAULT_EMPTY_GRACE_MS))) / 1000.0
+    except ValueError:
+        return DEFAULT_EMPTY_GRACE_MS / 1000.0
+
+
 def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DEFAULT_BUDGET_MS,
                 snippet: int = DEFAULT_SNIPPET) -> dict[str, Any]:
     """Return ``{tier, partial, shards, elapsed_ms, mark, ...}`` within ``budget_ms``.
@@ -259,7 +271,12 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
         # fast failure on both hands the remaining budget to the in-process lanes.
         # An in-process answer ends the wait only if it found something: an empty
         # local vault (a tester's fresh box) must not beat the fleet's memory.
+        # An empty answer still caps the wait at the grace window, so a hanging
+        # remote lane costs a no-match prompt ~1 s, not the whole budget.
+        grace_end = started + _empty_grace_s()
         while time.monotonic() < deadline and not (full and full[-1] is None and len(full) > 1):
+            if full and full[-1] is None and time.monotonic() >= grace_end:
+                break
             node_done = bool(t_node) and not t_node.is_alive() and bool(node) and node[-1] is None
             gw_done = bool(t_gw) and not t_gw.is_alive() and bool(gateway) and gateway[-1] is None
             if node_done or (gw_done and not (t_node and t_node.is_alive())):

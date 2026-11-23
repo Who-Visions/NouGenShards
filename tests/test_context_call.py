@@ -301,3 +301,24 @@ def test_a_node_that_lost_a_fair_race_is_not_called_slow(box, monkeypatch):
     recall["deadline_hit"] = True
     monkeypatch.setattr(cc, "probe_tcp", lambda url, t: "UP")
     assert any(b["kind"] == "node_slow" for b in cc.diagnose(recall, 0.2))
+
+
+def test_a_hanging_gateway_never_holds_a_node_that_answered(box, gateway, monkeypatch):
+    """Review #1195: the node's answer ends the wait even while the gateway hangs."""
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_search",
+                        lambda q, limit, timeout_s, token=None: [{"id": 7, "_db_index": 1, "title": "local"}])
+    monkeypatch.setattr(recall_hook, "_gateway_search", lambda *a, **k: time.sleep(5) or [])
+    r = recall_hook.recall_hook("gateway blackholed", budget_ms=4000)
+    assert r["tier"] == "node" and r["elapsed_ms"] < 1000, r
+
+
+def test_an_empty_local_answer_caps_the_wait_on_a_hanging_node(box, monkeypatch):
+    """Review #1195: a no-match prompt with a hung node costs the grace window, not the budget."""
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_EMPTY_GRACE_MS", "300")
+    monkeypatch.setattr(recall_hook, "_node_search", lambda *a, **k: time.sleep(5) or [])
+    monkeypatch.setattr(core, "retrieve", lambda *a, **k: [])
+    r = recall_hook.recall_hook("nothing matches this", budget_ms=4000)
+    assert r["elapsed_ms"] < 1500, r
+    assert "node" in r.get("pending", []) and not r.get("deadline_hit"), r
