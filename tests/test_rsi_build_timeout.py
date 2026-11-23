@@ -58,7 +58,7 @@ TIMEOUT = {"checked": True, "ok": False, "code": None, "error": "timeout",
 OK = {"checked": True, "ok": True, "code": 0}
 
 
-def _cycle(monkeypatch, tmp_path, build, prev=None):
+def _cycle(monkeypatch, tmp_path, build, prev=None, surfaces=None):
     """Run one cycle with every outside call stubbed so nothing is posted or fetched.
 
     Returns (summary, calls) where calls lists "degraded:<status>" / "recovered:<prev>"."""
@@ -69,7 +69,7 @@ def _cycle(monkeypatch, tmp_path, build, prev=None):
     monkeypatch.delenv("NOUGEN_RSI_UNKNOWN_ALERT_AFTER", raising=False)
     monkeypatch.setattr(rsi, "check_builds", lambda repo: build)
     monkeypatch.setattr(rsi, "check_self_update_health", lambda *a, **k: {"ok": True})
-    monkeypatch.setattr(rsi, "check_surfaces", lambda *a, **k: {"degraded": False})
+    monkeypatch.setattr(rsi, "check_surfaces", lambda *a, **k: surfaces or {"degraded": False})
     monkeypatch.setattr(rsi, "fetch_exa_temporal_latest", lambda *a, **k: {"hits": []})
     monkeypatch.setattr(rsi, "propose_improvement", lambda *a, **k: {"skipped": False})
     monkeypatch.setattr(rsi, "_record_bitemporal_receipt", lambda *a, **k: {})
@@ -130,3 +130,24 @@ def test_alert_threshold_is_configurable(tmp_path, monkeypatch):
     out = rsi.run()
     assert out["status"] == "BUILD_UNKNOWN"
     assert calls == ["degraded:BUILD_UNKNOWN"]
+
+
+def test_broken_then_one_timeout_then_ok_still_posts_recovered_for_the_broken_incident(tmp_path, monkeypatch):
+    """Codex P2 (rsi.py:503): an alerted BUILD_BROKEN carried through one UNKNOWN must still close."""
+    broken, calls = _cycle(monkeypatch, tmp_path, {"checked": True, "ok": False, "code": 1},
+                           prev={"status": "ok"})
+    assert calls == ["degraded:BUILD_BROKEN"]
+    assert broken["open_incident"] == "BUILD_BROKEN"
+    unknown, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev=broken)
+    assert calls == []
+    assert unknown["open_incident"] == "BUILD_BROKEN"
+    _, calls = _cycle(monkeypatch, tmp_path, OK, prev=unknown)
+    assert calls == ["recovered:BUILD_BROKEN"]
+
+
+def test_a_timeout_does_not_hide_a_degraded_surface_in_the_same_run(tmp_path, monkeypatch):
+    """Codex P2 (rsi.py:497): the timeout grace applies only when the other checks are healthy."""
+    summary, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev={"status": "ok"},
+                            surfaces={"degraded": True})
+    assert summary["status"] == "DEGRADED"
+    assert calls == ["degraded:DEGRADED"]

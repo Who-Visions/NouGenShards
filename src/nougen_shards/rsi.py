@@ -69,6 +69,17 @@ def _unknown_alert_after() -> int:
     return value if value > 0 else _UNKNOWN_ALERT_AFTER_FALLBACK
 
 
+def _status_for(build: Dict[str, Any], surfaces: Dict[str, Any], health: Dict[str, Any]) -> str:
+    """A cut-off build is UNKNOWN only while the other checks are healthy. If a surface or the
+    self-update chain is degraded in the same run, report that, so the timeout cannot hide it."""
+    degraded = bool(surfaces.get("degraded") or health.get("ok") is False)
+    if not build.get("ok", True):
+        if build.get("timed_out"):
+            return "DEGRADED" if degraded else "BUILD_UNKNOWN"
+        return "BUILD_BROKEN"
+    return "DEGRADED" if degraded else "ok"
+
+
 def _repo_path() -> Path:
     default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
     return Path(_env_path("NOUGEN_RSI_REPO", default))
@@ -456,10 +467,7 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         "exa_temporal_latest": exa_temporal,
         "proposal": proposal,
         "applied": False,  # gate-don't-write: this module never flips this to true itself
-        "status": (("BUILD_UNKNOWN" if build.get("timed_out") else "BUILD_BROKEN")
-                   if not build.get("ok", True)
-                   else "DEGRADED" if (surfaces.get("degraded") or health.get("ok") is False)
-                   else "ok"),
+        "status": _status_for(build, surfaces, health),
     }
     summary["bitemporal_receipt"] = _record_bitemporal_receipt(summary, instant_ms)
 
@@ -492,17 +500,26 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     prev_unknown_run = int((prev or {}).get("consecutive_unknown", 0) or 0)
     unknown_run = prev_unknown_run + 1 if status == "BUILD_UNKNOWN" else 0
     summary["consecutive_unknown"] = unknown_run
+    # The incident still open after the last alerted run. An unalerted timeout carries it forward,
+    # so BROKEN -> UNKNOWN -> ok still closes the BROKEN incident with a RECOVERED leg.
+    prev_open = (prev or {}).get("open_incident") or None
+    open_incident = prev_open
     if status == "BUILD_UNKNOWN" and unknown_run < alert_after:
         summary["alert"] = {"posted": False,
                             "reason": f"build check timed out ({unknown_run}/{alert_after}); not alerting yet"}
     elif status != "ok" and (prev_status != status or (status == "BUILD_UNKNOWN" and unknown_run == alert_after)):
         summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
+        open_incident = status
     elif status != "ok":
         summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
+    elif prev_open:
+        summary["alert"] = _alert_recovered(prev_open, report_path)
+        open_incident = None
     elif prev_status == "BUILD_UNKNOWN" and prev_unknown_run < alert_after:
         summary["alert"] = {"posted": False, "reason": "recovered from a single unalerted timeout"}
     elif prev_status not in ("ok", "none", "unknown"):
         summary["alert"] = _alert_recovered(prev_status, report_path)
+    summary["open_incident"] = open_incident
 
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
