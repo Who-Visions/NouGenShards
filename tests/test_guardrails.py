@@ -215,3 +215,33 @@ def test_verify_passes_and_skips_missing_tools():
         "NOUGEN_VERIFY_CMDS": 'python -c "print(1)" ;; no-such-linter-xyz --check'})
     assert proc.returncode == 0
     assert "not installed: no-such-linter-xyz" in proc.stderr
+
+
+# Review threads on PR 1110 (Codex P1s): cd must move the guard's idea of the
+# working directory, and value-taking push options must not shift the refspec.
+@pytest.mark.parametrize("cmd", [
+    "cd /tmp && rm -rf important",
+    "cd / ; rm -rf etc",
+    "pushd /tmp && rm -rf important",
+    "(cd /tmp && rm -rf important)",
+    "cd $SOMEWHERE && rm -rf build",
+    "git push --repo=origin HEAD:main",
+    "git push --repo origin HEAD:main",
+    "git push -o ci.skip origin HEAD:main",
+    "git push --push-option=x origin main",
+])
+def test_guard_blocks_review_cases(cmd):
+    assert bash_guard.check(cmd, ROOT, root=ROOT, branch="lane/x")
+
+
+@pytest.mark.parametrize("cmd", [
+    "cd tools && rm -rf __pycache__",
+    "git push --repo=origin HEAD:lane/x",
+    "git push -o ci.skip origin lane/x",
+])
+def test_guard_allows_review_cases(cmd):
+    assert bash_guard.check(cmd, ROOT, root=ROOT, branch="lane/x") is None
+
+
+def test_bare_push_after_unresolvable_cd_is_refused():
+    assert bash_guard.check("cd $X && git push", ROOT, root=ROOT, branch="lane/x")
