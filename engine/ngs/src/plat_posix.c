@@ -20,6 +20,7 @@ typedef int ngs_plat_posix_tu_not_empty;   /* ISO C: a translation unit needs a 
 #include <stdio.h>     /* rename */
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -171,17 +172,15 @@ static int p_list(ngs_vfs *v, const char *dir, int (*cb)(void *arg, const char *
   return rc;
 }
 
-/* fcntl locks are per process: a second open of the same directory in this process is
-** refused by the open-directory table in the core, not here. */
+/* flock(2) locks belong to the open file description, not the process: closing some other descriptor
+** to the same file does not drop them (the fcntl F_SETLK trap), and a second open of the lock file,
+** even in this process, conflicts. The core's open-directory table still refuses a second handle early. */
 static int p_lock(ngs_vfs *v, const char *path, ngs_file **out) {
   ngs_file *f = NULL;
-  struct flock fl;
   int rc = p_open(v, path, NGS_VF_RDWR | NGS_VF_CREATE, &f);
   if (rc) return rc;
-  memset(&fl, 0, sizeof fl);
-  fl.l_type = F_WRLCK; fl.l_whence = SEEK_SET; fl.l_start = 0; fl.l_len = 0;
-  if (fcntl(((pfile *)f)->fd, F_SETLK, &fl) != 0) {
-    rc = (errno == EAGAIN || errno == EACCES) ? NGS_BUSY : map_err(errno);
+  if (flock(((pfile *)f)->fd, LOCK_EX | LOCK_NB) != 0) {
+    rc = (errno == EWOULDBLOCK || errno == EAGAIN) ? NGS_BUSY : map_err(errno);
     p_close(f);
     return rc;
   }
