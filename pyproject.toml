@@ -26,7 +26,7 @@ dependencies = [
     # spelling so a node mid-upgrade keeps serving.
     "mcp>=2.0",
     "fastapi>=0.110",
-    "uvicorn>=0.29",
+    "uvicorn>=0.36",  # --loop module:factory (Windows SelectorEventLoop) needs 0.36+
     "sqlalchemy>=2.0",       # connectors/sql.py uses the 2.0 API (make_url, text)
     "gradio>=4.0",
     "tqdm>=4.66",
@@ -102,7 +102,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # War Games scenarios and schema ship with the wheel (nougen wargame list/run).
-nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json"]
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json",
+                 # Email templates ship as data (byte-identical copies of the
+                 # verified guest-pack templates; see email_templates.py).
+                 "email_templates/*.html", "email_templates/*.txt"]
 nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]

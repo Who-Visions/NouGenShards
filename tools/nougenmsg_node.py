@@ -346,6 +346,20 @@ def _dispatch_foreign_target(msg: dict, dest: tuple) -> "tuple[int, dict]":
     })
 
 
+def _stamp_peer(addr: str) -> None:
+    """Tell the bus which TCP peer this request came from (server-side fact).
+
+    Lets a forwarded message with no sender machine be labelled with the
+    fleet node that owns the peer's LAN address instead of "unknown". Loopback
+    (the tunnel) and unlisted addresses stay "unknown". See nougenmsg.node_for_peer.
+    """
+    try:
+        from nougen_shards import nougenmsg as _bus
+        _bus.PEER.addr = str(addr or "")
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def _env_path(key: str, *default_parts: str) -> Path:
     """Path from ``key`` if set, else ``~`` joined with ``default_parts``."""
     raw = os.environ.get(key, "").strip()
@@ -1124,6 +1138,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self._reject_unauthorized():
             return
+        _stamp_peer(self.client_address[0] if self.client_address else "")
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"

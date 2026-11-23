@@ -1102,6 +1102,12 @@ def _start_recall_warmup() -> None:
 _LISTENER_SELFCHECK_S_FALLBACK = 60.0
 _LISTENER_SELFCHECK_FAILS_FALLBACK = 3
 _LISTENER_SELFCHECK_EXIT_CODE = 3
+#: While the recall warm-up is running (status "warming"), refused self-checks
+#: are logged but not counted, for at most this many seconds. Blade 2026-11-22:
+#: the boot-time vector cache build pegged the CPU, the 2 s self-connect timed
+#: out three times, and the node os._exit(3)ed mid-warm-up with nothing to
+#: restart it. Env NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S wins; 0 disables.
+_LISTENER_SELFCHECK_WARMUP_GRACE_S_FALLBACK = 900.0
 _LISTENER_STATE: dict = {"status": "pending", "port": None, "consecutive_failures": 0, "checks": 0}
 
 
@@ -1129,6 +1135,16 @@ def listener_selfcheck_status() -> dict:
     return dict(_LISTENER_STATE)
 
 
+def _selfcheck_in_warmup_grace(grace_s: float, started: float) -> bool:
+    """True while a refused self-check should be forgiven: the recall warm-up
+    is actively running and the grace window since self-check start is open."""
+    if grace_s <= 0:
+        return False
+    if _WARMUP_STATE.get("status") != "warming":
+        return False
+    return (time.monotonic() - started) < grace_s
+
+
 def _start_listener_selfcheck(exit_fn=None) -> None:
     """Exit the process when our own accept loop is dead.
 
@@ -1148,7 +1164,10 @@ def _start_listener_selfcheck(exit_fn=None) -> None:
     fails_needed = _env_int("NOUGEN_LISTENER_SELFCHECK_FAILS", _LISTENER_SELFCHECK_FAILS_FALLBACK)
     _exit = exit_fn or os._exit  # pylint: disable=protected-access
     log = logging.getLogger(__name__)
-    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval, "fails_needed": fails_needed})
+    grace_s = _env_float("NOUGEN_LISTENER_SELFCHECK_WARMUP_GRACE_S", _LISTENER_SELFCHECK_WARMUP_GRACE_S_FALLBACK)
+    started = time.monotonic()
+    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval,
+                            "fails_needed": fails_needed, "warmup_grace_s": grace_s})
 
     def _run():
         # First probe only after one interval: the socket is not bound until
@@ -1159,6 +1178,11 @@ def _start_listener_selfcheck(exit_fn=None) -> None:
             _LISTENER_STATE["checks"] += 1
             if ok:
                 _LISTENER_STATE["consecutive_failures"] = 0
+                continue
+            if _selfcheck_in_warmup_grace(grace_s, started):
+                _LISTENER_STATE["deferred_during_warmup"] = _LISTENER_STATE.get("deferred_during_warmup", 0) + 1
+                log.warning("listener self-check: 127.0.0.1:%d refused during recall warm-up; "
+                            "not counted (grace %.0fs)", port, grace_s)
                 continue
             _LISTENER_STATE["consecutive_failures"] += 1
             log.warning("listener self-check: 127.0.0.1:%d refused (%d/%d)", port,
@@ -4670,7 +4694,7 @@ def studio_lighting(color: str = "green", target: str = "all") -> dict:
 @node_mcp.tool()
 @_offloaded
 def tunnel_status() -> dict:
-    """Inspect active Ngrok TLS ingress edge tunnels for local MsgNode and Web HUD."""
+    """Cloudflare tunnel health: this box's cloudflared connector plus /health on the fleet hostnames."""
     from nougen_shards import tunnel
     return tunnel.get_active_tunnels()
 
@@ -5313,8 +5337,107 @@ app.add_middleware(_McpSlashNormalizer)
 # / recon / transcript dumps) but keep the FastAPI app serving — the token-gated
 # /mcp endpoint and REST API stay up. Raising here would abort `uvicorn app:app`
 # and take /mcp down along with the HUD.
-if _hud_auth or not _network_exposed:
-    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
+from nougen_shards import hud_login as _hud_login
+from fastapi.responses import HTMLResponse as _HTMLResponse, RedirectResponse as _RedirectResponse
+
+
+def _hud_cookie_secure(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    return proto.split(",")[0].strip().lower() == "https"
+
+
+def _hud_signed_in(request: Request) -> _RedirectResponse:
+    # Callers only get here after the ticket or password proved this node's account,
+    # so the cookie is minted for the configured account, never for request text.
+    resp = _RedirectResponse("/", status_code=303)
+    resp.set_cookie(_hud_login.COOKIE, _hud_login.session_cookie(_hud_login.hud_user()),
+                    max_age=_hud_login.SESSION_TTL, httponly=True, samesite="lax",
+                    secure=_hud_cookie_secure(request), path="/")
+    resp.headers["cache-control"] = "no-store"
+    return resp
+
+
+def _hud_public_host(request: Request) -> str:
+    return request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+
+
+def _hud_user_dependency(request: Request) -> Optional[str]:
+    """Gradio auth_dependency: the account a valid session cookie signs in."""
+    return _hud_login.session_user(request.cookies.get(_hud_login.COOKIE))
+
+
+# Registered BEFORE the Gradio catch-all at "/" so these paths reach FastAPI.
+@app.get("/hud/login", include_in_schema=False)
+async def _hud_login_page(request: Request):
+    return _HTMLResponse(_hud_login.login_page(host=_hud_public_host(request)), headers={"cache-control": "no-store"})
+
+
+@app.post("/hud/login", include_in_schema=False)
+async def _hud_login_submit(request: Request):
+    from urllib.parse import parse_qs
+    form = parse_qs((await request.body())[:4096].decode("utf-8", "replace"))
+    user = (form.get("username") or [""])[0]
+    if not _hud_login.check_password(user, (form.get("password") or [""])[0]):
+        return _HTMLResponse(_hud_login.login_page("That username and password did not match.", _hud_public_host(request)),
+                             status_code=401, headers={"cache-control": "no-store"})
+    return _hud_signed_in(request)
+
+
+@app.get("/hud/ticket", include_in_schema=False)
+async def _hud_ticket(request: Request, t: str = ""):
+    """Landing for the Join worker's Google sign-in: a one-time ticket becomes a session."""
+    user = _hud_login.redeem_ticket(t)
+    if not user:
+        return _HTMLResponse(_hud_login.login_page("That sign-in link has expired. Sign in again.", _hud_public_host(request)),
+                             status_code=401, headers={"cache-control": "no-store"})
+    return _hud_signed_in(request)
+
+
+@app.get("/hud/logout", include_in_schema=False)
+async def _hud_logout():
+    resp = _RedirectResponse("/hud/login", status_code=303)
+    resp.delete_cookie(_hud_login.COOKIE, path="/")
+    return resp
+
+
+class _HudLoginRedirect:
+    """Send a signed-out browser asking for the HUD page to /hud/login.
+
+    With auth_dependency Gradio answers a signed-out page load with a bare 401;
+    a person should see the sign-in page instead. Only GET/HEAD "/" is
+    redirected: Gradio's own API calls keep their 401, other routes are untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") == "http" and scope.get("method") in ("GET", "HEAD")
+                and scope.get("path") == "/"):
+            cookie = ""
+            for k, v in scope.get("headers", []):
+                if k.lower() == b"cookie":
+                    for part in v.decode("latin-1").split(";"):
+                        name, _, val = part.strip().partition("=")
+                        if name == _hud_login.COOKIE:
+                            cookie = val
+            if not _hud_login.session_user(cookie):
+                await send({"type": "http.response.start", "status": 303,
+                            "headers": [(b"location", b"/hud/login"), (b"cache-control", b"no-store"),
+                                        (b"content-length", b"0")]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+        await self.app(scope, receive, send)
+
+
+if _hud_auth:
+    # Signed in by the Google identity the Join page already verified, or the
+    # fallback form; never by a password the tenant was never given. See
+    # nougen_shards.hud_login.
+    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth_dependency=_hud_user_dependency)
+    app.add_middleware(_HudLoginRedirect)
+elif not _network_exposed:
+    app = gr.mount_gradio_app(app, cortex_hud, path="/")
 else:
     print(
         "[WARN] Cortex HUD not mounted: host is network-exposed "
@@ -5406,4 +5529,9 @@ if __name__ == "__main__":
     # Host/auth already validated at import (fail-closed guard above): by here we
     # are either on loopback or have HUD auth configured.
     port = int(os.environ.get("NGS_PORT", "4444"))
-    uvicorn.run(app, host=_bind_host, port=port)
+    if sys.platform == "win32" and os.environ.get("NOUGEN_NODE_LOOP", "").strip().lower() != "proactor":
+        # Proactor closes the listening socket on WinError 64; see
+        # tools/ngs_node_serve.py WINDOWS_LOOP.
+        uvicorn.run(app, host=_bind_host, port=port, loop="asyncio:SelectorEventLoop")
+    else:
+        uvicorn.run(app, host=_bind_host, port=port)

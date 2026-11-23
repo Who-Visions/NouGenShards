@@ -57,3 +57,125 @@ def test_body_query_rejects_thin_bodies():
 def test_negative_queries_are_seeded():
     assert ev.negative_queries(5, 7) == ev.negative_queries(5, 7)
     assert ev.negative_queries(5, 7) != ev.negative_queries(5, 8)
+
+
+def test_classify_query_failure_taxonomy():
+    clean = ev.classify_query_failure(
+        ["1@1", "2@1"], ["1@1"], [{"domain_key": "alpha"}],
+        expected_domain="alpha", k=10, latency_ms=12.0, max_latency_ms=500.0,
+    )
+    assert clean == []
+
+    missed = ev.classify_query_failure(
+        ["2@1"], ["1@1"], [{"domain_key": "beta"}],
+        expected_domain="alpha", k=10, latency_ms=650.0, max_latency_ms=500.0,
+    )
+    assert missed == [ev.ERROR_MISSED_SHARD, ev.ERROR_WRONG_DOMAIN, ev.ERROR_LATENCY_BREACH]
+
+    stale = ev.classify_query_failure(
+        ["2@1", "3@1", "4@1", "1@1"], ["1@1"], [{"domain_key": "alpha"}],
+        expected_domain="alpha", k=10, stale_rank_cutoff=3,
+    )
+    assert stale == [ev.ERROR_STALE_RANK]
+
+
+def test_evaluate_gate_governance_blocks_even_with_perfect_scores():
+    report = {
+        "overall": {"recall@5": 1.0, "mrr": 1.0},
+        "latency_ms": {"p95": 40.0},
+        "negatives_total": 5,
+        "negatives_nonempty": 0,
+        "domain_leaks": 1,
+        "isolation_probes_run": 9,
+        "vault_isolation": {"probes_run": 9, "positive_expected": 3, "positive_hits": 3, "cross_leaks": 0},
+        "taxonomy_counts": {ev.ERROR_WRONG_DOMAIN: 1},
+    }
+    verdict = ev.evaluate_gate(report)
+    assert verdict["governance_passed"] is False
+    assert verdict["quality_passed"] is True
+    assert verdict["passed"] is False
+    assert any("tenant_isolation" in msg for msg in verdict["failures"])
+
+
+def test_evaluate_gate_quality_floor_failure():
+    report = {
+        "overall": {"recall@5": 0.9, "mrr": 0.4},
+        "latency_ms": {"p95": 40.0},
+        "negatives_total": 5,
+        "negatives_nonempty": 0,
+        "domain_leaks": 0,
+        "isolation_probes_run": 9,
+        "vault_isolation": {"probes_run": 9, "positive_expected": 3, "positive_hits": 3, "cross_leaks": 0},
+    }
+    verdict = ev.evaluate_gate(report, min_mrr=0.70)
+    assert verdict["governance_passed"] is True
+    assert verdict["quality_passed"] is False
+    assert verdict["passed"] is False
+    assert any("mrr" in msg for msg in verdict["failures"])
+
+
+def test_evaluate_gate_passes_when_all_thresholds_met():
+    report = {
+        "overall": {"recall@5": 0.95, "mrr": 0.88},
+        "latency_ms": {"p95": 120.0},
+        "negatives_total": 6,
+        "negatives_nonempty": 0,
+        "domain_leaks": 0,
+        "isolation_probes_run": 9,
+        "vault_isolation": {"probes_run": 9, "positive_expected": 3, "positive_hits": 3, "cross_leaks": 0},
+        "taxonomy_counts": {},
+    }
+    verdict = ev.evaluate_gate(report)
+    assert verdict["passed"] is True
+    assert verdict["governance_passed"] is True
+    assert verdict["quality_passed"] is True
+    assert verdict["failures"] == []
+
+
+def test_evaluate_gate_blocks_when_isolation_coverage_missing():
+    report = {
+        "overall": {"recall@5": 1.0, "mrr": 1.0},
+        "latency_ms": {"p95": 40.0},
+        "negatives_total": 5,
+        "negatives_nonempty": 0,
+        "domain_leaks": 0,
+        "isolation_probes_run": 0,
+    }
+    verdict = ev.evaluate_gate(report)
+    assert verdict["governance_passed"] is False
+    assert verdict["passed"] is False
+    assert any("no isolation probes executed" in msg for msg in verdict["failures"])
+
+
+def test_evaluate_gate_blocks_on_vault_leak_even_with_zero_domain_leaks():
+    report = {
+        "overall": {"recall@5": 1.0, "mrr": 1.0},
+        "latency_ms": {"p95": 40.0},
+        "negatives_total": 5,
+        "negatives_nonempty": 0,
+        "domain_leaks": 0,
+        "vault_leaks": 1,
+        "isolation_probes_run": 9,
+        "vault_isolation": {"probes_run": 9, "positive_expected": 3, "positive_hits": 3, "cross_leaks": 1},
+    }
+    verdict = ev.evaluate_gate(report)
+    assert verdict["governance_passed"] is False
+    assert verdict["passed"] is False
+    assert any("vault=1" in msg for msg in verdict["failures"])
+
+
+def test_evaluate_gate_blocks_on_own_vault_recall_failure():
+    report = {
+        "overall": {"recall@5": 1.0, "mrr": 1.0},
+        "latency_ms": {"p95": 40.0},
+        "negatives_total": 5,
+        "negatives_nonempty": 0,
+        "domain_leaks": 0,
+        "vault_leaks": 0,
+        "isolation_probes_run": 9,
+        "vault_isolation": {"probes_run": 9, "positive_expected": 3, "positive_hits": 2, "cross_leaks": 0},
+    }
+    verdict = ev.evaluate_gate(report)
+    assert verdict["governance_passed"] is False
+    assert verdict["passed"] is False
+    assert any("own-vault sentinel recall failed" in msg for msg in verdict["failures"])

@@ -35,7 +35,7 @@ import os
 import contextvars
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 DEFAULT_BUDGET_MS = 800
 DEFAULT_LIMIT = 5
@@ -333,20 +333,91 @@ def format_block(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _env_budget_ms() -> int:
-    """Search budget for the installed hook: ``NOUGEN_RECALL_HOOK_BUDGET_MS``, else the default.
+_LEARN_SAMPLES = 20
+_LEARN_MAX_MS_DEFAULT = 5000
 
-    The installed command passes no budget, so without this every host ran at
-    the constant however long its vault takes to answer (a 10-database vault
-    measured about 3 s for the keyword lane on 2026-11-16, so 800 ms returned
-    nothing on every prompt).
+
+def _budget_state_path() -> str:
+    explicit = os.environ.get("NOUGEN_RECALL_HOOK_BUDGET_STATE", "").strip()
+    if explicit:
+        return explicit
+    base = os.environ.get("NOUGEN_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".nougen", "state")
+    return os.path.join(base, "recall_hook_budget.json")
+
+
+def _learn_max_ms() -> int:
+    try:
+        v = int(os.environ.get("NOUGEN_RECALL_HOOK_BUDGET_MAX_MS", "") or _LEARN_MAX_MS_DEFAULT)
+    except ValueError:
+        v = _LEARN_MAX_MS_DEFAULT
+    return max(DEFAULT_BUDGET_MS, v)
+
+
+def _learned_budget_ms() -> int:
+    """p90 of this host's recent full-recall times x 1.5, clamped to [default, max].
+
+    Measured on blade 2026-11-22: the node lane answers in ~1.2 s, so the 800 ms
+    constant timed out on almost every prompt and the shards-first gate read
+    DEGRADED all day. The budget now follows what this host actually takes.
+    """
+    try:
+        with open(_budget_state_path(), encoding="utf-8") as fh:
+            samples = [int(x) for x in (json.load(fh).get("samples") or []) if int(x) > 0]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return DEFAULT_BUDGET_MS
+    if not samples:
+        return DEFAULT_BUDGET_MS
+    samples.sort()
+    # Nearest-rank p90: ceil(0.9 n) - 1. int(0.9 n) picked the max for n = 10.
+    p90 = samples[max(0, -(-len(samples) * 9 // 10) - 1)]
+    return max(DEFAULT_BUDGET_MS, min(_learn_max_ms(), int(p90 * 1.5)))
+
+
+def record_budget_sample(result: Dict[str, Any]) -> None:
+    """Feed one hook result back: a completed vector/node recall records its
+    real time; a partial one records 2x the budget it ran out of, so a host
+    that keeps timing out grows its budget instead of staying DEGRADED."""
+    try:
+        if result.get("partial"):
+            ms = int(result.get("budget_ms") or DEFAULT_BUDGET_MS) * 2
+        elif result.get("tier") in ("node", "full"):
+            ms = int(result.get("elapsed_ms") or 0)
+        else:
+            return
+        if ms <= 0:
+            return
+        path = _budget_state_path()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                samples = list(json.load(fh).get("samples") or [])
+        except (OSError, ValueError, AttributeError):
+            samples = []
+        samples = (samples + [min(ms, _learn_max_ms())])[-_LEARN_SAMPLES:]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"samples": samples}, fh)
+        os.replace(tmp, path)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _env_budget_ms() -> int:
+    """Search budget for the installed hook.
+
+    ``NOUGEN_RECALL_HOOK_BUDGET_MS`` wins when set; otherwise the budget is
+    learned from this host's recent recall times (see _learned_budget_ms),
+    falling back to the default constant only when nothing has been measured.
     """
     raw = os.environ.get("NOUGEN_RECALL_HOOK_BUDGET_MS", "").strip()
-    try:
-        value = int(raw) if raw else DEFAULT_BUDGET_MS
-    except ValueError:
-        value = DEFAULT_BUDGET_MS
-    return value if value > 0 else DEFAULT_BUDGET_MS
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return _learned_budget_ms()
 
 
 def enter_read_only_process() -> bool:
@@ -375,7 +446,9 @@ def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     prompt = str(payload.get("prompt") or "")
     if "budget_ms" not in kwargs:
         kwargs["budget_ms"] = _env_budget_ms()
-    block = format_block(recall_hook(prompt, **kwargs))
+    result = recall_hook(prompt, **kwargs)
+    record_budget_sample(result)
+    block = format_block(result)
     block = block.encode("utf-8", "replace").decode("utf-8")
     return json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                               "additionalContext": block}})

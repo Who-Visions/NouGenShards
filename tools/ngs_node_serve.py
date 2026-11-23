@@ -107,6 +107,24 @@ def child_env(port: int, token: str | None) -> dict:
     return env
 
 
+#: Windows: run the node on the selector event loop. The default Proactor loop closes
+#: the LISTENING socket when a client resets a connection while AcceptEx is pending
+#: (OSError [WinError 64], ERROR_NETNAME_DELETED): uvicorn stays alive with nothing
+#: bound, the listener self-check exits 3 minutes later, and the node is dark until
+#: the watchdog. Seen on blade (Python 3.11.0, 2026-11-22, repeatedly) and whoart
+#: (Python 3.11.9, 2026-10-26). select() caps near 512 sockets, far above a node's load.
+WINDOWS_LOOP = "asyncio:SelectorEventLoop"
+
+
+def node_command(host: str, port: int, platform: str | None = None) -> list[str]:
+    """The uvicorn child command. NOUGEN_NODE_LOOP=proactor restores the default loop."""
+    platform = platform or sys.platform
+    cmd = [_repo_python(), "-m", "uvicorn", "app:app", "--host", host, "--port", str(port)]
+    if platform == "win32" and os.environ.get("NOUGEN_NODE_LOOP", "").strip().lower() != "proactor":
+        cmd += ["--loop", WINDOWS_LOOP]
+    return cmd
+
+
 def main() -> int:
     host = os.environ.get("NGS_BIND_HOST", "0.0.0.0")
     port = resolve_port()
@@ -127,7 +145,7 @@ def main() -> int:
     print("[*] HUD       : not mounted (network-exposed, no NGS_HUD_USER/PASSWORD) - intended")
     print(f"[*] peers need NGS_ALLOW_INSECURE_CLOUD=1 for plaintext http to {ip}")
 
-    cmd = [_repo_python(), "-m", "uvicorn", "app:app", "--host", host, "--port", str(port)]
+    cmd = node_command(host, port)
     print(f"[*] exec      : {' '.join(cmd)}", flush=True)
     return subprocess.call(cmd, cwd=str(REPO), env=env)
 
