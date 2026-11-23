@@ -1,5 +1,5 @@
 {
-  // NouGen Relay. Free plan: Workers + SQLite-backed Durable Objects + KV only.
+  // NouGen Relay: Workers + SQLite-backed Durable Objects + KV (account on Workers Paid).
   // Default (top-level) config is the PREVIEW deployment on workers.dev; nodes are
   // reached as https://<worker>.workers.dev/n/<id>/. Production routes are not set
   // here on purpose: taking over <id>.nougenai.com is a GM decision (env "production").
@@ -21,6 +21,7 @@
       "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "RelaySession" }] },
       "kv_namespaces": [{ "binding": "RELAY_AUTH", "id": "818a2f89d45744b2acb49e3eefdc132d" }],
       "vars": { "RELAY_HOST_SUFFIX": "", "RELAY_REQUEST_TIMEOUT_MS": "30000", "RELAY_MAX_BODY_BYTES": "8388608" },
+      "observability": { "enabled": true },
       "routes": [
         { "pattern": "relay.nougenai.com", "custom_domain": true }
       ]
