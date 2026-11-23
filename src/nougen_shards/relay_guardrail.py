@@ -9,6 +9,7 @@ Ensures that no leg is closed without a verified EvidenceTuple:
 import os
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -92,7 +93,7 @@ def safe_ack_leg(
 
     data = json.loads(leg_file.read_text(encoding="utf-8"))
     data["status"] = "acked"
-    data["resolved_at"] = subprocess.check_output(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"]).decode().strip()
+    data["resolved_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data["resolution_note"] = resolution_note
     data["evidence_tuple"] = {
         "artifact": str(artifact_path),
