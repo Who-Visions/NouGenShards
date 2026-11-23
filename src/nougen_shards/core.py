@@ -4531,7 +4531,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     _mark_expired(all_results, score_now)
     for item in all_results:
         raw_rel = item.get("rerank_score", item.get("final_score", 0.5))
-        if rel_span > 0:
+        if min_rel >= 0 and max_rel > 0:
+            # Ratio-to-max preserves relative proximity for non-negative RRF/rerank scores
+            # so a small rank gap cannot stretch into a 10x cliff and evict older shards
+            # (relevance=0.1 * decay=0.1 * density<1.0 < 0.01).
+            relevance = 0.1 + 0.9 * (raw_rel / max_rel)
+        elif rel_span > 0:
             relevance = 0.1 + 0.9 * ((raw_rel - min_rel) / rel_span)
         else:
             relevance = 1.0 if raw_rel > 0 else 0.5
