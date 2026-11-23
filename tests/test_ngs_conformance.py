@@ -1,4 +1,4 @@
-"""Compile-time conformance harness for the NGS native engine header (PR 1199).
+"""Compile-time conformance harness for the NGS native engine header (PR 1199, draft 0.3.1 @ 685901a).
 
 Engine-independent: compiles tests/ngs_conformance/header_contract.c against
 ngs.h as C11 (pedantic, -Werror) and as C++. The header is located via
@@ -20,7 +20,8 @@ CONTRACT = ROOT / "tests" / "ngs_conformance" / "header_contract.c"
 HEADER_DIR = Path(os.environ.get("NGS_HEADER_DIR", ROOT / "docs" / "memory-engine"))
 
 pytestmark = pytest.mark.skipif(
-    not (HEADER_DIR / "ngs.h").is_file(), reason="ngs.h not on this branch yet (PR 1199)"
+    not (HEADER_DIR / "ngs.h").is_file(),
+    reason="ngs.h not on this branch yet (PR 1199)",
 )
 
 
@@ -45,5 +46,31 @@ def test_header_contract_cxx() -> None:
     _compile("c++", ["-std=c++11", "-x", "c++", str(CONTRACT)])
 
 
-def test_header_alone_c11() -> None:
-    _compile("cc", ["-std=c11", "-pedantic", "-x", "c", str(HEADER_DIR / "ngs.h")])
+def test_spec_header_check_runs(tmp_path: Path) -> None:
+    """Build and run the spec PR's own check/ngs_header_check.c when present."""
+    src = HEADER_DIR / "check" / "ngs_header_check.c"
+    if not src.is_file():
+        pytest.skip("spec header check not present")
+    exe = shutil.which("cc")
+    if exe is None:
+        pytest.skip("cc not installed")
+    out = tmp_path / "ngs_header_check"
+    build = subprocess.run(
+        [
+            exe,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{HEADER_DIR}",
+            str(src),
+            "-o",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(out)], capture_output=True, text=True, check=False)
+    assert run.returncode == 0, run.stdout + run.stderr

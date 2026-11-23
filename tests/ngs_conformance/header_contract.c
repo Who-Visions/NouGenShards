@@ -1,56 +1,58 @@
 /*
-** Conformance check for the NGS public header (docs/memory-engine/ngs.h, PR 1199).
-** Compile-only: pins every exported signature and the codes/flags bindings rely on,
-** so a header change that breaks callers fails here instead of in a binding.
-** Engine-independent; links nothing.
+** Conformance pins for the NGS public header (docs/memory-engine/ngs.h).
+** Target: PR 1199 draft 0.3.1, commit 685901a.
+**
+** Complements the PR's own check/ngs_header_check.c (layouts, *_INIT macros,
+** time helpers). This file pins what that one does not: result-code wire
+** values and the exact prototype of every exported function. A redeclaration
+** with a different prototype is a hard error in C, so any signature drift in
+** ngs.h fails here before it breaks a binding. Compile-only; links nothing.
 */
 #include "ngs.h"
 
 #if defined(__cplusplus)
-#define NGS_SA static_assert
+#define PIN_SA static_assert
 #else
-#define NGS_SA _Static_assert
+#define PIN_SA _Static_assert
 #endif
 
 /* result codes are wire values: bindings hard-code them */
-NGS_SA(NGS_OK == 0, "NGS_OK");
-NGS_SA(NGS_NOTFOUND == 2 && NGS_BUSY == 3 && NGS_CORRUPT == 4, "codes 2-4");
-NGS_SA(NGS_TIMEOUT == 8 && NGS_MISUSE == 11 && NGS_ABSTAIN == 12, "codes 8-12");
-NGS_SA(NGS_FORMAT == 1, "on-disk format");
-
-/* fixed-size value types */
-NGS_SA(sizeof(ngs_id) == 32, "ngs_id is BLAKE3-256");
-NGS_SA(sizeof(ngs_pubkey) == 32, "ngs_pubkey is Ed25519");
-NGS_SA(sizeof(ngs_time) == 8, "ngs_time is int64 microseconds");
-NGS_SA(NGS_TIME_NOW == INT64_MIN, "NGS_TIME_NOW sentinel");
-
-/* memory kinds and the recall kind bitmask (1 << kind) */
-NGS_SA(NGS_EPISODIC == 1 && NGS_SEMANTIC == 2 && NGS_PROCEDURAL == 3, "kinds");
-NGS_SA(NGS_KIND_ALL == 0, "kind filter all");
+PIN_SA(NGS_OK == 0 && NGS_ERROR == 1 && NGS_NOTFOUND == 2 && NGS_BUSY == 3, "codes 0-3");
+PIN_SA(NGS_CORRUPT == 4 && NGS_NOGRANT == 5 && NGS_MISMATCH == 6 && NGS_QUARANTINED == 7, "codes 4-7");
+PIN_SA(NGS_NOMEM == 9 && NGS_IOERR == 10 && NGS_MISUSE == 11 && NGS_TOOBIG == 12, "codes 9-12");
+PIN_SA(NGS_FORMAT == 1, "on-disk format");
+PIN_SA(NGS_EPISODIC == 1 && NGS_SEMANTIC == 2 && NGS_PROCEDURAL == 3, "kinds");
+PIN_SA(NGS_FUSE_ZSCORE == 0 && NGS_FUSE_RRF == 1, "fusion");
+PIN_SA(NGS_MARK_NOT_USED == 0 && NGS_MARK_USED == 1, "marks");
+PIN_SA(sizeof(ngs_id) == 32 && sizeof(ngs_pubkey) == 32 && sizeof(ngs_time) == 8, "value types");
 
 /* every exported function, pinned by exact prototype */
-/* a redeclaration with a different prototype is a hard compile error */
-int ngs_open(const char *, const ngs_open_opts *, NGS **);
-int ngs_close(NGS *);
-const char * ngs_errmsg(NGS *);
-void ngs_free(void *);
-int ngs_node_pubkey(NGS *, ngs_pubkey *);
-int ngs_remember(NGS *, const ngs_fact_in *, ngs_id *);
-int ngs_invalidate(NGS *, const ngs_id *, ngs_str);
-int ngs_link(NGS *, const ngs_id *, const ngs_id *, ngs_str, float);
-int ngs_redact(NGS *, const ngs_id *, ngs_str);
-int ngs_grant(NGS *, ngs_str, const ngs_pubkey *);
-int ngs_get(NGS *, const ngs_id *, ngs_fact **);
-int ngs_recall(NGS *, const ngs_query *, ngs_results **);
-int ngs_as_of(NGS *, ngs_time, ngs_time, const ngs_query *, ngs_results **);
-int ngs_mark(NGS *, const ngs_id *, ngs_mark_kind);
-int ngs_checkpoint(NGS *, uint8_t **, size_t *);
-int ngs_verify(NGS *, const uint8_t *, size_t);
-int ngs_rebuild(NGS *);
-int ngs_heads(NGS *, ngs_head **, size_t *);
-int ngs_sync_export(NGS *, const ngs_head *, size_t, uint8_t **, size_t *);
-int ngs_sync_import(NGS *, const uint8_t *, size_t, ngs_sync_report *);
-int ngs_stats(NGS *, ngs_stats_t *);
-
-/* score arms: vec, kw, recency, salience, link */
-NGS_SA(sizeof(((ngs_hit *)0)->arm) / sizeof(float) == 5, "five recall arms");
+int ngs_libversion_number(void); 
+const char *ngs_libversion(void);
+const char *ngs_errstr(int rc);
+int ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out);
+int ngs_close(ngs *db);
+const char *ngs_errmsg(ngs *db);
+void ngs_free(void *p);
+int ngs_node_pubkey(ngs *db, ngs_pubkey *out);
+int ngs_flush(ngs *db); 
+int ngs_remember(ngs *db, const ngs_fact_in *in, int32_t flags, ngs_id *out_id);
+int ngs_remember_many(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags, ngs_id *out_ids );
+int ngs_invalidate(ngs *db, const ngs_id *id, ngs_str reason);
+int ngs_link(ngs *db, const ngs_id *a, const ngs_id *b, ngs_str rel, float weight, ngs_id *out_link_id);
+int ngs_redact(ngs *db, const ngs_id *id, ngs_str reason);
+int ngs_grant(ngs *db, ngs_str ns, const ngs_pubkey *writer, ngs_id *out_grant_id);
+int ngs_get(ngs *db, const ngs_id *id, ngs_fact **out); 
+int ngs_recall(ngs *db, const ngs_query *q, ngs_results **out);
+int ngs_as_of(ngs *db, ngs_time t_valid, ngs_time t_record, const ngs_query *q, ngs_results **out);
+int ngs_mark(ngs *db, const ngs_id *id, int32_t mark); 
+int ngs_scan(ngs *db, const ngs_scan_opts *o, ngs_iter **it);
+int ngs_iter_next(ngs_iter *it, ngs_fact **out); 
+void ngs_iter_close(ngs_iter *it);
+int ngs_checkpoint(ngs *db, uint8_t **ckpt, size_t *len); 
+int ngs_verify(ngs *db, const uint8_t *ckpt, size_t len);
+int ngs_rebuild(ngs *db);
+int ngs_heads(ngs *db, ngs_head **heads, size_t *n); 
+int ngs_sync_export(ngs *db, const ngs_head *since, size_t n_since, uint8_t **segment, size_t *len); 
+int ngs_sync_import(ngs *db, const uint8_t *segment, size_t len, ngs_sync_report **report);
+int ngs_stats(ngs *db, ngs_stats_t *out);
