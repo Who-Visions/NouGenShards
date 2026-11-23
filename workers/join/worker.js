@@ -26,15 +26,15 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 // The supervisor keeps every account on a computer online (tools/nougen-supervisor).
 // Each file is pinned by SHA-256: setup refuses a download that does not match.
 export const SUPERVISOR = {
-  version: "1.3.3",
-  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.3/",
+  version: "1.4.0",
+  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.4.0/",
   sha256: {
-    "windows-amd64.exe": "db30fb67cd6b2c97c6d5d52d0d75d56353e1b970ae7d3a8ee8a22bec36cfc128",
-    "windows-arm64.exe": "3443f6649736997477c96fe241a517e9439d822261bcf9380d21495cb1c6d924",
-    "darwin-arm64": "70d80dd59199e2ad397b7157b583c572816adb02c2c579d2b6f925429a2c8221",
-    "darwin-amd64": "bff84a465a47e5a4ee20b7985fe14621edad1c6db03b6486a15a675cabc85da7",
-    "linux-amd64": "4cea9946baceb2a46f8a99d3eb5e7226b39527d200c358aceb51c3b9809cb1e5",
-    "linux-arm64": "77c9bca9e51fcfdbcad15d5f3cfbee24f36c2991bc5036feb57c554e988af071",
+    "windows-amd64.exe": "e17168fcaf0c691fe008588c1789a7e2f1d0d8e6dbed2c113f9bbc82945e54ca",
+    "windows-arm64.exe": "4e23fa2d94833648fda35938d4c02887f857ecdc6605095814b015d0662a3b3f",
+    "darwin-arm64": "81caa546f747c1861392365ba93ffca91e5099e7d0ff6f7ffc8cd8a29264a941",
+    "darwin-amd64": "9e6869cfb7640d05786895774116f2e3e4d8d7b96cbc69ff61d9a69fd23b62ad",
+    "linux-amd64": "035bd1c4cac10e9550e4746de07061c9e37612fc86bdb4ee252b9c6a674966c7",
+    "linux-arm64": "52902388f5d0dfc530a7736d666ac9fa2818431ac019476c80dc5414a12610cd",
   },
 };
 // What the supervisor reads for one account. One line of JSON, so it can sit
@@ -180,7 +180,11 @@ export function setupArgs(t) {
   // The relay address is written into node.json inside the script. Only a
   // plain TLS address made of URL-safe characters is let through.
   const relay_url = SAFE_RELAY_URL.test(String((t && t.relay_url) || "")) ? String(t.relay_url) : "";
-  return { ...t, id, port, code: origin ? code : "", origin: code ? origin : "", relay_url };
+  // What setup opens when it is done: the Join page's /open, which signs the
+  // tenant into the node with the Google account they joined with. Without it,
+  // the node's own address (its sign-in page offers the same Google button).
+  const open_url = /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?\/open$/.test(String((t && t.open_url) || "")) ? String(t.open_url) : "";
+  return { ...t, id, port, code: origin ? code : "", origin: code ? origin : "", relay_url, open_url };
 }
 // Where a running supervisor answers. A build that reports "holds" leaves an
 // account alone while its folder carries an "updating" file, so setup can
@@ -257,7 +261,7 @@ export function setupCmd(raw) {
     "Write-Host 'Starting... (first start downloads Python once)'",
     "$ok = $false",
     `for ($i = 0; $i -lt 90; $i++) { try { Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:${t.port}/health' -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 5 } }`,
-    `if ($ok) { Start-Process '${psq(t.url)}'; Write-Host 'Done. NouGen is on and will start by itself whenever this computer starts.' }`,
+    `if ($ok) { Start-Process '${psq(t.open_url || t.url)}'; Write-Host 'Done. NouGen is on and will start by itself whenever this computer starts.' }`,
     "else { Write-Host 'NouGen did not start yet. Restart the computer once; it starts by itself. If it still does not, send a photo of this window to the person who sent you the link.' -ForegroundColor Yellow }",
     "Start-Sleep 15", ""].join("\r\n");
 }
@@ -542,7 +546,7 @@ if [ "$TR" != relay ] && ! tunnel_up; then
 fi
 report ok
 # NOUGEN_NO_BROWSER=1 skips opening the node page (headless boxes, test runs).
-[ -n "\${NOUGEN_NO_BROWSER:-}" ] || (command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
+[ -n "\${NOUGEN_NO_BROWSER:-}" ] || (command -v open >/dev/null && open '${shq(t.open_url || t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.open_url || t.url)}' >/dev/null 2>&1) || true
 if [ "$MODE" = foreground ]; then
   echo "NouGen is on. It will not start by itself after a restart here; to start it again run:"
   echo "  $S run"
@@ -754,26 +758,35 @@ async function hmacB64(secret, msg) {
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(msg)));
   return btoa(String.fromCharCode(...sig)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-async function makeState(env) {
+// A join sign-in's state is nonce.issued.sig (signed over "join-state:");
+// an /open sign-in's is "open." + the same, signed over "open-state:", so one
+// can never be passed off as the other.
+async function makeState(env, purpose = "join") {
   const body = `${rand(16)}.${Date.now()}`;
-  return `${body}.${await hmacB64(env.GOOGLE_CLIENT_SECRET || "", "join-state:" + body)}`;
+  const sig = await hmacB64(env.GOOGLE_CLIENT_SECRET || "", `${purpose}-state:` + body);
+  return `${purpose === "open" ? "open." : ""}${body}.${sig}`;
 }
+// The purpose ("join" or "open") of a valid state, or "" for an invalid one.
 async function stateValid(env, state) {
-  const parts = String(state || "").split(".");
-  if (parts.length !== 3 || !env.GOOGLE_CLIENT_SECRET) return false;
+  let parts = String(state || "").split("."), purpose = "join";
+  if (parts.length === 4 && parts[0] === "open") { purpose = "open"; parts = parts.slice(1); }
+  if (parts.length !== 3 || !env.GOOGLE_CLIENT_SECRET) return "";
   const [nonce, issued, sig] = parts;
   const age = Date.now() - Number(issued);
-  if (!(age >= 0 && age < 600000)) return false;
-  const want = await hmacB64(env.GOOGLE_CLIENT_SECRET, `join-state:${nonce}.${issued}`);
+  if (!(age >= 0 && age < 600000)) return "";
+  const want = await hmacB64(env.GOOGLE_CLIENT_SECRET, `${purpose}-state:${nonce}.${issued}`);
   const [a, b] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(sig)), crypto.subtle.digest("SHA-256", enc.encode(want))]);
-  return crypto.subtle.timingSafeEqual ? crypto.subtle.timingSafeEqual(a, b)
+  const same = crypto.subtle.timingSafeEqual ? crypto.subtle.timingSafeEqual(a, b)
     : new Uint8Array(a).every((x, i) => x === new Uint8Array(b)[i]);
+  return same ? purpose : "";
 }
 
-async function googleStart(env, url) {
-  const state = await makeState(env);
+// purpose "open" signs a tenant into the node they already have. No account
+// picker: a person signed in to one Google account goes straight through.
+async function googleStart(env, url, purpose = "join") {
+  const state = await makeState(env, purpose);
   const q = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`,
-    response_type: "code", scope: "openid email", state, prompt: "select_account" });
+    response_type: "code", scope: "openid email", state, ...(purpose === "open" ? {} : { prompt: "select_account" }) });
   return new Response(null, { status: 302, headers: { location: "https://accounts.google.com/o/oauth2/v2/auth?" + q,
     "set-cookie": `__Host-nj_state=${state}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax` } });
 }
@@ -784,7 +797,8 @@ async function googleEmail(env, url, req) {
   // and the state must carry our own signature and be under 10 minutes old.
   const cookie = (req.headers.get("cookie") || "").match(/(?:^|;\s*)__Host-nj_state=([^;]+)/);
   if (!code || !state || !cookie || cookie[1] !== state) throw new Error("sign-in expired; start again");
-  if (!(await stateValid(env, state))) throw new Error("sign-in expired; start again");
+  const purpose = await stateValid(env, state);
+  if (!purpose) throw new Error("sign-in expired; start again");
   const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
       redirect_uri: `${url.origin}/google/callback`, grant_type: "authorization_code" }) });
@@ -794,7 +808,31 @@ async function googleEmail(env, url, req) {
   const p = JSON.parse(atob(j.id_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
   const validIss = p.iss === "accounts.google.com" || p.iss === "https://accounts.google.com";
   if (!validIss || p.aud !== env.GOOGLE_CLIENT_ID || !p.email || p.email_verified !== true) throw new Error("that Google account has no verified email");
-  return String(p.email).toLowerCase();
+  return { email: String(p.email).toLowerCase(), purpose };
+}
+
+// ------------------------------------------------------------------ node sign-in
+// The node's HUD trusts the email Google just verified here: a one-time ticket,
+// valid two minutes, HMAC-signed with the tenant's node token (only this worker
+// and that node hold it). Format and checks: src/nougen_shards/hud_login.py.
+export const TICKET_TTL_S = 120;
+export async function hudTicket(t, now = Date.now()) {
+  const claims = { exp: Math.floor(now / 1000) + TICKET_TTL_S, n: rand(12), sub: String(t.id) };
+  const body = btoa(JSON.stringify(claims)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${body}.${await hmacB64(String(t.token), "hud-ticket:" + body)}`;
+}
+async function openNode(env, email) {
+  const tenant = await env.TENANTS.get("tenant:" + email, "json");
+  const tun = await env.TENANTS.get("tunnel:" + email, "json");
+  if (!tenant || !tenant.token || !(tenant.node_url || (tun && tun.hostname)))
+    return shell("No node yet", `<h1>No node for this account yet</h1><p>That Google account has not joined NouGen.</p><p><a class="join-action" href="/">Join NouGen</a></p>`);
+  // Same account id lookup() puts in node.json, which the node reads as NGS_HUD_USER.
+  const id = tenant.tenant_id || email.split("@")[0];
+  const base = String(tenant.node_url || "https://" + tun.hostname).replace(/\/+$/, "");
+  if (!/^https:\/\/[A-Za-z0-9.-]+$/.test(base)) throw new Error("this node's address is not usable");
+  const ticket = await hudTicket({ id, token: tenant.token });
+  return new Response(null, { status: 302, headers: { location: `${base}/hud/ticket?t=${encodeURIComponent(ticket)}`,
+    "cache-control": "no-store", "referrer-policy": "no-referrer" } });
 }
 
 // ------------------------------------------------------------------ links
@@ -837,8 +875,10 @@ export default {
       if (path === "/privacy") return shell("Privacy", PRIVACY);
       if (path === "/terms") return shell("Terms", TERMS);
       if (path === "/google/start") return googleStart(env, url);
+      if (path === "/open") return googleStart(env, url, "open");
       if (path === "/google/callback") {
-        const email = await googleEmail(env, url, req);
+        const { email, purpose } = await googleEmail(env, url, req);
+        if (purpose === "open") return openNode(env, email);
         const known = await env.TENANTS.get("tenant:" + email);
         if (!known && !(await underIpLimit(env, req.headers.get("cf-connecting-ip") || "?")))
           return shell("Try later", "<h1>Too many sign-ups</h1><p>This network has created several nodes today. Try again tomorrow.</p>");
@@ -856,7 +896,8 @@ export default {
         // Linux and macOS setup can fall back to the relay; the Windows setup
         // has no relay step, so it is not given an address it would not use.
         if (sh) t.relay_url = await relayProvision(env, t);
-        return new Response(sh ? setupSh({ ...t, code: m[1], origin: url.origin }) : setupCmd(t), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+        const open_url = url.origin + "/open";
+        return new Response(sh ? setupSh({ ...t, code: m[1], origin: url.origin, open_url }) : setupCmd({ ...t, open_url }), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${sh ? "setup-nougen.sh" : "Set up NouGen.cmd"}"` } });
       }
       return new Response("Not found", { status: 404 });

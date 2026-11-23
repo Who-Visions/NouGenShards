@@ -197,6 +197,49 @@ def _dispatch_routes(msg: dict, routes: list) -> "tuple[int, dict]":
                           "results": results, "failed": failed})
 
 
+_VERIFY_KEYS = ("delivery_verified", "pipe_delivered")
+
+
+def _lane_reports(results: object) -> list:
+    """The per-lane report dicts.
+
+    Results nest as ``{node: {lane: report}}`` (or lists of those). Descend through
+    containers until a dict that is itself a lane report, then stop: nothing inside
+    a lane report is read as another verdict, so an unrelated nested object that
+    carries a ``delivered`` or ``pipe_delivered`` key never counts.
+    """
+    out: list = []
+    if isinstance(results, list):
+        for v in results:
+            out.extend(_lane_reports(v))
+    elif isinstance(results, dict):
+        if _lane_state(results) is not None:
+            out.append(results)
+        else:
+            for v in results.values():
+                if isinstance(v, (dict, list)):
+                    out.extend(_lane_reports(v))
+    return out
+
+
+def _lane_state(lane: dict) -> "str | None":
+    """'verified', 'queued', 'unverified', or None when the dict is not a lane report."""
+    reported = False
+    for key in _VERIFY_KEYS:
+        if key in lane:
+            reported = True
+            if lane.get(key) is True:
+                return "verified"
+    if isinstance(lane.get("delivered"), list):
+        reported = True
+        if lane["delivered"]:
+            return "verified"
+    if "queue_accepted" in lane:
+        # Accepted into a queue is not a receiver confirmation.
+        return "queued" if lane.get("queue_accepted") is True else "unverified"
+    return "unverified" if reported else None
+
+
 def _lanes_verified(results: object) -> "bool | None":
     """Did any receiving lane confirm delivery?
 
@@ -204,48 +247,26 @@ def _lanes_verified(results: object) -> "bool | None":
     reported and none verified, None when the result carries no lane reports
     (for example a background fan-out that has not answered yet).
     """
-    seen = False
-
-    def walk(node: object) -> bool:
-        nonlocal seen
-        if isinstance(node, dict):
-            if "delivery_verified" in node:
-                seen = True
-                if node.get("delivery_verified") is True:
-                    return True
-            if "pipe_delivered" in node:
-                seen = True
-                if node.get("pipe_delivered") is True:
-                    return True
-            if "queue_accepted" in node:
-                # Accepted into a queue is not a receiver confirmation.
-                seen = True
-            if isinstance(node.get("delivered"), list):
-                seen = True
-                if node["delivered"]:
-                    return True
-            return any(walk(v) for v in node.values() if isinstance(v, (dict, list)))
-        if isinstance(node, list):
-            return any(walk(v) for v in node)
-        return False
-
-    if walk(results):
-        return True
-    return False if seen else None
+    states = [s for s in map(_lane_state, _lane_reports(results)) if s]
+    if not states:
+        return None
+    return "verified" in states
 
 
 def _receipt(body: dict) -> dict:
     """Make the top-level flag honest: routed is not delivered.
 
     ``delivered`` stays True only when some lane verified the hand-off or no lane
-    reported at all; when every reporting lane is unverified it becomes False with
-    status ``unverified`` (the message was still routed, and left for the drain).
+    reported at all. When lanes reported and none verified, ``delivered`` becomes
+    False and ``status`` says why: ``queued`` when at least one lane accepted it
+    into a queue, else ``unverified``. Either way the message was routed.
     """
-    verified = _lanes_verified(body.get("results"))
+    states = [s for s in map(_lane_state, _lane_reports(body.get("results"))) if s]
+    verified = None if not states else ("verified" in states)
     body["delivery_verified"] = verified
     if verified is False:
         body["delivered"] = False
-        body["status"] = "unverified"
+        body["status"] = "queued" if "queued" in states else "unverified"
     elif verified is None:
         body.setdefault("status", "queued")
     return body
@@ -719,13 +740,31 @@ def elevated_state(message_id: str) -> "dict | None":
         return dict(outcome) if outcome is not None else None
 
 
+def _delivery_label(msg: dict) -> str:
+    """The banner label for a delivered message, via display_sender.
+
+    Resolves from the sender's origin envelope (machine, lane, session, machine
+    id) so a session reads who actually wrote it, not a bare sender string a
+    bridge typed. Falls back to the raw sender only if the import fails.
+    """
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
+    try:
+        from nougen_shards.nougenmsg import display_sender  # noqa: E402
+        return display_sender(origin)
+    except Exception:
+        return str(msg.get("sender", "unknown"))
+
+
 def _run_elevated(msg: dict) -> None:
     try:
         verdict = gate_and_deliver(
             str(msg.get("text", "")), str(msg.get("sender", "unknown")),
             message_id=msg.get("message_id"),  # honored if the sender provides one
             origin=str(msg.get("origin", "peer")),
-            origin_proof=msg.get("origin_proof"))
+            origin_proof=msg.get("origin_proof"),
+            label=_delivery_label(msg))  # banner only; authorization reads the raw sender
         # Waking STARTS an agent where delivery only reaches one that is
         # already live, so it runs strictly after the same gates and only
         # on their approval. Never reachable for an unapproved message,

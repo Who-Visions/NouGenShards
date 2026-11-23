@@ -40,6 +40,46 @@ def _env_path(name: str, fallback: str) -> str:
     return raw.strip() if raw and raw.strip() else fallback
 
 
+# A cold Gradle/Kotlin compile on a loaded Windows box can run past five minutes. The old
+# hardcoded 300 s turned that slowness into a false BUILD_BROKEN (2026-11-22: every non-ok
+# report in 30 was a timeout, never a compile error). Override with NOUGEN_RSI_BUILD_TIMEOUT_S.
+_BUILD_TIMEOUT_S_FALLBACK = 900
+
+
+def _build_timeout_s() -> int:
+    raw = os.environ.get("NOUGEN_RSI_BUILD_TIMEOUT_S", "").strip()
+    try:
+        value = int(raw) if raw else _BUILD_TIMEOUT_S_FALLBACK
+    except ValueError:
+        value = _BUILD_TIMEOUT_S_FALLBACK
+    return value if value > 0 else _BUILD_TIMEOUT_S_FALLBACK
+
+
+# One timed-out build check says nothing about the build; the same result twice in a row is
+# worth a look. Override with NOUGEN_RSI_UNKNOWN_ALERT_AFTER.
+_UNKNOWN_ALERT_AFTER_FALLBACK = 2
+
+
+def _unknown_alert_after() -> int:
+    raw = os.environ.get("NOUGEN_RSI_UNKNOWN_ALERT_AFTER", "").strip()
+    try:
+        value = int(raw) if raw else _UNKNOWN_ALERT_AFTER_FALLBACK
+    except ValueError:
+        value = _UNKNOWN_ALERT_AFTER_FALLBACK
+    return value if value > 0 else _UNKNOWN_ALERT_AFTER_FALLBACK
+
+
+def _status_for(build: Dict[str, Any], surfaces: Dict[str, Any], health: Dict[str, Any]) -> str:
+    """A cut-off build is UNKNOWN only while the other checks are healthy. If a surface or the
+    self-update chain is degraded in the same run, report that, so the timeout cannot hide it."""
+    degraded = bool(surfaces.get("degraded") or health.get("ok") is False)
+    if not build.get("ok", True):
+        if build.get("timed_out"):
+            return "DEGRADED" if degraded else "BUILD_UNKNOWN"
+        return "BUILD_BROKEN"
+    return "DEGRADED" if degraded else "ok"
+
+
 def _repo_path() -> Path:
     default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
     return Path(_env_path("NOUGEN_RSI_REPO", default))
@@ -70,8 +110,14 @@ def check_builds(repo: Path) -> Dict[str, Any]:
     gradlew = repo / "gradlew.bat" if os.name == "nt" else repo / "gradlew"
     if not gradlew.exists():
         return {"checked": False, "reason": "no gradlew in repo - not a Gradle project or wrong NOUGEN_RSI_REPO"}
-    result = _run([str(gradlew), "compileDebugKotlin"], cwd=repo, timeout=300)
-    return {"checked": True, **result}
+    limit = _build_timeout_s()
+    result = _run([str(gradlew), "compileDebugKotlin"], cwd=repo, timeout=limit)
+    out: Dict[str, Any] = {"checked": True, **result}
+    if result.get("error") == "timeout":
+        # Cut off before the compiler said anything: unknown, not broken.
+        out["timed_out"] = True
+        out["timeout_s"] = limit
+    return out
 
 
 def check_self_update_health(version_url: Optional[str] = None) -> Dict[str, Any]:
@@ -405,7 +451,10 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     proposal = (
         propose_improvement(repo, recent_titles, exa_hits=exa_temporal.get("hits"))
         if build.get("ok", True)
-        else {"skipped": True, "reason": "build is currently broken - fix that before proposing new work"}
+        else {"skipped": True,
+              "reason": ("build check timed out - result unknown, not proposing new work"
+                         if build.get("timed_out")
+                         else "build is currently broken - fix that before proposing new work")}
     )
 
     summary: Dict[str, Any] = {
@@ -418,9 +467,7 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         "exa_temporal_latest": exa_temporal,
         "proposal": proposal,
         "applied": False,  # gate-don't-write: this module never flips this to true itself
-        "status": ("BUILD_BROKEN" if not build.get("ok", True)
-                   else "DEGRADED" if (surfaces.get("degraded") or health.get("ok") is False)
-                   else "ok"),
+        "status": _status_for(build, surfaces, health),
     }
     summary["bitemporal_receipt"] = _record_bitemporal_receipt(summary, instant_ms)
 
@@ -449,12 +496,30 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     # earlier version wrote it first and attached `alert` only to the
     # in-memory return - the file never showed whether a leg was posted.
     status = summary["status"]
-    if status != "ok" and prev_status != status:
+    alert_after = _unknown_alert_after()
+    prev_unknown_run = int((prev or {}).get("consecutive_unknown", 0) or 0)
+    unknown_run = prev_unknown_run + 1 if status == "BUILD_UNKNOWN" else 0
+    summary["consecutive_unknown"] = unknown_run
+    # The incident still open after the last alerted run. An unalerted timeout carries it forward,
+    # so BROKEN -> UNKNOWN -> ok still closes the BROKEN incident with a RECOVERED leg.
+    prev_open = (prev or {}).get("open_incident") or None
+    open_incident = prev_open
+    if status == "BUILD_UNKNOWN" and unknown_run < alert_after:
+        summary["alert"] = {"posted": False,
+                            "reason": f"build check timed out ({unknown_run}/{alert_after}); not alerting yet"}
+    elif status != "ok" and (prev_status != status or (status == "BUILD_UNKNOWN" and unknown_run == alert_after)):
         summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
+        open_incident = status
     elif status != "ok":
         summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
+    elif prev_open:
+        summary["alert"] = _alert_recovered(prev_open, report_path)
+        open_incident = None
+    elif prev_status == "BUILD_UNKNOWN" and prev_unknown_run < alert_after:
+        summary["alert"] = {"posted": False, "reason": "recovered from a single unalerted timeout"}
     elif prev_status not in ("ok", "none", "unknown"):
         summary["alert"] = _alert_recovered(prev_status, report_path)
+    summary["open_incident"] = open_incident
 
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

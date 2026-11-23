@@ -84,11 +84,17 @@ OLLAMA_URL = _ollama_url()
 
 def _repo_git_status(repo: Path) -> Dict:
     def run(args):
+        # A slow repo (cold cache, memory pressure) must degrade to "unknown",
+        # not crash the whole session-close sweep with an unhandled TimeoutExpired.
+        try:
+            timeout = float(os.environ.get("NOUGEN_PROBE_GIT_TIMEOUT", "8"))
+        except ValueError:
+            timeout = 8.0
         try:
             r = subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                                text=True, timeout=8, check=False, **_NO_WINDOW)
+                                text=True, timeout=timeout, check=False, **_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
             return ""
 
     porcelain = run(["status", "--porcelain"])

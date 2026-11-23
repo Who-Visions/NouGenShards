@@ -286,7 +286,7 @@ func cmdStatus(out io.Writer, asJSON bool) int {
 	}
 	bad := 0
 	for _, n := range st.Nodes {
-		if n.Node.State != "up" || (n.Tunnel.State != "up" && n.Tunnel.State != "none") {
+		if (n.Node.State != "up" && n.Node.State != "none") || (n.Tunnel.State != "up" && n.Tunnel.State != "none") {
 			bad++
 		}
 	}
