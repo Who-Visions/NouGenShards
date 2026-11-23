@@ -267,3 +267,18 @@ def test_push_as_an_argument_is_not_a_push(cmd):
 def test_global_options_before_push_are_skipped():
     assert bash_guard.check("git -c core.x=1 push origin main", ROOT, root=ROOT, branch="lane/x")
     assert bash_guard.check("git --no-pager push origin HEAD:main", ROOT, root=ROOT, branch="lane/x")
+
+
+# Third review round on PR 1110: aiwithdav3's headless review (at 14a4204c)
+# claimed these three were allowed. They are blocked; pinned so it stays that way.
+def test_force_after_cd_is_still_blocked():
+    assert bash_guard.check("cd tools && git push --force origin lane/x", ROOT, root=ROOT, branch="lane/x")
+
+
+def test_recursive_delete_of_the_worktree_root_is_blocked():
+    assert bash_guard.check("rm -rf .", ROOT, root=ROOT, branch="lane/x")
+
+
+@pytest.mark.parametrize("dest", ["refs/heads/master", "refs/heads/main"])
+def test_src_to_full_protected_ref_is_blocked(dest):
+    assert bash_guard.check(f"git push origin feature:{dest}", ROOT, root=ROOT, branch="lane/x")
