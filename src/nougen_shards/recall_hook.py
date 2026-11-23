@@ -308,6 +308,9 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
                if t is not None and t.is_alive()]
     if pending:
         result["pending"] = pending
+        # A lane still running when another lane won early is a race, not a
+        # miss. Only a spent budget makes a pending lane "slow".
+        result["deadline_hit"] = time.monotonic() >= deadline
     result["elapsed_ms"] = int((time.monotonic() - started) * 1000)
     return result
 

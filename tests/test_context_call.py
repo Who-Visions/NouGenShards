@@ -11,6 +11,7 @@ Invariants:
 - identity is resolved at run time, never pinned.
 """
 import json
+import os
 import sys
 import threading
 import time
@@ -269,3 +270,34 @@ def test_prompt_installs_on_the_fast_path():
     planned = agent_hooks.plan_settings({}, "/x/python")
     cmd = planned["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert agent_hooks.FAST_SIGNATURE in cmd and cmd.endswith(" prompt")
+
+
+def test_inbox_burst_bigger_than_the_limit_drains_over_later_prompts(box, monkeypatch, tmp_path):
+    """Codex #1195 P2: pings past the per-call limit must show later, never be skipped."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    monkeypatch.setenv("NOUGEN_INBOX_DIR", str(inbox))
+    monkeypatch.setenv("NOUGEN_CONTEXT_CALL_INBOX", "3")
+    now = time.time()
+    for i in range(5):
+        f = inbox / f"m{i}.json"
+        f.write_text(json.dumps({"message_id": f"id{i}", "message": f"ping {i}"}), encoding="utf-8")
+        os.utime(f, (now - 60 + i, now - 60 + i))
+    ident = cc.identity()
+    first = cc.gather_local(ident, "burst")
+    assert [m["text"] for m in first["inbox"]] == ["ping 0", "ping 1", "ping 2"]
+    assert first["inbox_waiting"] == 2
+    second = cc.gather_local(ident, "burst")
+    assert [m["text"] for m in second["inbox"]] == ["ping 3", "ping 4"]
+    assert cc.gather_local(ident, "burst")["inbox"] == []
+
+
+def test_a_node_that_lost_a_fair_race_is_not_called_slow(box, monkeypatch):
+    """Codex #1195 P1: node still running because another lane won early is not node_slow."""
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
+    recall = {"tier": "full", "partial": False, "shards": [{"ref": "x"}], "pending": ["node"],
+              "deadline_hit": False}
+    assert not any(b["kind"] in ("node_slow", "node_down") for b in cc.diagnose(recall, 0.2))
+    recall["deadline_hit"] = True
+    monkeypatch.setattr(cc, "probe_tcp", lambda url, t: "UP")
+    assert any(b["kind"] == "node_slow" for b in cc.diagnose(recall, 0.2))

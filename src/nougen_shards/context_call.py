@@ -231,18 +231,30 @@ def inbox_dirs(lane: str) -> list[Path]:
     return out
 
 
-def inbox_since(lane: str, after_mtime: float, limit: int) -> tuple[list[dict], float]:
+def inbox_since(lane: str, after_mtime: float, limit: int,
+                shown: Optional[set] = None) -> tuple[list[dict], list[str], int]:
+    """Up to ``limit`` unseen pings, oldest first, newer than ``after_mtime``.
+
+    Returns (pings, consumed paths, still waiting). Only files actually consumed
+    are marked seen, so a burst bigger than ``limit`` drains over the next
+    prompts instead of being skipped by a timestamp watermark.
+    """
+    shown = shown or set()
     files: list[tuple[float, str]] = []
     for d in inbox_dirs(lane):
         for f in glob.glob(str(d / "*.json")):
             with contextlib.suppress(OSError):
-                files.append((os.path.getmtime(f), f))
-    files.sort(reverse=True)
-    newest = files[0][0] if files else after_mtime
-    out, seen = [], set()
+                mtime = os.path.getmtime(f)
+                if mtime > after_mtime and f not in shown:
+                    files.append((mtime, f))
+    files.sort()
+    out: list[dict] = []
+    consumed: list[str] = []
+    idents: set = set()
     for mtime, f in files:
-        if mtime <= after_mtime or len(out) >= limit:
+        if len(out) >= limit:
             break
+        consumed.append(f)
         try:
             m = json.loads(Path(f).read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -251,12 +263,12 @@ def inbox_since(lane: str, after_mtime: float, limit: int) -> tuple[list[dict], 
             continue
         body = " ".join(str(m.get("message") or m.get("text") or m.get("content") or m.get("body") or "").split())
         ident = m.get("message_id") or body
-        if not body or ident in seen:
+        if not body or ident in idents:
             continue
-        seen.add(ident)
+        idents.add(ident)
         out.append({"when": _local_label(mtime), "from": str(m.get("sender") or m.get("source") or "")[:40],
                     "text": body[:220]})
-    return out, max(newest, after_mtime)
+    return out, consumed, len(files) - len(consumed)
 
 
 def gather_local(ident: dict, session_id: str) -> dict:
@@ -264,7 +276,6 @@ def gather_local(ident: dict, session_id: str) -> dict:
     lane = ident["lane"].lower()
     spath = _session_path(session_id)
     seen = _read_json(spath, {})
-    first = not seen
     out: dict[str, Any] = {"legs": [], "legs_open": 0, "legs_for_lane": 0, "inbox": []}
     checkout = relay_checkout()
     out["relay_checkout"] = bool(checkout)
@@ -281,10 +292,17 @@ def gather_local(ident: dict, session_id: str) -> dict:
                                 "goal": g["goal"], "mine": g in mine})
         seen["legs"] = sorted(shown | {g["id"] for g in fresh})[-500:]
         out["relay_age_s"] = _relay_age_s(checkout)
-    after = float(seen.get("inbox_after") or (time.time() - 86400 if first else 0))
-    pings, newest = inbox_since(ident["lane"], after, _int_env("NOUGEN_CONTEXT_CALL_INBOX", DEFAULT_INBOX))
+    # The floor only bounds the first look (a day back); after that, seen files are
+    # tracked by path so nothing past the per-call limit is ever skipped.
+    if not seen.get("inbox_floor"):
+        seen["inbox_floor"] = float(seen.get("inbox_after") or time.time() - 86400)
+    shown_in = list(seen.get("inbox_seen") or [])
+    pings, consumed, waiting = inbox_since(ident["lane"], float(seen["inbox_floor"]),
+                                           _int_env("NOUGEN_CONTEXT_CALL_INBOX", DEFAULT_INBOX), set(shown_in))
     out["inbox"] = pings
-    seen["inbox_after"] = newest
+    out["inbox_waiting"] = waiting
+    seen["inbox_seen"] = (shown_in + consumed)[-2000:]
+    seen.pop("inbox_after", None)
     _write_json(spath, seen)
     return out
 
@@ -321,7 +339,9 @@ def diagnose(recall: dict, probe_budget_s: float = 0.3) -> list[dict]:
     from . import recall_hook  # pylint: disable=import-outside-toplevel
     tier, partial = recall.get("tier"), bool(recall.get("partial"))
     errors = recall.get("errors") or {}
-    pending = set(recall.get("pending") or [])
+    # Pending counts only when the recall budget was spent: a lane that was still
+    # running because another lane answered first is a normal race (Codex, #1195).
+    pending = set(recall.get("pending") or []) if recall.get("deadline_hit") else set()
     blockers: list[dict] = []
     node_on = recall_hook._node_enabled()  # pylint: disable=protected-access
     node_won = tier == "node"
@@ -585,6 +605,9 @@ def format_block(call: dict) -> str:
             for m in local["inbox"]:
                 who = f" from {m['from']}" if m.get("from") else ""
                 lines.append(f"- {m['when']}{who}: {m['text']}")
+            if local.get("inbox_waiting"):
+                lines.append(f"- {local['inbox_waiting']} more waiting; they show on your next prompts "
+                             "(or read them now with nougenmsg_inbox).")
 
     verified = call.get("verified")
     if verified:
