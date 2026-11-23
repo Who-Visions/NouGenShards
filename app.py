@@ -5529,4 +5529,9 @@ if __name__ == "__main__":
     # Host/auth already validated at import (fail-closed guard above): by here we
     # are either on loopback or have HUD auth configured.
     port = int(os.environ.get("NGS_PORT", "4444"))
-    uvicorn.run(app, host=_bind_host, port=port)
+    if sys.platform == "win32" and os.environ.get("NOUGEN_NODE_LOOP", "").strip().lower() != "proactor":
+        # Proactor closes the listening socket on WinError 64; see
+        # tools/ngs_node_serve.py WINDOWS_LOOP.
+        uvicorn.run(app, host=_bind_host, port=port, loop="asyncio:SelectorEventLoop")
+    else:
+        uvicorn.run(app, host=_bind_host, port=port)
