@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,68 @@ def test_spec_header_check_runs(tmp_path: Path) -> None:
     assert build.returncode == 0, build.stderr
     run = subprocess.run([str(out)], capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
+
+
+BEHAVIOUR = ROOT / "tests" / "ngs_conformance" / "behaviour.c"
+ENGINE_DIR = Path(os.environ.get("NGS_ENGINE_DIR", ROOT / "engine" / "ngs"))
+
+
+def _amalgamation() -> Path | None:
+    """The entry's single-file build: $NGS_AMALGAMATION, else engine/ngs/dist,
+    built with the entry's own tool/amalgamate.py when not committed."""
+    env = os.environ.get("NGS_AMALGAMATION")
+    if env:
+        return Path(env)
+    dist = ENGINE_DIR / "dist" / "nougenshards.c"
+    tool = ENGINE_DIR / "tool" / "amalgamate.py"
+    if not dist.is_file() and tool.is_file():
+        subprocess.run(
+            [sys.executable, "-I", str(tool)],
+            cwd=ENGINE_DIR,
+            capture_output=True,
+            check=False,
+        )
+    single = ENGINE_DIR / "src" / "nougenshards.c"
+    return dist if dist.is_file() else (single if single.is_file() else None)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file-damage checks use POSIX I/O")
+def test_engine_behaviour_m1(tmp_path: Path) -> None:
+    """Black-box M1 behaviour: every check in behaviour.c must PASS."""
+    amalg = _amalgamation()
+    if amalg is None:
+        pytest.skip("no engine amalgamation on this branch")
+    exe = shutil.which("cc")
+    if exe is None:
+        pytest.skip("cc not installed")
+    binary = tmp_path / "behaviour"
+    build = subprocess.run(
+        [
+            exe,
+            "-std=c11",
+            "-O1",
+            "-w",
+            f"-I{HEADER_DIR}",
+            str(BEHAVIOUR),
+            str(amalg),
+            "-o",
+            str(binary),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run(
+        [str(binary), str(tmp_path / "db")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    print(run.stdout)
+    fails = [line for line in run.stdout.splitlines() if line.startswith("FAIL")]
+    assert "SUMMARY" in run.stdout, (
+        f"engine crashed (rc={run.returncode}):\n{run.stdout}{run.stderr}"
+    )
+    assert not fails, "\n".join(fails)
