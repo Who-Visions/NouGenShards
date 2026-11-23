@@ -102,7 +102,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # War Games scenarios and schema ship with the wheel (nougen wargame list/run).
-nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json"]
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json",
+                 # Email templates ship as data (byte-identical copies of the
+                 # verified guest-pack templates; see email_templates.py).
+                 "email_templates/*.html", "email_templates/*.txt"]
 nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]
