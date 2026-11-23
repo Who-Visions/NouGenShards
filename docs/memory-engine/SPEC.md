@@ -1,6 +1,6 @@
 # NouGenShards (NGS): native memory for AI agents
 
-Engine spec, draft 0.2. Short name **NGS**; C prefix `ngs_`; amalgamation `nougenshards.c` + `ngs.h`.
+Engine spec, draft 0.3. Short name **NGS**; C prefix `ngs_`; amalgamation `nougenshards.c` + `ngs.h`.
 
 Status: draft for review. Owner: WhoArt claude-app. Reviewer: Phoebus, once its benchmarks land.
 Date: Sun 2026-11-22. Inputs: gap report 26917@db1, research frontier 32623@db5, Destiny 10 audit 35723@db7.
@@ -399,3 +399,64 @@ keys are generated at `ngs_open` with `NGS_OPEN_CREATE` or supplied by the calle
 4. Write grants: who signs the first grant for a namespace (bootstrap key ceremony).
 5. Abstention calibration: per-namespace percentile needs enough history. What is the cold-start rule?
 6. Token estimates: which tokenizer ids should bindings ship exact counters for?
+
+
+## 13. Review resolutions (draft 0.3)
+
+Phoebus reviewed draft 0.2 on PR 1199. `ngs.h` compiled clean with C11 (`-Wall -Wextra -pedantic`)
+and C++. Draft 0.3 changes the header as follows. The contracts are stated at the top of `ngs.h`.
+
+**ABI.** Every input and output struct starts with `uint32_t size` (callers use the `NGS_*_INIT`
+macros). The engine reads only what fits and zero-fills unknown tails, so appending a field never
+breaks a binding. Enum-typed struct members became `int32_t` with `#define` values.
+`ngs_libversion_number()` gives a runtime check against `NGS_VERSION_NUMBER`. Recall arms are
+named (`NGS_ARM_*`, `NGS_N_ARMS = 5`). A sixth arm is an ABI break and needs a major version.
+
+**Ownership.** Every returned object (fact, results, segment, checkpoint, heads, sync report) is a
+single allocation freed by one `ngs_free`, and stays valid after `ngs_close` until freed. Input
+pointers are borrowed for the call only. Quarantine reasons are fixed buffers inside the report.
+
+**Errors.** rc means "the call worked": 0 ok, 1..99 errors, 100+ reserved. Abstention and deadline
+timeouts return `NGS_OK` with `abstained` / `timed_out` set in the results, so `if (rc) return rc;`
+never leaks. `ngs_errmsg` is per handle and per thread. `ngs_errstr(rc)` works without a handle.
+`ngs_open` returns a handle in an error state on failure (SQLite pattern).
+
+**Threads and durability.** A handle is shareable across threads, every call except `ngs_close` is
+thread-safe, and handles must not be used after `fork`. `ngs_remember` returns after the group-commit
+`fdatasync` that covers it. `NGS_WRITE_NO_SYNC` opts out for bulk ingest, and `ngs_flush` forces a
+sync point.
+
+**API gaps closed.**
+- `ngs_remember_many` is an atomic multi-fact write.
+- Hits carry `ns`, `title` and `body` (or a stub), so callers need no follow-up `ngs_get` round trips.
+- `ngs_scan` / `ngs_iter_next` iterate by namespace, writer and time for export and migration.
+- Unlink and grant revocation are `ngs_invalidate` on the link or grant id, which `ngs_link` and
+  `ngs_grant` now return.
+- A link may name an id not yet present locally, since it can arrive by sync.
+- `ngs_mark` on an unknown id returns `NGS_NOTFOUND`.
+- Time sentinels are unified: `NGS_TIME_MIN`, `NGS_TIME_MAX` and `NGS_TIME_NOW`.
+- `ngs_sync_import` reports every quarantined fact with its own rc and reason.
+
+**Open questions, answered.**
+1. *Vector split point*: `shard_vec_split` is a config value (default 50 000). The §5.6 bake-off sets
+   it where brute-force p95 crosses the recall deadline on the slowest node class (Intel, no GPU,
+   16 GB). Phoebus's bench lane reports that crossover.
+2. *Salience divergence*: accepted. Salience is derived, node-local state. It never enters the
+   Merkle root, checkpoints or sync segments, and is deterministic given the same log plus the
+   same local marks. Recall ranking is node-local, not a consensus value.
+3. *Redaction*: tombstone-with-hash, confirmed. `fact_id` hashes over `body_hash`, not the body. The
+   REDACTION is a signed fact by the writer or namespace owner and syncs, so the body goes away
+   everywhere. The bytes leave immutable segments at the next compaction rewrite. Until then they are
+   unreadable through the API and flagged in `ngs_stats`.
+4. *Grant bootstrap*: namespace genesis is a self-signed grant by the creating node, which becomes
+   the owner. Fleet namespaces: an offline operator root key signs the owner grant once, and every
+   node pins the root pubkey (`root_pubkey` in `ngs_open_opts`). No online ceremony.
+5. *Abstention cold start*: below 200 recalls in a namespace, calibrate against the store-wide
+   distribution. Below that, use a fixed raw-score threshold. `confidence_calibrated` tells the caller which.
+6. *Exact tokenizers*: bindings ship exact counters for `o200k_base`, `cl100k_base`, Gemma
+   SentencePiece and Llama 3. Models without a local tokenizer stay on the engine estimate,
+   flagged `tokens_estimated = 1`.
+
+**Next.** Phoebus builds the conformance harness against this header (C11/C++ compile checks,
+struct layout/size asserts, black-box contract tests runnable against any implementation) on its
+own branch, with no engine code. That harness is part of M1's definition of done.
