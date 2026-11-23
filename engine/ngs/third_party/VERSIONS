@@ -1,0 +1,38 @@
+# Third-party sources vendored for NGS M1. Do not edit; re-vendor from the pinned commit.
+# SHA-256 of every vendored file is recorded below.
+
+blake3/   BLAKE3 portable C (c/ directory)
+  upstream: https://github.com/BLAKE3-team/BLAKE3  tag 1.8.7
+  commit:   f3149ec5bb5449af877ba20377a11008ff499fa2
+  licence:  CC0-1.0 OR Apache-2.0 (LICENSE_CC0, LICENSE_A2)
+  used:     portable implementation only; SIMD files not vendored (build defines BLAKE3_NO_SSE2/SSE41/AVX2/AVX512, BLAKE3_USE_NEON=0)
+
+ed25519/  orlp/ed25519 (src/ directory)
+  upstream: https://github.com/orlp/ed25519  (default branch)
+  commit:   b1f19fab4aebe607805620d25a5e42566ce46a0e  (2022-10-03)
+  licence:  zlib (license.txt)
+  used:     keypair, sign, verify only; seed.c, key_exchange.c and add_scalar.c not vendored
+
+sha256  bytes  file
+8d5332f5a6d6f8b50c9598d7ce3bea3fa57f4f831258164df4a6c5f72f0b1004    29596  blake3/blake3.c
+415eaaef4d4299dba509928c87085fe819eac5db89b795c6c61d8d6a98c142bf     3009  blake3/blake3.h
+848e6405067c7036a07963174dbca69702f689c8011bb2589f48bcc5c0605246     9521  blake3/blake3_dispatch.c
+984691acb6d9f09f491baee57e8f89f66931e5aa27e76c8023056f33589f5fad    12387  blake3/blake3_impl.h
+abddd44072ff36b41766ebc42bfac9c19d5c304fa6420e0e418d419dd67a4971     6049  blake3/blake3_portable.c
+a0277e8ceafa3c32bb82d557ab34e06115b807f531705774d8a701c0886e1fe6     1289  ed25519/ed25519.h
+25d60cb860f297a6205fc8aa1a72082c536579d5ad41b8d075c60546662b5baf    40334  ed25519/fe.c
+5a17551bb68a35467c9e0be1e75b0091dc025f96d5b7ac5b413b80c90048f80f     1021  ed25519/fe.h
+24758af8a746d8b7de7879bd2b61c951fc0fad82817b1d55cb9dcd0deeb145f6     2590  ed25519/fixedint.h
+2da709e3326b0fe8b0566a327e13a260d6905a845fd2b186aee6f0b4a6d89b4d    10840  ed25519/ge.c
+100a1ae4c5956059016263781a2e7dc95a11ba669ddd8a08c1831b7765e15483     1757  ed25519/ge.h
+e968076b0d28749aa432a962591f09d0fb815ce6c9347e4e703218fba8411d0d      396  ed25519/keypair.c
+c1dd26431dfd5b5e7cc6f4e0d5774c0f96ca2128966600c99d6fa52d4e0c1890    99191  ed25519/precomp_data.h
+f5d62eb15dd67f9c3312ca6003a65f204aba04a1b84e09bbebeadac26e364d54    23676  ed25519/sc.c
+ac4ade46f097f3a5f3e97c3954b2fccae6ee404bf31d4eb50fceb76f27c34747      279  ed25519/sc.h
+4131221621517305b97e02bb60784e0c00cae8c1b0bebec228a025a4248bc5d6    11363  ed25519/sha512.c
+a78bb4b352d47379337e3e7c97ad1ae22c726d109f84f35613c7ff95454063af      510  ed25519/sha512.h
+a1fd05565ac0fe11735640a5b21ea7bbcd7c64e3fb80d17f5db3c2d9cfd13754      858  ed25519/sign.c
+6bfdd8a9a5f8488878fe9e7f8af1bd2f65dd1c8788c4ee5eae4ef71798ba8c5b     1444  ed25519/verify.c
+f4e7f373b9b996950337e8d41a4a2939c2d90b7725e9baf3d5084a22717ad328     7169  blake3/LICENSE_CC0
+3da8137480af96e14b27ac9474c6a76a0102596493e5ab075ba98c7ffc64d552    11563  blake3/LICENSE_A2
+e6618c90777a69604a5dfb0bb4159f345a386f8e4820195c40252d8507b2446c      890  ed25519/license.txt
