@@ -7,11 +7,12 @@ use std::ptr;
 
 use ::ngs::{
     ngs as NgsDb, ngs_close, ngs_fact, ngs_fact_in, ngs_flush, ngs_free, ngs_get, ngs_id,
-    ngs_iter, ngs_iter_close, ngs_iter_next, ngs_node_pubkey, ngs_open, ngs_open_opts, ngs_pubkey,
-    ngs_query, ngs_recall, ngs_remember, ngs_remember_many, ngs_results, ngs_scan, ngs_scan_opts,
-    ngs_str, ngs_verify, NGS_ARM_KW, NGS_CORRUPT, NGS_EPISODIC, NGS_MISUSE, NGS_NOTFOUND, NGS_OK,
-    NGS_OPEN_CREATE, NGS_OPEN_READONLY, NGS_OPEN_READWRITE, NGS_RECALL_INCLUDE_INVALID,
-    NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN, NGS_TIME_NOW,
+    ngs_iter, ngs_iter_close, ngs_iter_next, ngs_link, ngs_node_pubkey, ngs_open, ngs_open_opts,
+    ngs_pubkey, ngs_query, ngs_recall, ngs_remember, ngs_remember_many, ngs_results, ngs_scan,
+    ngs_scan_opts, ngs_str, ngs_vec, ngs_verify, NGS_ARM_KW, NGS_ARM_LINK, NGS_ARM_VEC,
+    NGS_CORRUPT, NGS_EPISODIC, NGS_MISUSE, NGS_NOTFOUND, NGS_OK, NGS_OPEN_CREATE,
+    NGS_OPEN_READONLY, NGS_OPEN_READWRITE, NGS_PROCEDURAL, NGS_RECALL_EXPAND,
+    NGS_RECALL_INCLUDE_INVALID, NGS_SEMANTIC, NGS_TIME_MAX, NGS_TIME_MIN, NGS_TIME_NOW,
 };
 
 fn s(val: &str) -> ngs_str {
@@ -393,6 +394,73 @@ fn m1_crash_batch_atomicity_every_byte_cut() {
             assert_eq!(count, 5, "partial batch leaked at cut={}", cut);
             assert_eq!(ngs_close(rdb), NGS_OK);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn m3_vector_and_link_expand() {
+    unsafe {
+        let dir = scratch_dir("m3_vec_link");
+        let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
+        let o_create = open_opts(NGS_OPEN_READWRITE | NGS_OPEN_CREATE);
+        let mut db: *mut NgsDb = ptr::null_mut();
+        assert_eq!(ngs_open(dir_c.as_ptr(), &o_create, &mut db), NGS_OK);
+
+        // Fact A with embedding [1.0, 0.0, 0.0, 0.0]
+        let v_a: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+        let vec_a = ngs_vec { model_id: s("nomic-v1"), dim: 4, version: 1, v: v_a.as_ptr() };
+        let mut fa = make_fact_in("kg", NGS_SEMANTIC, "anchor node", "vector anchor");
+        fa.vecs = &vec_a;
+        fa.n_vecs = 1;
+        let mut id_a = ngs_id::default();
+        assert_eq!(ngs_remember(db, &fa, 0, &mut id_a), NGS_OK);
+
+        // Fact B has NO keyword/vector match, only linked to A (expert knowledge edge)
+        let fb = make_fact_in("kg", NGS_PROCEDURAL, "date format rule", "Date column uses YYYYMM integer");
+        let mut id_b = ngs_id::default();
+        assert_eq!(ngs_remember(db, &fb, 0, &mut id_b), NGS_OK);
+
+        // Link A -> B
+        let mut link_id = ngs_id::default();
+        assert_eq!(ngs_link(db, &id_a, &id_b, s("governs"), 0.9, &mut link_id), NGS_OK);
+        assert!(!id_zero(&link_id));
+
+        // Recall by vector + NGS_RECALL_EXPAND: finds A via VEC arm AND pulls B via 1-hop LINK arm
+        let qv_arr: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+        let qv = ngs_vec { model_id: s("nomic-v1"), dim: 4, version: 1, v: qv_arr.as_ptr() };
+        let q = ngs_query {
+            size: std::mem::size_of::<ngs_query>() as u32,
+            ns: s("kg"),
+            kinds: 0,
+            text: ngs_str { p: ptr::null(), n: 0 },
+            vec: &qv,
+            since: NGS_TIME_MIN,
+            until: NGS_TIME_MAX,
+            tags: ptr::null(),
+            n_tags: 0,
+            k: 5,
+            deadline_ms: 50,
+            fusion: 0,
+            weights: ptr::null(),
+            flags: NGS_RECALL_EXPAND,
+            token_budget: 0,
+            tokenizer_id: ngs_str { p: ptr::null(), n: 0 },
+            min_confidence: -1.0,
+        };
+        let mut res: *mut ngs_results = ptr::null_mut();
+        assert_eq!(ngs_recall(db, &q, &mut res), NGS_OK);
+        assert_eq!((*res).n, 2);
+        assert!(((*res).arms_complete & (1u32 << NGS_ARM_VEC)) != 0);
+        assert!(((*res).arms_complete & (1u32 << NGS_ARM_LINK)) != 0);
+        let hits = std::slice::from_raw_parts((*res).hits, (*res).n);
+        assert_eq!(hits[0].id, id_a);
+        assert!(hits[0].arm[NGS_ARM_VEC] > 0.99);
+        assert_eq!(hits[1].id, id_b);
+        assert!(hits[1].arm[NGS_ARM_LINK] > 0.5);
+        ngs_free(res as *mut _);
+
+        assert_eq!(ngs_close(db), NGS_OK);
         let _ = fs::remove_dir_all(&dir);
     }
 }

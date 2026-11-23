@@ -56,6 +56,7 @@ pub const NGS_WRITE_NO_SYNC: i32 = 0x0001;
 pub const NGS_MAX_NS_LEN: usize = 255;
 pub const NGS_MAX_TITLE_LEN: usize = 1024;
 pub const NGS_MAX_ATTRS_LEN: usize = 65536;
+pub const NGS_MAX_DIM: usize = 8192;
 pub const NGS_ALIGN_MAX: usize = 16;
 
 const FRAME_MAGIC: &[u8; 4] = b"NGSF";
@@ -340,6 +341,25 @@ unsafe fn ngs_alloc_block(payload_size: usize) -> *mut u8 {
     raw.add(header_size)
 }
 
+// ---------- Stored Vec & Link ----------
+#[derive(Clone)]
+struct StoredVec {
+    model_id: Vec<u8>,
+    dim: u32,
+    version: u32,
+    v: Vec<f32>,
+}
+
+#[derive(Clone)]
+struct StoredLink {
+    id: ngs_id,
+    a: ngs_id,
+    b: ngs_id,
+    rel: Vec<u8>,
+    weight: f32,
+    valid: bool,
+}
+
 // ---------- Stored Fact ----------
 #[derive(Clone)]
 struct StoredFact {
@@ -357,6 +377,7 @@ struct StoredFact {
     ns: Vec<u8>,
     title: Vec<u8>,
     body: Vec<u8>,
+    vecs: Vec<StoredVec>,
 }
 
 impl StoredFact {
@@ -446,6 +467,7 @@ impl StoredFact {
             ns,
             title,
             body,
+            vecs: Vec::new(),
         })
     }
 
@@ -630,6 +652,7 @@ struct DbInner {
     log_file: Option<File>,
     facts: Vec<StoredFact>,
     index: HashMap<ngs_id, usize>,
+    links: Vec<StoredLink>,
     last_id: ngs_id,
     next_seq: u64,
     last_err: CString,
@@ -829,6 +852,7 @@ pub unsafe extern "C" fn ngs_open(
             log_file,
             facts,
             index,
+            links: Vec::new(),
             last_id,
             next_seq,
             last_err: CString::new("").unwrap(),
@@ -893,7 +917,26 @@ pub unsafe extern "C" fn ngs_flush(db: *mut ngs) -> c_int {
     NGS_OK
 }
 
-unsafe fn validate_fact_in(fin: &ngs_fact_in) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), c_int> {
+unsafe fn parse_vec(v: &ngs_vec) -> Result<StoredVec, c_int> {
+    if v.dim == 0 || (v.dim as usize) > NGS_MAX_DIM || v.v.is_null() {
+        return Err(NGS_MISUSE);
+    }
+    let model_id = str_to_vec(v.model_id)?;
+    let slice = std::slice::from_raw_parts(v.v, v.dim as usize);
+    for &x in slice {
+        if x.is_nan() || x.is_infinite() {
+            return Err(NGS_MISUSE);
+        }
+    }
+    Ok(StoredVec {
+        model_id,
+        dim: v.dim,
+        version: v.version,
+        v: slice.to_vec(),
+    })
+}
+
+unsafe fn validate_fact_in(fin: &ngs_fact_in) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<StoredVec>), c_int> {
     if (fin.size as usize) < std::mem::size_of::<ngs_fact_in>() {
         return Err(NGS_MISUSE);
     }
@@ -909,7 +952,17 @@ unsafe fn validate_fact_in(fin: &ngs_fact_in) -> Result<(Vec<u8>, Vec<u8>, Vec<u
     if ns.len() > NGS_MAX_NS_LEN || title.len() > NGS_MAX_TITLE_LEN || fin.attrs_len > NGS_MAX_ATTRS_LEN {
         return Err(NGS_TOOBIG);
     }
-    Ok((ns, title, body))
+    let mut vecs = Vec::with_capacity(fin.n_vecs);
+    if fin.n_vecs > 0 {
+        if fin.vecs.is_null() {
+            return Err(NGS_MISUSE);
+        }
+        let vslice = std::slice::from_raw_parts(fin.vecs, fin.n_vecs);
+        for item in vslice {
+            vecs.push(parse_vec(item)?);
+        }
+    }
+    Ok((ns, title, body, vecs))
 }
 
 #[no_mangle]
@@ -962,7 +1015,7 @@ pub unsafe extern "C" fn ngs_remember_many(
     let mut new_facts = Vec::with_capacity(n);
 
     let mut invalidated: Vec<(ngs_id, ngs_id, i64)> = Vec::new();
-    for (item, (ns, title, body)) in parsed {
+    for (item, (ns, title, body, vecs)) in parsed {
         let t_ev = if item.t_event == NGS_TIME_NOW { t_rec } else { item.t_event };
         let v_from = if item.valid_from == NGS_TIME_NOW { t_ev } else { item.valid_from };
         let mut f = StoredFact {
@@ -980,6 +1033,7 @@ pub unsafe extern "C" fn ngs_remember_many(
             ns,
             title,
             body,
+            vecs,
         };
         f.id = f.compute_id();
         if !item.supersedes.is_null() {
@@ -1176,11 +1230,61 @@ pub unsafe extern "C" fn ngs_invalidate(db: *mut ngs, id: *const ngs_id, _reason
     if g.readonly {
         return NGS_NOGRANT;
     }
-    let idx = match g.index.get(&*id) {
-        Some(&i) => i,
-        None => return NGS_NOTFOUND,
+    let target = *id;
+    if let Some(&idx) = g.index.get(&target) {
+        g.facts[idx].valid_to = now_us();
+        return NGS_OK;
+    }
+    for link in &mut g.links {
+        if link.id == target {
+            link.valid = false;
+            return NGS_OK;
+        }
+    }
+    NGS_NOTFOUND
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ngs_link(
+    db: *mut ngs,
+    a: *const ngs_id,
+    b: *const ngs_id,
+    rel: ngs_str,
+    weight: f32,
+    out_link_id: *mut ngs_id,
+) -> c_int {
+    if db.is_null() || a.is_null() || b.is_null() || weight.is_nan() || weight.is_infinite() {
+        return NGS_MISUSE;
+    }
+    let rel_bytes = match str_to_vec(rel) {
+        Ok(v) => v,
+        Err(rc) => return rc,
     };
-    g.facts[idx].valid_to = now_us();
+    let mut g = match (*db).inner.lock() {
+        Ok(g) => g,
+        Err(_) => return NGS_ERROR,
+    };
+    if g.readonly {
+        return NGS_NOGRANT;
+    }
+    let mut buf = Vec::with_capacity(80 + rel_bytes.len());
+    buf.extend_from_slice(b"NGS-LINK-V1");
+    buf.extend_from_slice(&(*a).b);
+    buf.extend_from_slice(&(*b).b);
+    buf.extend_from_slice(&rel_bytes);
+    buf.extend_from_slice(&now_us().to_le_bytes());
+    let link_id = ngs_id { b: sha256(&buf) };
+    g.links.push(StoredLink {
+        id: link_id,
+        a: *a,
+        b: *b,
+        rel: rel_bytes,
+        weight: weight.clamp(0.0, 1.0),
+        valid: true,
+    });
+    if !out_link_id.is_null() {
+        *out_link_id = link_id;
+    }
     NGS_OK
 }
 
@@ -1221,10 +1325,19 @@ pub unsafe extern "C" fn ngs_recall(
         Ok(v) => v,
         Err(rc) => return rc,
     };
+    let q_vec = if qref.vec.is_null() {
+        None
+    } else {
+        match parse_vec(&*qref.vec) {
+            Ok(v) => Some(v),
+            Err(rc) => return rc,
+        }
+    };
     let q_tokens = tokenize_lower(&text_bytes);
     let k = if qref.k == 0 { 10usize } else { qref.k as usize };
     let deadline_ms = if qref.deadline_ms == 0 { 50u64 } else { qref.deadline_ms as u64 };
     let min_conf = if qref.min_confidence < 0.0 { 0.35f32 } else { qref.min_confidence };
+    let expand_links = (qref.flags & NGS_RECALL_EXPAND) != 0;
     let include_invalid = (qref.flags & NGS_RECALL_INCLUDE_INVALID) != 0;
     let no_body = (qref.flags & NGS_RECALL_NO_BODY) != 0;
 
@@ -1282,29 +1395,90 @@ pub unsafe extern "C" fn ngs_recall(
             (hits / (q_tokens.len() as f32)).min(1.0)
         };
 
+        // Vector arm: cosine/dot similarity against matching (model_id, dim, version)
+        let vec_score = if let Some(ref qv) = q_vec {
+            let mut best_sim = 0.0f32;
+            for fv in &f.vecs {
+                if fv.dim == qv.dim && fv.version == qv.version && fv.model_id == qv.model_id {
+                    let dot: f32 = qv.v.iter().zip(fv.v.iter()).map(|(a, b)| a * b).sum();
+                    if dot > best_sim {
+                        best_sim = dot;
+                    }
+                }
+            }
+            best_sim.clamp(0.0, 1.0)
+        } else {
+            0.0f32
+        };
+
         // Recency arm: smooth decay over age in days
         let age_us = now.saturating_sub(f.t_event).max(0) as f64;
         let age_days = age_us / 86_400_000_000.0;
         let recency_score = (1.0 / (1.0 + age_days / 30.0)) as f32;
 
-        // Salience arm: default 0.5 in M2
+        // Salience arm: default 0.5
         let salience_score = 0.5f32;
 
-        let arm = [0.0f32, kw_score, recency_score, salience_score, 0.0f32];
-        let denom = weights[NGS_ARM_KW] + weights[NGS_ARM_RECENCY] + weights[NGS_ARM_SALIENCE];
+        let arm = [vec_score, kw_score, recency_score, salience_score, 0.0f32];
+        let w_vec = if q_vec.is_some() { weights[NGS_ARM_VEC] } else { 0.0 };
+        let w_kw = if !q_tokens.is_empty() { weights[NGS_ARM_KW] } else { 0.0 };
+        let denom = w_vec + w_kw + weights[NGS_ARM_RECENCY] + weights[NGS_ARM_SALIENCE];
         let score = if denom > 0.0 {
-            (arm[NGS_ARM_KW] * weights[NGS_ARM_KW]
+            (arm[NGS_ARM_VEC] * w_vec
+                + arm[NGS_ARM_KW] * w_kw
                 + arm[NGS_ARM_RECENCY] * weights[NGS_ARM_RECENCY]
                 + arm[NGS_ARM_SALIENCE] * weights[NGS_ARM_SALIENCE])
                 / denom
         } else {
-            kw_score
+            kw_score.max(vec_score)
         };
 
-        if !q_tokens.is_empty() && kw_score == 0.0 {
+        let has_signal = (q_tokens.is_empty() && q_vec.is_none()) || kw_score > 0.0 || vec_score > 0.0;
+        if !has_signal {
             continue;
         }
         candidates.push(Scored { fact: f, score, arm, invalid: is_invalid });
+    }
+
+    // 1-hop link expansion (NGS_RECALL_EXPAND)
+    if expand_links && timed_out == 0 && !candidates.is_empty() {
+        let seed_ids: Vec<(ngs_id, f32)> = candidates.iter().take(k).map(|c| (c.fact.id, c.score)).collect();
+        let mut boost: HashMap<ngs_id, f32> = HashMap::new();
+        for (sid, sscore) in &seed_ids {
+            for link in &g.links {
+                if !link.valid {
+                    continue;
+                }
+                let neighbor = if link.a == *sid {
+                    Some(link.b)
+                } else if link.b == *sid {
+                    Some(link.a)
+                } else {
+                    None
+                };
+                if let Some(nid) = neighbor {
+                    let bval = (sscore * link.weight).clamp(0.0, 1.0);
+                    let entry = boost.entry(nid).or_insert(0.0);
+                    if bval > *entry {
+                        *entry = bval;
+                    }
+                }
+            }
+        }
+        for (nid, lscore) in boost {
+            if let Some(existing) = candidates.iter_mut().find(|c| c.fact.id == nid) {
+                existing.arm[NGS_ARM_LINK] = lscore;
+                existing.score = (existing.score + lscore * 0.25).min(1.0);
+            } else if let Some(&fidx) = g.index.get(&nid) {
+                let f = &g.facts[fidx];
+                let is_invalid = if f.valid_to != NGS_TIME_MAX { 1 } else { 0 };
+                if is_invalid != 0 && !include_invalid {
+                    continue;
+                }
+                let arm = [0.0, 0.0, 0.5, 0.5, lscore];
+                candidates.push(Scored { fact: f, score: (lscore * 0.85).clamp(0.0, 1.0), arm, invalid: is_invalid });
+            }
+        }
     }
 
     candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -1341,7 +1515,14 @@ pub unsafe extern "C" fn ngs_recall(
     let arms_complete = if timed_out != 0 {
         0u32
     } else {
-        (1u32 << NGS_ARM_KW) | (1u32 << NGS_ARM_RECENCY) | (1u32 << NGS_ARM_SALIENCE)
+        let mut mask = (1u32 << NGS_ARM_KW) | (1u32 << NGS_ARM_RECENCY) | (1u32 << NGS_ARM_SALIENCE);
+        if q_vec.is_some() {
+            mask |= 1u32 << NGS_ARM_VEC;
+        }
+        if expand_links {
+            mask |= 1u32 << NGS_ARM_LINK;
+        }
+        mask
     };
     let elapsed_us = started.elapsed().as_micros().min(u32::MAX as u128) as u32;
 
@@ -1435,9 +1616,7 @@ pub unsafe extern "C" fn ngs_recall(
     NGS_OK
 }
 
-// ---------- Outside-M2 Stubs (clean NGS_MISUSE) ----------
-#[no_mangle]
-pub extern "C" fn ngs_link(_db: *mut ngs, _a: *const ngs_id, _b: *const ngs_id, _rel: ngs_str, _w: f32, _out: *mut ngs_id) -> c_int { NGS_MISUSE }
+// ---------- Outside-M3 Stubs (clean NGS_MISUSE) ----------
 #[no_mangle]
 pub extern "C" fn ngs_redact(_db: *mut ngs, _id: *const ngs_id, _reason: ngs_str) -> c_int { NGS_MISUSE }
 #[no_mangle]
