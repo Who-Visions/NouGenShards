@@ -1,8 +1,9 @@
 # NouGenShards (NGS): native memory for AI agents
 
-Engine spec, draft 0.3. Short name **NGS**; C prefix `ngs_`; amalgamation `nougenshards.c` + `ngs.h`.
+Engine spec, draft 0.3.1. Short name **NGS**; C prefix `ngs_`; amalgamation `nougenshards.c` + `ngs.h`.
 
 Status: draft for review. Owner: WhoArt claude-app. Reviewer: Phoebus, once its benchmarks land.
+Draft 0.3.1 adds the C-standard pass: sections 14 and 15, `C-AUDIT.md` and `check/` (WhoArt claude-app, Opus 5.5 and Sonnet 5.5).
 Date: Sun 2026-11-22. Inputs: gap report 26917@db1, research frontier 32623@db5, Destiny 10 audit 35723@db7.
 
 NGS is a single-file embedded engine in the spirit of SQLite, built around memory instead of
@@ -149,6 +150,8 @@ Record types: `FACT`=1, `INVALIDATION`=2, `LINK`=3, `REDACTION`=4, `CHECKPOINT_R
 Payloads use a canonical CBOR encoding (deterministic map order, shortest ints), so `fact_id` is
 reproducible on every platform. Writes are `write` + `fdatasync` at commit boundaries.
 A torn tail (bad CRC or short record) is truncated on open, never interpreted.
+Every file operation named here (`write`, `fdatasync`, `rename`, `ftruncate`, locking, `mmap`) goes through
+the platform layer (section 15); the core never includes `<unistd.h>` or `<windows.h>`.
 
 ### 3.2 Commit protocol
 
@@ -284,7 +287,7 @@ ngs_open / ngs_close
 ngs_remember(db, &fact_in, &fact_id_out)
 ngs_invalidate(db, fact_id, reason)
 ngs_link(db, a, b, rel, weight)
-ngs_recall(db, &query, &results)        // fused, deadline-bound, kind-filtered, token-budgeted; may return NGS_ABSTAIN
+ngs_recall(db, &query, &results)        // fused, deadline-bound, kind-filtered, token-budgeted; abstain and timeout are flags in the results (rc NGS_OK)
 ngs_as_of(db, t_valid, t_record, &query, &results)
 ngs_get(db, fact_id, &fact)
 ngs_mark(db, fact_id, used)
@@ -380,6 +383,8 @@ nougenshards/
     hnsw.c  bm25.c  timeidx.c  recall.c  salience.c  sync.c  checkpoint.c  migrate.c
   third_party/              vendored, permissive: BLAKE3 (CC0/Apache), Ed25519 ref10 (public domain), zstd (BSD)
   tool/amalgamate.py        -> dist/nougenshards.c + dist/ngs.h
+  src/plat.h  src/plat_posix.c  src/plat_win32.c   the platform layer (section 15); the only OS-specific code
+  check/                    devdocs_c_check.py and ngs_header_check.c (C-standard pass); the conformance harness lands here
   test/crash/  test/torture/  test/diff/  test/fed/
   bindings/python/   package `ngs`  (import ngs; ngs.open, ngs.remember, ngs.recall ...)
   bindings/bun/      package `@nougen/ngs` (FFI over nougenshards.c)
@@ -399,6 +404,8 @@ keys are generated at `ngs_open` with `NGS_OPEN_CREATE` or supplied by the calle
 4. Write grants: who signs the first grant for a namespace (bootstrap key ceremony).
 5. Abstention calibration: per-namespace percentile needs enough history. What is the cold-start rule?
 6. Token estimates: which tokenizer ids should bindings ship exact counters for?
+7. `NGS_MAX_DIM` is proposed as 8192 in `ngs.h`. Is that above every embedding model we will use? It bounds
+   `dim * sizeof(float)` so the multiply cannot overflow a 32-bit `size_t`.
 
 
 ## 13. Review resolutions (draft 0.3)
@@ -460,3 +467,74 @@ sync point.
 **Next.** Phoebus builds the conformance harness against this header (C11/C++ compile checks,
 struct layout/size asserts, black-box contract tests runnable against any implementation) on its
 own branch, with no engine code. That harness is part of M1's definition of done.
+
+## 14. C reference
+
+The C reference for NGS is **devdocs C, <https://devdocs.io/c/>**. It can be downloaded for offline use
+(`index.json` and `db.json` from `https://documents.devdocs.io/c/`, about 5 MB). `check/devdocs_c_check.py`
+checks the lists below against that copy, and `C-AUDIT.md` records what was measured and what was not.
+
+**Pinned standard: ISO C11.** C17 defect fixes are allowed. Nothing newer: devdocs documents C23 on the same
+pages, and a "(since C23)" tag means *not allowed* (`typeof`, `nullptr`, the `bool` and `alignas` keywords,
+binary literals, `[[attributes]]`, `constexpr`, `memset_explicit`, `<stdbit.h>`, `<stdckdint.h>`).
+The header is also valid C++11 and builds as C99 (its `NGS_STATIC_ASSERT` falls back).
+
+**Language profile.** No variable-length arrays (`__STDC_NO_VLA__` is set by MSVC), no `<complex.h>`, no
+`wchar_t` in any API, and no `long` for a size, offset or count (it is 32 bits on 64-bit Windows). Sizes in
+memory are `size_t`; anything on disk, in a segment or in a counter that can pass 4 GiB is `uint64_t`.
+Fixed-width integers (`uint8_t` ... `int64_t`) are optional in ISO C and are required here.
+Floats are IEEE-754 binary32, asserted from `<float.h>`, not from `__STDC_IEC_559__`.
+
+**Headers the engine core may include**
+
+| header | use | not allowed from it |
+|---|---|---|
+| `<stddef.h>` `<stdint.h>` `<limits.h>` `<float.h>` `<stdalign.h>` `<assert.h>` | types, limits, `alignas`, `static_assert` | `max_align_t` (missing on MSVC; use `NGS_ALIGN_MAX`) |
+| `<string.h>` | `memcpy` `memmove` `memcmp` `memset` `strlen` | `strtok`; `memset` to wipe a secret; `memset_s` (Annex K); `memset_explicit` (C23) |
+| `<stdlib.h>` | `malloc` `calloc` `realloc` `free` `abort` `bsearch` | `qsort` (unstable); `aligned_alloc` (does not link on MSVC); `rand` `srand` |
+| `<math.h>` | `expf` `exp2f` `logf` `sqrtf` `fabsf` `ceilf` `isfinite` `isnan` | implicit FMA contraction (`#pragma STDC FP_CONTRACT OFF`) |
+| `<time.h>` | `timespec_get(TIME_UTC)` for the wall clock | `time` `clock` `localtime` |
+| `<stdio.h>` | `snprintf` for bounded error text | all file I/O (`fopen` `fwrite` `fflush` `fseek` `ftell`), `printf` |
+| `<inttypes.h>` | `PRIu64` and friends for diagnostics | |
+| `<stdatomic.h>` `<threads.h>` `<errno.h>` | only inside the platform layer, behind `__STDC_NO_ATOMICS__` / `__STDC_NO_THREADS__` (MSVC needs `/experimental:c11atomics` for the first) | |
+
+Any other header (`<locale.h>`, `<signal.h>`, `<setjmp.h>`, `<ctype.h>`, `<wchar.h>`, `<fenv.h>`, `<tgmath.h>`) is not
+allowed in the core. CI greps the core sources for forbidden includes, and for `<unistd.h>` and `<windows.h>` outside
+`src/plat_*.c`.
+
+**Compile gate.** The header and the core build warning-free with, per toolchain:
+`cc -std=c11 -Wall -Wextra -pedantic -Werror` (gcc and clang; also `-std=c17`), `c++ -std=c++11 -Wall -Wextra -pedantic
+-Werror -x c++` (the header only), and `cl /std:c11 /W4 /WX /permissive-` (MSVC has no `-pedantic`; this flag set is the nearest). Also run once as
+32-bit. Status of those runs: `C-AUDIT.md` section 0.
+
+**Numbers.** Overflow-checked `count * size` before every allocation. Signed overflow is undefined, so time
+differences use `ngs_time_sub_sat`. Floats and integers are converted with `memcpy` and explicit
+little-endian shifts, never by pointer cast. Recall ties break by `fact_id`, so order is reproducible; recall
+scores are compared with a tolerance in the differential test, ranks exactly.
+
+## 15. Platform layer (POSIX and Win32)
+
+ISO C cannot give a storage engine durable, positional, locked, mapped I/O, a monotonic clock or a CSPRNG.
+Everything outside the standard is one small internal interface (`src/plat.h`), implemented twice
+(`src/plat_posix.c`, `src/plat_win32.c`). The core calls only `plat.h`. Each row is one function.
+
+| capability | why ISO C is not enough | POSIX (Linux, macOS) | Win32 |
+|---|---|---|---|
+| open, close, positional read and write, 64-bit offsets | `fopen` has no `pread` and no durability; the `fseek` offset is `long` (32 bits on Win64); Windows `fopen` takes the ANSI code page but the API promises UTF-8 | `open(O_CLOEXEC)`, `pread`, `pwrite`, `close` | `CreateFileW` (UTF-8 to UTF-16 with `MultiByteToWideChar`), `ReadFile` / `WriteFile` with an `OVERLAPPED` offset, `CloseHandle` |
+| make a write durable | `fflush` empties the C buffer only | `fdatasync` (Linux), `fsync`; on macOS `fcntl(F_FULLFSYNC)` | `FlushFileBuffers` |
+| atomic replace, directory durability | no atomic-rename contract, no directory sync | `rename`, then `fsync` of the directory | `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and `MOVEFILE_WRITE_THROUGH` |
+| truncate a torn tail | none | `ftruncate` | `SetFilePointerEx` + `SetEndOfFile` |
+| single-writer lock (`LOCK`) | none | `fcntl(F_SETLK)` | `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` and `LOCKFILE_FAIL_IMMEDIATELY` |
+| read-only mapping of immutable files | none | `mmap(PROT_READ, MAP_SHARED)` | `CreateFileMappingW` + `MapViewOfFile` |
+| monotonic clock (deadlines, `t_record` ordering) | `timespec_get` is wall time only | `clock_gettime(CLOCK_MONOTONIC)` | `QueryPerformanceCounter` |
+| entropy for key generation | `rand` is not a CSPRNG | `getrandom` (Linux), `getentropy` (macOS) | `BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG` |
+| wipe a secret so the compiler cannot drop it | `memset` may be removed; Annex K and C23 `memset_explicit` are out | `explicit_bzero` where present, else a `volatile` byte loop | `SecureZeroMemory` |
+| threads, mutex, condition variable (group commit, parallel arms, compaction) | `<threads.h>` is optional and not on every libc | `pthread_*` | `CreateThread`, `SRWLOCK`, `CONDITION_VARIABLE` |
+| atomics | `<stdatomic.h>` is optional; MSVC needs `/experimental:c11atomics` | `<stdatomic.h>` | `Interlocked*` intrinsics (or `<stdatomic.h>` when the flag is on) |
+| thread-local storage (`ngs_errmsg`) | `_Thread_local` is C11 and works on MSVC `/std:c11` | `_Thread_local` | `_Thread_local` (or `__declspec(thread)`) |
+| aligned allocation | `aligned_alloc` does not link on MSVC | `posix_memalign` | `_aligned_malloc` / `_aligned_free` |
+| CPU count, page size, SIMD feature detection | none | `sysconf`, `cpuid` | `GetSystemInfo`, `__cpuid` |
+
+Rules: the platform layer returns the same error codes on both sides; it is the only place `errno` or
+`GetLastError` is read; and it is covered by the crash VFS of section 8 (the injection points are exactly these
+functions). Wall time is not a platform function: `timespec_get(TIME_UTC)` is ISO C11.

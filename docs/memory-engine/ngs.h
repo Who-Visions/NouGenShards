@@ -1,6 +1,6 @@
 /*
 ** ngs.h -- public API for NouGenShards (NGS): native memory for AI agents.
-** Draft 0.3 (spec header; no implementation yet). See SPEC.md.
+** Draft 0.3.1 (spec header; no implementation yet). See SPEC.md.
 **
 ** Model: every write is an immutable, signed, hash-chained FACT. Nothing is
 ** deleted; facts are invalidated. Recall fuses vector, keyword, time,
@@ -35,13 +35,27 @@
 **          their facts, unless NGS_WRITE_NO_SYNC is set (bulk ingest; durable at
 **          the next sync point or ngs_flush()).
 ** Time     One sentinel set everywhere: NGS_TIME_MIN / NGS_TIME_MAX mean
-**          unbounded; NGS_TIME_NOW means the engine clock.
+**          unbounded; NGS_TIME_NOW means the engine clock. Never subtract two
+**          ngs_time values with `-`: signed overflow is undefined. Use
+**          ngs_time_sub_sat().
+** Align    Every returned block is aligned to NGS_ALIGN_MAX (16). A caller's
+**          ngs_vec.v needs only float alignment; the engine copies it before any
+**          SIMD scan.
+** Input    Floats the caller supplies (vectors, weights, weight, min_confidence)
+**          must be finite; NaN or infinity returns NGS_MISUSE. An ngs_str with
+**          p == NULL must have n == 0. Counts and lengths are overflow-checked.
+** C        ISO C11 (C17 defect fixes allowed); the header is also valid C++. It
+**          includes freestanding headers only. Allowed headers and the platform
+**          layer: SPEC.md sections 14 and 15, checked against https://devdocs.io/c/.
+**          Build gate: check/ngs_header_check.c.
 **
 ** Licence: Apache-2.0.
 */
 #ifndef NGS_H
 #define NGS_H
 
+#include <limits.h>
+#include <float.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -49,11 +63,53 @@
 extern "C" {
 #endif
 
-#define NGS_VERSION        "0.3.0-draft"
-#define NGS_VERSION_NUMBER 3000
+/* ---------- export macro (shared builds only) ---------- */
+#ifndef NGS_API
+#  if defined(_WIN32) && defined(NGS_SHARED)
+#    ifdef NGS_BUILD
+#      define NGS_API __declspec(dllexport)
+#    else
+#      define NGS_API __declspec(dllimport)
+#    endif
+#  elif defined(__GNUC__) && defined(NGS_SHARED) && defined(NGS_BUILD)
+#    define NGS_API __attribute__((visibility("default")))
+#  else
+#    define NGS_API
+#  endif
+#endif
+
+/* ---------- compile-time guarantees ----------
+** C11 and C++11 have a real static assertion; C99 gets the negative-array form.
+** The optional exact-width types (uint8_t ... int64_t) are required: a platform
+** without them fails at the first use below. */
+#define NGS_CAT_(a, b) a##b
+#define NGS_CAT(a, b)  NGS_CAT_(a, b)
+#if defined(__cplusplus) && __cplusplus >= 201103L
+#  define NGS_STATIC_ASSERT(c, m) static_assert(c, m)
+#elif !defined(__cplusplus) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define NGS_STATIC_ASSERT(c, m) _Static_assert(c, m)
+#else
+#  define NGS_STATIC_ASSERT(c, m) typedef char NGS_CAT(ngs_static_assert_, __LINE__)[(c) ? 1 : -1]
+#endif
+
+NGS_STATIC_ASSERT(CHAR_BIT == 8, "NGS needs 8-bit bytes");
+/* float is IEEE-754 binary32: vectors are stored and exchanged as such.
+** __STDC_IEC_559__ is not used: MSVC is binary32 but never defines it. */
+NGS_STATIC_ASSERT(sizeof(float) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
+                  "NGS needs IEEE-754 binary32 float");
+
+/* ---------- limits (SPEC 2.1) ---------- */
+#define NGS_MAX_NS_LEN     255u     /* bytes */
+#define NGS_MAX_TITLE_LEN  1024u    /* bytes */
+#define NGS_MAX_ATTRS_LEN  65536u   /* bytes */
+#define NGS_MAX_DIM        8192u    /* proposed (SPEC 12): keeps dim * sizeof(float) far below SIZE_MAX on 32-bit */
+#define NGS_ALIGN_MAX      16u      /* alignment of every returned block; max_align_t is not declared by MSVC */
+
+#define NGS_VERSION        "0.3.1-draft"
+#define NGS_VERSION_NUMBER 3001
 #define NGS_FORMAT         1          /* on-disk log format */
-int         ngs_libversion_number(void);   /* runtime check vs NGS_VERSION_NUMBER */
-const char *ngs_libversion(void);
+NGS_API int         ngs_libversion_number(void);   /* runtime check vs NGS_VERSION_NUMBER */
+NGS_API const char *ngs_libversion(void);
 
 /* ---------- result codes: 0 ok, 1..99 errors, 100+ reserved ---------- */
 #define NGS_OK            0
@@ -68,13 +124,20 @@ const char *ngs_libversion(void);
 #define NGS_IOERR        10
 #define NGS_MISUSE       11   /* includes a struct `size` the engine cannot accept */
 #define NGS_TOOBIG       12   /* body/attrs over the configured limit */
-const char *ngs_errstr(int rc);
+NGS_API const char *ngs_errstr(int rc);
 
 /* ---------- time ---------- */
 typedef int64_t ngs_time;                 /* microseconds since Unix epoch, UTC */
 #define NGS_TIME_MIN  INT64_MIN           /* unbounded below */
 #define NGS_TIME_MAX  INT64_MAX           /* unbounded above / "still valid" */
 #define NGS_TIME_NOW  (INT64_MIN + 1)     /* engine clock */
+
+/* a - b without signed overflow (undefined in ISO C); saturates at the ends. */
+static inline int64_t ngs_time_sub_sat(ngs_time a, ngs_time b) {
+  if (b < 0) { if (a > INT64_MAX + b) return INT64_MAX; }
+  else       { if (a < INT64_MIN + b) return INT64_MIN; }
+  return a - b;
+}
 
 /* ---------- memory kinds (int32_t on the wire) ---------- */
 #define NGS_EPISODIC   1   /* what happened */
@@ -101,7 +164,7 @@ typedef struct {
   ngs_str      model_id;
   uint32_t     dim;
   uint32_t     version;
-  const float *v;          /* dim floats, L2-normalized by the caller */
+  const float *v;          /* dim floats (1..NGS_MAX_DIM), L2-normalized by the caller, all finite; float alignment is enough */
 } ngs_vec;
 
 /* ---------- opening ---------- */
@@ -123,12 +186,12 @@ typedef struct {
 
 /* Always returns a handle unless out of memory; on failure the handle is in an
 ** error state, ngs_errmsg() explains, and ngs_close() releases it. */
-int  ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out);
-int  ngs_close(ngs *db);
-const char *ngs_errmsg(ngs *db);
-void ngs_free(void *p);
-int  ngs_node_pubkey(ngs *db, ngs_pubkey *out);
-int  ngs_flush(ngs *db);                 /* force a sync point */
+NGS_API int  ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out);
+NGS_API int  ngs_close(ngs *db);
+NGS_API const char *ngs_errmsg(ngs *db);
+NGS_API void ngs_free(void *p);
+NGS_API int  ngs_node_pubkey(ngs *db, ngs_pubkey *out);
+NGS_API int  ngs_flush(ngs *db);                 /* force a sync point */
 
 /* ---------- writing ---------- */
 #define NGS_WRITE_NO_SYNC 0x0001         /* return before fdatasync (bulk ingest) */
@@ -149,29 +212,31 @@ typedef struct {
   float      salience0;            /* app's judgement in [0,1]; <0 = 0.5 */
   const ngs_str  *tokenizer_ids;   const uint32_t *token_counts; size_t n_token_counts;
 } ngs_fact_in;
-#define NGS_FACT_IN_INIT { sizeof(ngs_fact_in) }
+/* Not a plain zero struct: t_event and valid_from are NGS_TIME_NOW, salience0 is -1 (= default 0.5), kind is 0 (set it). */
+#define NGS_FACT_IN_INIT { sizeof(ngs_fact_in), {0,0}, 0, NGS_TIME_NOW, NGS_TIME_NOW, {0,0}, {0,0}, \
+                           0, 0, 0, 0, 0, 0, 0, 0, -1.0f, 0, 0, 0 }
 
-int ngs_remember(ngs *db, const ngs_fact_in *in, int32_t flags, ngs_id *out_id);
+NGS_API int ngs_remember(ngs *db, const ngs_fact_in *in, int32_t flags, ngs_id *out_id);
 
 /* Atomic multi-fact write: all facts become visible (and durable) together or none do. */
-int ngs_remember_many(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags,
+NGS_API int ngs_remember_many(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags,
                       ngs_id *out_ids /* n entries */);
 
 /* Invalidation is how anything is undone, including links and grants:
 ** ngs_invalidate(link_id) unlinks; ngs_invalidate(grant_id) revokes. */
-int ngs_invalidate(ngs *db, const ngs_id *id, ngs_str reason);
+NGS_API int ngs_invalidate(ngs *db, const ngs_id *id, ngs_str reason);
 
 /* Links may name ids not yet present locally (they can arrive by sync); the
 ** link is stored and resolves when the target lands. */
-int ngs_link(ngs *db, const ngs_id *a, const ngs_id *b, ngs_str rel, float weight,
+NGS_API int ngs_link(ngs *db, const ngs_id *a, const ngs_id *b, ngs_str rel, float weight,
              ngs_id *out_link_id);
 
 /* Tombstone a body; signed REDACTION fact syncs to peers. See SPEC 2.2/13. */
-int ngs_redact(ngs *db, const ngs_id *id, ngs_str reason);
+NGS_API int ngs_redact(ngs *db, const ngs_id *id, ngs_str reason);
 
 /* Namespace genesis is a self-signed grant by the creating node. Fleet
 ** namespaces: the owner grant is signed offline by the pinned root key. */
-int ngs_grant(ngs *db, ngs_str ns, const ngs_pubkey *writer, ngs_id *out_grant_id);
+NGS_API int ngs_grant(ngs *db, ngs_str ns, const ngs_pubkey *writer, ngs_id *out_grant_id);
 
 /* ---------- reading ---------- */
 typedef struct {
@@ -190,7 +255,7 @@ typedef struct {
   int32_t    redacted;
 } ngs_fact;
 
-int ngs_get(ngs *db, const ngs_id *id, ngs_fact **out);   /* one allocation: ngs_free */
+NGS_API int ngs_get(ngs *db, const ngs_id *id, ngs_fact **out);   /* one allocation: ngs_free */
 
 #define NGS_FUSE_ZSCORE 0
 #define NGS_FUSE_RRF    1
@@ -245,13 +310,13 @@ typedef struct {
 } ngs_results;
 
 /* rc NGS_OK even when abstained or timed out; always free *out with ngs_free. */
-int ngs_recall(ngs *db, const ngs_query *q, ngs_results **out);
-int ngs_as_of(ngs *db, ngs_time t_valid, ngs_time t_record,
+NGS_API int ngs_recall(ngs *db, const ngs_query *q, ngs_results **out);
+NGS_API int ngs_as_of(ngs *db, ngs_time t_valid, ngs_time t_record,
               const ngs_query *q, ngs_results **out);
 
 #define NGS_MARK_NOT_USED 0
 #define NGS_MARK_USED     1
-int ngs_mark(ngs *db, const ngs_id *id, int32_t mark);   /* NGS_NOTFOUND if id unknown locally */
+NGS_API int ngs_mark(ngs *db, const ngs_id *id, int32_t mark);   /* NGS_NOTFOUND if id unknown locally */
 
 /* ---------- scanning (export, debugging, migration) ---------- */
 typedef struct {
@@ -261,21 +326,22 @@ typedef struct {
   ngs_time        since, until;    /* t_record window */
   int32_t         include_derived; /* 1 = also invalidations/links/redactions */
 } ngs_scan_opts;
+#define NGS_SCAN_OPTS_INIT { sizeof(ngs_scan_opts), {0,0}, 0, NGS_TIME_MIN, NGS_TIME_MAX, 0 }
 typedef struct ngs_iter ngs_iter;
-int  ngs_scan(ngs *db, const ngs_scan_opts *o, ngs_iter **it);
-int  ngs_iter_next(ngs_iter *it, ngs_fact **out);   /* NGS_NOTFOUND at end; free each fact */
-void ngs_iter_close(ngs_iter *it);
+NGS_API int  ngs_scan(ngs *db, const ngs_scan_opts *o, ngs_iter **it);
+NGS_API int  ngs_iter_next(ngs_iter *it, ngs_fact **out);   /* NGS_NOTFOUND at end; free each fact */
+NGS_API void ngs_iter_close(ngs_iter *it);
 
 /* ---------- integrity ---------- */
-int ngs_checkpoint(ngs *db, uint8_t **ckpt, size_t *len);   /* one allocation */
-int ngs_verify(ngs *db, const uint8_t *ckpt, size_t len);
-int ngs_rebuild(ngs *db);
+NGS_API int ngs_checkpoint(ngs *db, uint8_t **ckpt, size_t *len);   /* one allocation */
+NGS_API int ngs_verify(ngs *db, const uint8_t *ckpt, size_t len);
+NGS_API int ngs_rebuild(ngs *db);
 
 /* ---------- federation ---------- */
 typedef struct { ngs_pubkey writer; ngs_str ns; uint64_t seq; } ngs_head;
 
-int ngs_heads(ngs *db, ngs_head **heads, size_t *n);          /* one allocation */
-int ngs_sync_export(ngs *db, const ngs_head *since, size_t n_since,
+NGS_API int ngs_heads(ngs *db, ngs_head **heads, size_t *n);          /* one allocation */
+NGS_API int ngs_sync_export(ngs *db, const ngs_head *since, size_t n_since,
                     uint8_t **segment, size_t *len);           /* one allocation */
 
 typedef struct {
@@ -291,7 +357,7 @@ typedef struct {
 } ngs_sync_report;
 
 /* *report is one allocation (entries included); free with ngs_free. */
-int ngs_sync_import(ngs *db, const uint8_t *segment, size_t len, ngs_sync_report **report);
+NGS_API int ngs_sync_import(ngs *db, const uint8_t *segment, size_t len, ngs_sync_report **report);
 
 /* ---------- introspection ---------- */
 typedef struct {
@@ -302,8 +368,8 @@ typedef struct {
   uint64_t quarantined_segments;
   uint64_t recalls, abstentions, timeouts;
 } ngs_stats_t;
-#define NGS_STATS_INIT { sizeof(ngs_stats_t) }
-int ngs_stats(ngs *db, ngs_stats_t *out);
+#define NGS_STATS_INIT { sizeof(ngs_stats_t), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+NGS_API int ngs_stats(ngs *db, ngs_stats_t *out);
 
 #ifdef __cplusplus
 }
