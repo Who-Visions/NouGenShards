@@ -1173,6 +1173,16 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
 ENV_READ_TIMEOUT = "NOUGEN_KEYMAKER_READ_TIMEOUT_S"
 _READ_TIMEOUT_DEFAULT_S = 15.0
 
+#: Readers that outlived their timeout and are still blocked, by secret name.
+#: A stuck reader is never duplicated: while one is alive for a key, later
+#: calls for that key return None at once instead of starting another thread
+#: (review on PR 1202: context7 reads its key on every tool call, so an
+#: unbounded spawn would leak one blocked thread per call). The total is also
+#: capped, so a node where every read blocks holds at most this many threads.
+_STUCK_READERS: dict = {}
+_STUCK_READERS_MAX = 8
+_STUCK_LOCK = __import__("threading").Lock()
+
 
 def _read_timeout_s() -> float:
     """Hard ceiling for one get_secret call; <= 0 disables the watchdog."""
@@ -1207,10 +1217,22 @@ def get_secret(key: str) -> Optional[str]:
         except BaseException as exc:  # pylint: disable=broad-except
             box["error"] = exc
 
+    with _STUCK_LOCK:
+        for name, thread in list(_STUCK_READERS.items()):
+            if not thread.is_alive():
+                del _STUCK_READERS[name]   # it finished late; forget it
+        if key in _STUCK_READERS or len(_STUCK_READERS) >= _STUCK_READERS_MAX:
+            logger.error("keymaker read of '%s' skipped: %s; returning None without a new reader",
+                         key, "a previous reader for this key is still blocked"
+                         if key in _STUCK_READERS else
+                         f"{len(_STUCK_READERS)} readers are already blocked")
+            return None
     worker = threading.Thread(target=_run, name=f"keymaker-read-{key}", daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
+        with _STUCK_LOCK:
+            _STUCK_READERS[key] = worker
         import sys  # pylint: disable=import-outside-toplevel
         import traceback  # pylint: disable=import-outside-toplevel
         frame = sys._current_frames().get(worker.ident)  # pylint: disable=protected-access

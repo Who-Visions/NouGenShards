@@ -60,3 +60,62 @@ def test_tenant_context_survives_the_thread_hop(monkeypatch):
     monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "5")
     monkeypatch.setattr(keymaker, "_get_secret_unbounded", lambda key: var.get())
     assert keymaker.get_secret("K") == "tenant-a"
+
+
+def test_stuck_reader_is_not_duplicated(monkeypatch):
+    """Review on PR 1202: repeated calls for a blocked key must not spawn a new thread each time."""
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(keymaker, "_STUCK_READERS", {})
+    monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "0.2")
+
+    def blocked(key):
+        calls.append(key)
+        release.wait(30)
+
+    monkeypatch.setattr(keymaker, "_get_secret_unbounded", blocked)
+    try:
+        assert keymaker.get_secret("CTX7") is None        # starts one reader, times out
+        started = time.monotonic()
+        for _ in range(5):
+            assert keymaker.get_secret("CTX7") is None    # no new reader, no wait
+        assert time.monotonic() - started < 0.5
+        assert calls == ["CTX7"]
+    finally:
+        release.set()
+
+
+def test_total_stuck_readers_are_capped(monkeypatch):
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(keymaker, "_STUCK_READERS", {})
+    monkeypatch.setattr(keymaker, "_STUCK_READERS_MAX", 2)
+    monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "0.1")
+    monkeypatch.setattr(keymaker, "_get_secret_unbounded",
+                        lambda key: calls.append(key) or release.wait(30))
+    try:
+        for k in ("A", "B", "C", "D"):
+            assert keymaker.get_secret(k) is None
+        assert calls == ["A", "B"]
+    finally:
+        release.set()
+
+
+def test_reader_that_finishes_late_frees_its_slot(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(keymaker, "_STUCK_READERS", {})
+    monkeypatch.setenv(keymaker.ENV_READ_TIMEOUT, "0.1")
+    state = {"block": True}
+
+    def read(key):
+        if state["block"]:
+            release.wait(30)
+            return None
+        return "fresh"
+
+    monkeypatch.setattr(keymaker, "_get_secret_unbounded", read)
+    assert keymaker.get_secret("K2") is None
+    state["block"] = False
+    release.set()
+    time.sleep(0.2)
+    assert keymaker.get_secret("K2") == "fresh"
