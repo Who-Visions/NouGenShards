@@ -51,7 +51,7 @@ function withFetch(fn) {
   const real = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const r = input instanceof Request ? input : new Request(input, init);
-    seen.push({ url: r.url, via: r.headers.get("x-nougen-via"), auth: r.headers.get("authorization") });
+    seen.push({ url: r.url, via: r.headers.get("x-nougen-via"), auth: r.headers.get("authorization"), ngs: r.headers.get("x-ngs-token") });
     return fn(r);
   };
   return { seen, restore: () => { globalThis.fetch = real; } };
@@ -161,7 +161,8 @@ test("queue consumer delivers to the origin with its token and marks delivered",
     assert.equal(m.acked, true);
     assert.equal(f.seen[0].url, "https://origin.example.test/msg");
     assert.equal(f.seen[0].via, VIA);
-    assert.equal(f.seen[0].auth, "Bearer origin-token-not-real");
+    assert.equal(f.seen[0].ngs, "origin-token-not-real", "origin reads X-NGS-Token");
+    assert.equal(f.seen[0].auth, null, "no Bearer header: the origin would 401 it");
     const list = await e.MAILBOX.get("lane-c").fetch("https://mailbox/list?after=0");
     const [row] = (await list.json()).messages;
     assert.equal(row.seq, accepted.seq);

@@ -132,7 +132,8 @@ export default {
       let ok = false, status = 0;
       try {
         const headers = { "content-type": "application/json", "x-nougen-via": VIA };
-        if (env.MSGS_ORIGIN_TOKEN) headers.authorization = "Bearer " + env.MSGS_ORIGIN_TOKEN;
+        // The msgs origin (nougenmsg_node) authenticates on X-NGS-Token, not Authorization.
+        if (env.MSGS_ORIGIN_TOKEN) headers["x-ngs-token"] = env.MSGS_ORIGIN_TOKEN;
         const res = await fetch(target, { method: "POST", headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(originTimeoutMs) });
         status = res.status; ok = res.ok;
       } catch (err) { status = 0; }
