@@ -1,14 +1,16 @@
-# nmem: a memory-native storage engine (spec, draft 0.1)
+# NouGenShards (NGS): native memory for AI agents
+
+Engine spec, draft 0.2. Short name **NGS**; C prefix `ngs_`; amalgamation `nougenshards.c` + `ngs.h`.
 
 Status: draft for review. Owner: WhoArt claude-app. Reviewer: Phoebus, once its benchmarks land.
 Date: Sun 2026-11-22. Inputs: gap report 26917@db1, research frontier 32623@db5, Destiny 10 audit 35723@db7.
 
-nmem is a single-file embedded engine in the spirit of SQLite, built around memory instead of
+NGS is a single-file embedded engine in the spirit of SQLite, built around memory instead of
 tables. Its primitive is a **fact**: a signed, hash-chained, append-only record that is never
 deleted, only invalidated. There is no SQL. The API is `remember`, `recall`, `invalidate`,
 `as_of` and `link`.
 
-It ships as one amalgamated C file (`nmem.c`) and one public header (`nmem.h`), with thin
+It ships as one amalgamated C file (`nougenshards.c`) and one public header (`ngs.h`), with thin
 bindings for Python, Bun and Go. It needs no server, no network and no paid service.
 
 ---
@@ -27,6 +29,17 @@ reason for a new engine:
    writer per namespace, and no quarantine for bad input.
 4. **Recall is assembled, not designed.** Keyword, vector and time live in separate structures,
    fused at query time in Python, with an embedder over HTTP. The measured tail was 29.9 s.
+
+### 1.1 Engine vs application: where the line is
+
+Anything that must still hold when the LLM is wrong, offline or replaced lives **in the engine**:
+time (valid/record axes, `as_of`), provenance (signatures, chain, writer, checkpoints), decay
+math, access-count and last-touch updates on **every** recall, token accounting, abstention
+thresholds, sync and quarantine. Judgement stays **in the application**: how salient a new
+fact is, extracting facts from conversations, adjudicating contradictions, and summarising.
+**No LLM runs inside the engine**, not even optionally. The engine takes the application's
+judgements as plain inputs (an initial salience, a `contradicts` link, a summary written as its
+own fact) and records them with provenance like any other fact.
 
 Non-goals: SQL, joins, ad-hoc analytics, a server mode in v1, CRDT merges (32623@db5 move 5),
 DiskANN/IVF at vault scale, LLM-driven "memory extraction" at write time (raw verbatim wins).
@@ -76,7 +89,7 @@ always available:
 `as_of(t_valid, t_record)` answers "what did we believe at record time X about time Y". The
 default recall is `as_of(now, now)`, so invalidated facts drop out but remain readable.
 
-Redaction (legal/privacy) is the single exception to "never removed": `nmem_redact` overwrites a
+Redaction (legal/privacy) is the single exception to "never removed": `ngs_redact` overwrites a
 body with a tombstone and records a REDACTION fact. The chain survives because `fact_id` covers
 a BLAKE3 of the body, not the body bytes, so verification still passes with the body gone.
 
@@ -94,7 +107,7 @@ A recall names the kinds it wants. Default: all three, results labelled by kind.
 
 `link(a, b, rel, weight)` appends a LINK fact. Relations are free strings (`supports`,
 `contradicts`, `derived_from`, `about`). Links are facts, so they are signed, chained and
-invalidatable. Recall can expand one hop over links (`NMEM_RECALL_EXPAND`).
+invalidatable. Recall can expand one hop over links (`NGS_RECALL_EXPAND`).
 
 ### 2.5 Schema migration
 
@@ -107,7 +120,7 @@ newest schema into a derived index, but the log keeps the original bytes.
 One directory per database:
 
 ```
-mem.nmem/
+mem.ngs/
   HEAD                 current manifest pointer (atomic rename)
   MANIFEST-000123      list of live segments, SSTables, index files, checkpoint
   log/000001.seg       append-only fact log segments (64 MiB default)
@@ -121,12 +134,12 @@ mem.nmem/
 ```
 
 Everything except `log/` and `ckpt/` is **derived** and can be rebuilt from the log
-(`nmem_rebuild`). The log is the only source of truth.
+(`ngs_rebuild`). The log is the only source of truth.
 
 ### 3.1 Log segment
 
 ```
-segment header (64 B):  magic "NMEMSEG\0" | u16 format=1 | u16 flags | u64 first_seq
+segment header (64 B):  magic "NGSSEG\0\0" | u16 format=1 | u16 flags | u64 first_seq
                         | 32 B writer pubkey | u32 header_crc32c
 record:                 u32 len | u8 type | payload[len] | u32 crc32c(type||payload)
 ```
@@ -176,7 +189,7 @@ service is required or assumed.
 
 | index | structure | key |
 |---|---|---|
-| vector | HNSW (M=16, efC=200, efS adaptive), one file per `(model, dim, version)` | embedding |
+| vector | flat SIMD scan first; ANN only if §5.6 says so. One file per `(model, dim, version)` | embedding |
 | keyword | BM25 inverted index, unicode61 + Porter stemming, plus a trigram side index for substrings | tokens |
 | time | B+tree on `t_event` and `t_record` | µs |
 | id | SST Bloom + block index | `fact_id` |
@@ -185,7 +198,7 @@ service is required or assumed.
 **Embedding hygiene**: every vector is tagged `(model_id, dim, version)`. An index holds exactly
 one tag. A query declares its tag; mismatches are an error, never silently mixed. Re-embedding
 writes a new index alongside the old one and switches atomically when complete; NULL coverage is
-reported per tag (`nmem_stats`). The engine stores and searches vectors; it does not run models.
+reported per tag (`ngs_stats`). The engine stores and searches vectors; it does not run models.
 Embedding is the caller's job (bindings ship an optional in-process ONNX helper, outside the core).
 
 ### 5.2 Fused recall score
@@ -206,7 +219,9 @@ score(f) = w_v·z(cos(q,f)) + w_k·z(bm25(q,f)) + w_t·recency(f) + w_s·salienc
 
 ### 5.3 Salience
 
-Each fact has a salience `s ∈ [0,1]` kept in a derived side table (not the log):
+Each fact has a salience `s ∈ [0,1]` kept in a derived side table (not the log). The
+**initial** value is the application's judgement (`salience0` on `remember`, default 0.5); the
+engine owns only the arithmetic below and the access bookkeeping:
 
 ```
 on access (returned AND marked used): s ← s + η·(1 − s)        η = 0.15
@@ -214,29 +229,72 @@ decay:                                 s ← s · 2^(−Δt / half_life)  half_l
 ```
 
 Decay is computed lazily at read time from `(s, last_touch)`, so idle facts cost nothing.
-Access events are batched and written as derived-state, not facts, so reading never grows the log.
-`nmem_mark(fact_id, USED|NOT_USED)` lets agents report which recalled facts actually helped.
+Every recall increments `access_count` and `last_touch` for each returned fact (engine-side,
+unconditional, no LLM in the loop). Access events are batched and written as derived state,
+not facts, so reading never grows the log.
+`ngs_mark(fact_id, USED|NOT_USED)` lets agents report which recalled facts actually helped.
+
+### 5.4 Token-budgeted recall
+
+Agents fill a context window, not a result page. A recall may ask for a **token budget**
+instead of (or in addition to) `k`: the engine returns the best set of facts whose summed token
+cost fits the budget, highest marginal score first (greedy knapsack by score per token, with a
+diversity penalty for near-duplicate bodies). Each fact carries a token cost:
+
+- the caller supplies `tokens` per tokenizer id on `remember` (exact), or
+- the engine falls back to a deterministic estimate (`ceil(utf8_bytes / 4)`), flagged as estimated.
+
+Results report `tokens_used`, `tokens_budget` and, per hit, whether the body was included in
+full or as a title-only stub (a stub costs only the title's tokens and keeps the id for a later `get`).
+
+### 5.5 Abstention is a result
+
+"Nothing relevant" must never be indistinguishable from "search failed". Every recall computes a
+**confidence** for its best hit: the fused score calibrated against the per-namespace score
+distribution, as a percentile in [0,1]. If no hit clears `min_confidence` (query parameter,
+default 0.35), the engine returns `NGS_ABSTAIN`, a structured result that carries:
+
+- `abstained = 1`, the best confidence seen, and the threshold used,
+- which arms ran and which timed out (`arms_complete`),
+- the nearest candidates anyway (ids and scores only), so the application can decide.
+
+An empty list is reserved for "the namespace has no facts". Abstentions are counted in
+`ngs_stats` so a rising abstain rate is visible.
+
+### 5.6 Vector search: measure before building
+
+No bespoke ANN until it is earned. M4 benchmarks, on the same corpus and the §9 harness:
+
+1. **sqlite-vec brute force** per shard. This is expected to be enough up to about 50 000 vectors per
+   shard, which covers every current vault shard.
+2. **SQLite's official vec1 extension (IVF-PQ)**.
+3. **libSQL DiskANN**.
+
+Each one is reported for Recall@k against exact search, p50/p95/p99 and build time. NGS ships the
+simplest option that meets the §9 targets behind one internal interface, and writes its own HNSW
+only if all three miss. Whatever wins, the embedding-tag rule (one `(model, dim, version)` per
+index) still holds.
 
 ## 6. Public API (C)
 
-See `nmem.h`. Summary:
+See `ngs.h`. Summary:
 
 ```c
-nmem_open / nmem_close
-nmem_remember(db, &fact_in, &fact_id_out)
-nmem_invalidate(db, fact_id, reason)
-nmem_link(db, a, b, rel, weight)
-nmem_recall(db, &query, &results)        // fused, deadline-bound, kind-filtered
-nmem_as_of(db, t_valid, t_record, &query, &results)
-nmem_get(db, fact_id, &fact)
-nmem_mark(db, fact_id, used)
-nmem_checkpoint / nmem_verify / nmem_rebuild / nmem_redact
-nmem_sync_export(db, since, &segment) / nmem_sync_import(db, segment, &report)
-nmem_stats
+ngs_open / ngs_close
+ngs_remember(db, &fact_in, &fact_id_out)
+ngs_invalidate(db, fact_id, reason)
+ngs_link(db, a, b, rel, weight)
+ngs_recall(db, &query, &results)        // fused, deadline-bound, kind-filtered, token-budgeted; may return NGS_ABSTAIN
+ngs_as_of(db, t_valid, t_record, &query, &results)
+ngs_get(db, fact_id, &fact)
+ngs_mark(db, fact_id, used)
+ngs_checkpoint / ngs_verify / ngs_rebuild / ngs_redact
+ngs_sync_export(db, since, &segment) / ngs_sync_import(db, segment, &report)
+ngs_stats
 ```
 
-Errors are integer codes plus `nmem_errmsg(db)`. No function allocates memory the caller must
-free with anything other than `nmem_free`. All strings are UTF-8, length-delimited.
+Errors are integer codes plus `ngs_errmsg(db)`. No function allocates memory the caller must
+free with anything other than `ngs_free`. All strings are UTF-8, length-delimited.
 
 ## 7. Federation
 
@@ -259,7 +317,7 @@ has one writer. Divergent *beliefs* are expressed as facts with `contradicts` li
 Modeled on SQLite's test discipline. The harness lands **before** the indexes:
 
 - **Crash injection**: a VFS shim that can fail or kill at every `write`, `fsync`, `rename`,
-  `ftruncate`. For every injection point: reopen, `nmem_verify`, assert no acknowledged fact is
+  `ftruncate`. For every injection point: reopen, `ngs_verify`, assert no acknowledged fact is
   lost and no unacknowledged fact is half-visible.
 - **Power-loss simulation**: drop un-fsynced pages at random (with reordering) and replay.
 - **Torn-write and bit-flip**: corrupt random bytes in segments; the engine must detect (CRC,
@@ -292,10 +350,12 @@ from relay legs (32623@db5 move 1). Report with cluster bootstrap CIs.
 | open + recover after kill -9 at 250k facts | ≤ 2 s | |
 | full rebuild of derived indexes, 250k facts | ≤ 120 s | |
 | on-disk size vs current DB | ≤ 1.2× (log + indexes) | |
+| token-budgeted recall | ≥ 95% of budget used, never over | context-window fill |
+| abstention | ≥ 90% correct abstain on a held-out no-answer set, ≤ 5% false abstain | "nothing" must be trustworthy |
 | crash suite | 0 lost acknowledged facts, 0 wrong reads | correctness gate |
 | federation | 2 nodes converge to identical Merkle root after any fuzzed sequence | |
 
-Phoebus's benchmark lane owns the harness and the baseline numbers; nmem milestones are gated on it.
+Phoebus's benchmark lane owns the harness and the baseline numbers; NGS milestones are gated on it.
 
 ## 10. Milestones
 
@@ -305,7 +365,7 @@ Phoebus's benchmark lane owns the harness and the baseline numbers; nmem milesto
 | M1 | Log + canonical CBOR + BLAKE3 + Ed25519 + crash VFS | crash suite green, verify detects every corruption class |
 | M2 | Memtable + SST + manifest + recovery | recover ≤ 2 s; rebuild from log matches byte-for-byte |
 | M3 | Time and id indexes; `as_of`; invalidation view | bitemporal tests green |
-| M4 | BM25 + HNSW + fused recall + salience | beats Recall@5 baseline with CI |
+| M4 | BM25 + vector bake-off (§5.6) + fused recall + salience + token budget + abstention | beats Recall@5 baseline with CI; abstain targets met |
 | M5 | Federation export/import + quarantine + checkpoints | fuzzed 2-node convergence |
 | M6 | Amalgamation + bindings (Python, Bun, Go) + docs | one-file build on all 3 OSes |
 | M7 | Migration tool from current shard DBs (read-only import, dual-run) | parity report, no data loss |
@@ -313,26 +373,29 @@ Phoebus's benchmark lane owns the harness and the baseline numbers; nmem milesto
 ## 11. File layout (source)
 
 ```
-nmem/
-  include/nmem.h            public API (stable)
+nougenshards/
+  include/ngs.h            public API (stable)
   src/                      developed as separate files, amalgamated for release
     log.c  cbor.c  hash.c  sign.c  vfs.c  memtable.c  sst.c  manifest.c
     hnsw.c  bm25.c  timeidx.c  recall.c  salience.c  sync.c  checkpoint.c  migrate.c
   third_party/              vendored, permissive: BLAKE3 (CC0/Apache), Ed25519 ref10 (public domain), zstd (BSD)
-  tool/amalgamate.py        -> dist/nmem.c + dist/nmem.h
+  tool/amalgamate.py        -> dist/nougenshards.c + dist/ngs.h
   test/crash/  test/torture/  test/diff/  test/fed/
-  bindings/python/  bindings/bun/  bindings/go/
+  bindings/python/   package `ngs`  (import ngs; ngs.open, ngs.remember, ngs.recall ...)
+  bindings/bun/      package `@nougen/ngs` (FFI over nougenshards.c)
+  bindings/go/       module `ngs` (cgo over nougenshards.c)
   bench/                    harness entry points (owned with the benchmark lane)
 ```
 
-Licence: Apache-2.0 for nmem itself. No identities, hostnames or account names in source or tests;
-keys are generated at `nmem_open` with `NMEM_OPEN_CREATE` or supplied by the caller.
+Licence: Apache-2.0 for NGS itself. No identities, hostnames or account names in source or tests;
+keys are generated at `ngs_open` with `NGS_OPEN_CREATE` or supplied by the caller.
 
 ## 12. Open questions for review
 
-1. HNSW vs a flat scan: at ≤ 1M facts a SIMD flat scan may meet the latency targets with zero
-   build cost (32623@db5 says flat is enough at vault scale). Proposal: ship flat first in M4,
-   add HNSW behind the same interface only if p95 misses.
+1. Vector index choice is settled by §5.6 measurement (sqlite-vec brute force vs vec1 IVF-PQ vs
+   libSQL DiskANN). Open: is ~50k vectors per shard the right split point for this corpus?
 2. Salience as derived state means two nodes can rank the same fact differently. Acceptable?
 3. Redaction semantics vs "never deleted": confirm the tombstone-with-hash design.
 4. Write grants: who signs the first grant for a namespace (bootstrap key ceremony).
+5. Abstention calibration: per-namespace percentile needs enough history. What is the cold-start rule?
+6. Token estimates: which tokenizer ids should bindings ship exact counters for?
