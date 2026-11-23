@@ -53,34 +53,80 @@ def test_default_timeout_is_longer_than_the_old_hardcoded_300(monkeypatch):
     assert rsi._build_timeout_s() > 300
 
 
-def _stub_cycle(monkeypatch, tmp_path, build):
-    """Run one cycle with every outside call stubbed so nothing is posted or fetched."""
-    alerts = []
-    monkeypatch.setenv("NOUGEN_RSI_REPORTS_DIR", str(tmp_path / "reports"))
-    (tmp_path / "reports").mkdir()
+TIMEOUT = {"checked": True, "ok": False, "code": None, "error": "timeout",
+           "timed_out": True, "timeout_s": 900}
+OK = {"checked": True, "ok": True, "code": 0}
+
+
+def _cycle(monkeypatch, tmp_path, build, prev=None):
+    """Run one cycle with every outside call stubbed so nothing is posted or fetched.
+
+    Returns (summary, calls) where calls lists "degraded:<status>" / "recovered:<prev>"."""
+    calls = []
+    reports = tmp_path / "reports"
+    reports.mkdir(exist_ok=True)
+    monkeypatch.setenv("NOUGEN_RSI_REPORTS_DIR", str(reports))
+    monkeypatch.delenv("NOUGEN_RSI_UNKNOWN_ALERT_AFTER", raising=False)
     monkeypatch.setattr(rsi, "check_builds", lambda repo: build)
     monkeypatch.setattr(rsi, "check_self_update_health", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(rsi, "check_surfaces", lambda *a, **k: {"degraded": False})
     monkeypatch.setattr(rsi, "fetch_exa_temporal_latest", lambda *a, **k: {"hits": []})
     monkeypatch.setattr(rsi, "propose_improvement", lambda *a, **k: {"skipped": False})
     monkeypatch.setattr(rsi, "_record_bitemporal_receipt", lambda *a, **k: {})
-    monkeypatch.setattr(rsi, "_previous_report", lambda: None)
+    monkeypatch.setattr(rsi, "_previous_report", lambda: prev)
     monkeypatch.setattr(rsi.core, "_title_retrieve", lambda **k: [])
     monkeypatch.setattr(rsi, "_alert_degraded",
-                        lambda status, *a, **k: alerts.append(status) or {"posted": False})
-    return alerts
+                        lambda status, *a, **k: calls.append(f"degraded:{status}") or {"posted": True})
+    monkeypatch.setattr(rsi, "_alert_recovered",
+                        lambda prev_status, *a, **k: calls.append(f"recovered:{prev_status}") or {"posted": True})
+    return rsi.run(), calls
 
 
 def test_cycle_reports_a_timeout_as_unknown_not_broken(tmp_path, monkeypatch):
-    alerts = _stub_cycle(monkeypatch, tmp_path,
-                         {"checked": True, "ok": False, "code": None, "error": "timeout",
-                          "timed_out": True, "timeout_s": 900})
-    summary = rsi.run()
+    summary, _ = _cycle(monkeypatch, tmp_path, TIMEOUT)
     assert summary["status"] == "BUILD_UNKNOWN"
     assert "timed out" in summary["proposal"]["reason"]
-    assert alerts == ["BUILD_UNKNOWN"]
 
 
 def test_cycle_still_reports_a_real_failure_as_broken(tmp_path, monkeypatch):
-    _stub_cycle(monkeypatch, tmp_path, {"checked": True, "ok": False, "code": 1})
-    assert rsi.run()["status"] == "BUILD_BROKEN"
+    summary, calls = _cycle(monkeypatch, tmp_path, {"checked": True, "ok": False, "code": 1})
+    assert summary["status"] == "BUILD_BROKEN"
+    assert calls == ["degraded:BUILD_BROKEN"]
+
+
+def test_ok_then_one_timeout_then_ok_posts_nothing(tmp_path, monkeypatch):
+    """The 11/22 flap pattern: a lone timeout must not alert, and its recovery must not either."""
+    first, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev={"status": "ok"})
+    assert calls == []
+    assert first["consecutive_unknown"] == 1
+    assert first["alert"]["posted"] is False
+
+    _, calls = _cycle(monkeypatch, tmp_path, OK, prev=first)
+    assert calls == []
+
+
+def test_two_timeouts_in_a_row_alert_once(tmp_path, monkeypatch):
+    first, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev={"status": "ok"})
+    assert calls == []
+    second, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev=first)
+    assert calls == ["degraded:BUILD_UNKNOWN"]
+    assert second["consecutive_unknown"] == 2
+    third, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev=second)
+    assert calls == []  # steady state: no repeat leg
+
+
+def test_recovery_after_an_alerted_timeout_run_does_post_recovered(tmp_path, monkeypatch):
+    first, _ = _cycle(monkeypatch, tmp_path, TIMEOUT, prev={"status": "ok"})
+    second, _ = _cycle(monkeypatch, tmp_path, TIMEOUT, prev=first)
+    _, calls = _cycle(monkeypatch, tmp_path, OK, prev=second)
+    assert calls == ["recovered:BUILD_UNKNOWN"]
+
+
+def test_alert_threshold_is_configurable(tmp_path, monkeypatch):
+    summary, calls = _cycle(monkeypatch, tmp_path, TIMEOUT, prev={"status": "ok"})
+    monkeypatch.setenv("NOUGEN_RSI_UNKNOWN_ALERT_AFTER", "1")
+    monkeypatch.setattr(rsi, "_previous_report", lambda: {"status": "ok"})
+    calls.clear()
+    out = rsi.run()
+    assert out["status"] == "BUILD_UNKNOWN"
+    assert calls == ["degraded:BUILD_UNKNOWN"]

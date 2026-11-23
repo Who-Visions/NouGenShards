@@ -55,6 +55,20 @@ def _build_timeout_s() -> int:
     return value if value > 0 else _BUILD_TIMEOUT_S_FALLBACK
 
 
+# One timed-out build check says nothing about the build; the same result twice in a row is
+# worth a look. Override with NOUGEN_RSI_UNKNOWN_ALERT_AFTER.
+_UNKNOWN_ALERT_AFTER_FALLBACK = 2
+
+
+def _unknown_alert_after() -> int:
+    raw = os.environ.get("NOUGEN_RSI_UNKNOWN_ALERT_AFTER", "").strip()
+    try:
+        value = int(raw) if raw else _UNKNOWN_ALERT_AFTER_FALLBACK
+    except ValueError:
+        value = _UNKNOWN_ALERT_AFTER_FALLBACK
+    return value if value > 0 else _UNKNOWN_ALERT_AFTER_FALLBACK
+
+
 def _repo_path() -> Path:
     default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
     return Path(_env_path("NOUGEN_RSI_REPO", default))
@@ -474,10 +488,19 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     # earlier version wrote it first and attached `alert` only to the
     # in-memory return - the file never showed whether a leg was posted.
     status = summary["status"]
-    if status != "ok" and prev_status != status:
+    alert_after = _unknown_alert_after()
+    prev_unknown_run = int((prev or {}).get("consecutive_unknown", 0) or 0)
+    unknown_run = prev_unknown_run + 1 if status == "BUILD_UNKNOWN" else 0
+    summary["consecutive_unknown"] = unknown_run
+    if status == "BUILD_UNKNOWN" and unknown_run < alert_after:
+        summary["alert"] = {"posted": False,
+                            "reason": f"build check timed out ({unknown_run}/{alert_after}); not alerting yet"}
+    elif status != "ok" and (prev_status != status or (status == "BUILD_UNKNOWN" and unknown_run == alert_after)):
         summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
     elif status != "ok":
         summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
+    elif prev_status == "BUILD_UNKNOWN" and prev_unknown_run < alert_after:
+        summary["alert"] = {"posted": False, "reason": "recovered from a single unalerted timeout"}
     elif prev_status not in ("ok", "none", "unknown"):
         summary["alert"] = _alert_recovered(prev_status, report_path)
 
