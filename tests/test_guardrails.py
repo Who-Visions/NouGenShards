@@ -282,3 +282,17 @@ def test_recursive_delete_of_the_worktree_root_is_blocked():
 @pytest.mark.parametrize("dest", ["refs/heads/master", "refs/heads/main"])
 def test_src_to_full_protected_ref_is_blocked(dest):
     assert bash_guard.check(f"git push origin feature:{dest}", ROOT, root=ROOT, branch="lane/x")
+
+
+# Pins from the PR 1110 follow-up review: after a cd the guard can't follow, a
+# `git -C <relative> push` must not inherit the caller's branch. It doesn't: the cd
+# handler already clears `branch` when the directory changes, so the bare push is
+# refused. Pinned so a refactor of the -C or cd handling can't lose that.
+def test_relative_git_C_after_unresolved_cd_does_not_inherit_the_branch():
+    assert bash_guard.check("cd $X && git -C sub push", ROOT, root=ROOT, branch="lane/x")
+
+
+def test_absolute_git_C_after_unresolved_cd_still_resolves():
+    # an absolute -C names a real directory; the guard checks that repo's branch
+    why = bash_guard.check(f"cd $X && git -C {ROOT} push origin main", ROOT, root=ROOT, branch="lane/x")
+    assert why and "main" in why
