@@ -17,7 +17,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "tests" / "ngs_conformance" / "header_contract.c"
-HEADER_DIR = Path(os.environ.get("NGS_HEADER_DIR", ROOT / "docs" / "memory-engine"))
+_CANDIDATES = (ROOT / "engine" / "ngs" / "include", ROOT / "docs" / "memory-engine")
+HEADER_DIR = Path(
+    os.environ.get("NGS_HEADER_DIR")
+    or next((d for d in _CANDIDATES if (d / "ngs.h").is_file()), _CANDIDATES[-1])
+)
+SPEC_CHECK_DIR = Path(
+    os.environ.get("NGS_SPEC_CHECK_DIR", ROOT / "docs" / "memory-engine" / "check")
+)
 
 pytestmark = pytest.mark.skipif(
     not (HEADER_DIR / "ngs.h").is_file(),
@@ -48,7 +55,17 @@ def test_header_contract_cxx() -> None:
 
 def test_spec_header_check_runs(tmp_path: Path) -> None:
     """Build and run the spec PR's own check/ngs_header_check.c when present."""
-    src = HEADER_DIR / "check" / "ngs_header_check.c"
+    src = next(
+        (
+            p
+            for p in (
+                HEADER_DIR / "check" / "ngs_header_check.c",
+                SPEC_CHECK_DIR / "ngs_header_check.c",
+            )
+            if p.is_file()
+        ),
+        HEADER_DIR / "check" / "ngs_header_check.c",
+    )
     if not src.is_file():
         pytest.skip("spec header check not present")
     exe = shutil.which("cc")
