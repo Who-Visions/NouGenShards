@@ -157,6 +157,10 @@ void ngs__mutex_free(ngs__mutex *m) { if (m) { pthread_mutex_destroy(&m->m); fre
 void ngs__mutex_lock(ngs__mutex *m) { pthread_mutex_lock(&m->m); }
 void ngs__mutex_unlock(ngs__mutex *m) { pthread_mutex_unlock(&m->m); }
 
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+void ngs__global_lock(void) { pthread_mutex_lock(&g_lock); }
+void ngs__global_unlock(void) { pthread_mutex_unlock(&g_lock); }
+
 #endif /* !_WIN32 */
 
 static const ngs__vfs *g_vfs;

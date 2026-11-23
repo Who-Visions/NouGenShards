@@ -280,7 +280,18 @@ static void gf_mul(ngs__gf o, const ngs__gf a, const ngs__gf b) {
   for (i = 0; i < 16; i++) o[i] = t[i];
   gf_carry(o); gf_carry(o);
 }
-static void gf_sq(ngs__gf o, const ngs__gf a) { gf_mul(o, a, a); }
+static void gf_sq(ngs__gf o, const ngs__gf a) {
+  int64_t t[31];
+  int i, j;
+  memset(t, 0, sizeof t);
+  for (i = 0; i < 16; i++) {
+    t[2 * i] += a[i] * a[i];
+    for (j = i + 1; j < 16; j++) t[i + j] += 2 * a[i] * a[j];
+  }
+  for (i = 0; i < 15; i++) t[i] += 38 * t[i + 16];
+  for (i = 0; i < 16; i++) o[i] = t[i];
+  gf_carry(o); gf_carry(o);
+}
 
 static void gf_inv(ngs__gf o, const ngs__gf i) {   /* i^(p-2) */
   ngs__gf c;
@@ -333,10 +344,94 @@ static void pt_scalarmult(ngs__gf p[4], ngs__gf q[4], const uint8_t s[32]) {
   }
 }
 
+/* ---- fixed-base multiplication (sign, key derivation, verify's S*B) ----
+** BASE[i][j] = (j+1) * 256^i * B, i < 32, j < 8, stored as (y+x, y-x, 2dxy)
+** of the affine point. The scalar is recoded into 64 signed 4-bit digits in
+** [-8, 8]; h = sum(e[odd] * 16^(odd-1) B), times 16, plus the even digits.
+** Every lookup reads all 8 entries and selects with masks, so the secret
+** scalar never steers a branch or a memory address. The table is built once,
+** at first use, from B itself (no hand-entered points). */
+typedef struct { ngs__gf ypx, ymx, xy2d; } pre_t;
+static pre_t BASE[32][8];
+static int base_ready;
+
+static void gf_canon(ngs__gf a) { uint8_t b[32]; gf_pack(b, a); gf_unpack(a, b); }
+
+static void base_build(void) {
+  ngs__gf P[4], Q[4], zi, x, y;
+  int i, j, k;
+  gf_cp(P[0], ED_BX); gf_cp(P[1], ED_BY); gf_cp(P[2], GF1); gf_mul(P[3], ED_BX, ED_BY);
+  for (i = 0; i < 32; i++) {
+    for (k = 0; k < 4; k++) gf_cp(Q[k], P[k]);
+    for (j = 0; j < 8; j++) {
+      pre_t *e = &BASE[i][j];
+      gf_inv(zi, Q[2]);
+      gf_mul(x, Q[0], zi); gf_mul(y, Q[1], zi);
+      gf_canon(x); gf_canon(y);
+      gf_add(e->ypx, y, x); gf_sub(e->ymx, y, x);
+      gf_mul(e->xy2d, x, y); gf_mul(e->xy2d, e->xy2d, ED_D2);
+      gf_canon(e->ypx); gf_canon(e->ymx); gf_canon(e->xy2d);
+      if (j < 7) pt_add(Q, P);                  /* Q = (j+2) * P */
+    }
+    for (k = 0; k < 8; k++) pt_add(P, P);       /* P *= 256 */
+  }
+}
+
+static void base_init(void) {
+  ngs__global_lock();
+  if (!base_ready) { base_build(); base_ready = 1; }
+  ngs__global_unlock();
+}
+
+/* p += (ypx, ymx, xy2d): mixed addition, same formula as pt_add with Z2 = 1 */
+static void pt_madd(ngs__gf p[4], const pre_t *q) {
+  ngs__gf a, b, c, d, e, f, g, h;
+  gf_sub(a, p[1], p[0]); gf_mul(a, a, q->ymx);
+  gf_add(b, p[1], p[0]); gf_mul(b, b, q->ypx);
+  gf_mul(c, p[3], q->xy2d);
+  gf_add(d, p[2], p[2]);
+  gf_sub(e, b, a); gf_sub(f, d, c); gf_add(g, d, c); gf_add(h, b, a);
+  gf_mul(p[0], e, f); gf_mul(p[1], h, g); gf_mul(p[2], g, f); gf_mul(p[3], e, h);
+}
+
+static void pre_cmov(pre_t *t, const pre_t *u, int b) {
+  gf_sel(t->ypx, (int64_t *)u->ypx, b);   /* gf_sel swaps; restore u below */
+  gf_sel(t->ymx, (int64_t *)u->ymx, b);
+  gf_sel(t->xy2d, (int64_t *)u->xy2d, b);
+}
+
+static int ct_eq(int a, int b) { unsigned x = (unsigned)(a ^ b); return (int)((x - 1u) >> 31); }  /* 1 if a == b */
+
+static void base_select(pre_t *t, int pos, int b) {
+  int neg = (int)((unsigned)b >> 31);          /* 1 if b < 0 */
+  int babs = b - ((-neg & b) * 2);
+  pre_t cand, minus;
+  int j;
+  gf_cp(t->ypx, GF1); gf_cp(t->ymx, GF1); gf_cp(t->xy2d, GF0);   /* identity */
+  for (j = 0; j < 8; j++) {
+    cand = BASE[pos][j];                        /* copy: gf_sel swaps both sides */
+    pre_cmov(t, &cand, ct_eq(babs, j + 1));
+  }
+  gf_cp(minus.ypx, t->ymx); gf_cp(minus.ymx, t->ypx); gf_sub(minus.xy2d, GF0, t->xy2d);
+  pre_cmov(t, &minus, neg);
+}
+
 static void pt_scalarbase(ngs__gf p[4], const uint8_t s[32]) {
-  ngs__gf q[4];
-  gf_cp(q[0], ED_BX); gf_cp(q[1], ED_BY); gf_cp(q[2], GF1); gf_mul(q[3], ED_BX, ED_BY);
-  pt_scalarmult(p, q, s);
+  signed char e[64];
+  int i, carry = 0;
+  pre_t t;
+  base_init();
+  for (i = 0; i < 32; i++) { e[2 * i] = (signed char)(s[i] & 15); e[2 * i + 1] = (signed char)((s[i] >> 4) & 15); }
+  for (i = 0; i < 63; i++) {
+    e[i] = (signed char)(e[i] + carry);
+    carry = (e[i] + 8) >> 4;                    /* e[i] + 8 >= 0 here */
+    e[i] = (signed char)(e[i] - carry * 16);
+  }
+  e[63] = (signed char)(e[63] + carry);
+  gf_cp(p[0], GF0); gf_cp(p[1], GF1); gf_cp(p[2], GF1); gf_cp(p[3], GF0);
+  for (i = 1; i < 64; i += 2) { base_select(&t, i / 2, e[i]); pt_madd(p, &t); }
+  for (i = 0; i < 4; i++) pt_add(p, p);        /* times 16 */
+  for (i = 0; i < 64; i += 2) { base_select(&t, i / 2, e[i]); pt_madd(p, &t); }
 }
 
 /* r = x mod L for a 64-limb little-endian number with byte-sized limbs. */

@@ -52,6 +52,8 @@ int  ngs__mutex_new(ngs__mutex **m);
 void ngs__mutex_free(ngs__mutex *m);
 void ngs__mutex_lock(ngs__mutex *m);
 void ngs__mutex_unlock(ngs__mutex *m);
+void ngs__global_lock(void);     /* process-wide, statically initialised */
+void ngs__global_unlock(void);
 
 /* ---------- hashing, signing, checksums ---------- */
 typedef struct {
