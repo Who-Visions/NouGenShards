@@ -209,7 +209,7 @@ static void test_misuse(void) {
 static void test_bitflips(int *refused, int *truncated, int *trials) {
   ngs_id ids[12];
   int t;
-  for (t = 0; t < 400; t++) {
+  for (t = 0; t < 4000; t++) {
     ngs *db;
     mv_node *seg;
     size_t pos;
@@ -250,7 +250,7 @@ static void test_bitflips(int *refused, int *truncated, int *trials) {
       ngs_free(f);
     }
     CHECK(!got_wrong);
-    if (!all_ok) (*truncated)++;
+    if (!all_ok) { (*truncated)++; CHECK(all_ok); }   /* an acked fact dropped by a flip */
     else {
       /* the flip landed in bytes that carry no meaning (none should exist) */
       fprintf(stderr, "  note: flip at %zu of %zu went unnoticed\n", pos, seg->dur_n);
@@ -392,7 +392,7 @@ static void test_crash_suite(long *points, long *runs) {
   total = mv_ops;
   *points = total;
   for (k = 1; k <= total; k++) {
-    for (seed = 0; seed < 6; seed++) {
+    for (seed = 0; seed < 20; seed++) {
       ngs *db;
       int i, rc;
       ngs_open_opts o = NGS_OPEN_OPTS_INIT;
@@ -461,8 +461,8 @@ int main(void) {
   test_threads();
   test_bitflips(&refused, &truncated, &trials);
   test_crash_suite(&points, &runs);
-  printf("bit flips: %d trials, %d refused (open or verify), %d truncated as a torn tail (final write only)\n", trials, refused, truncated);
-  printf("crash suite: %ld injection points x 6 power-loss seeds = %ld runs\n", points, runs);
+  printf("bit flips: %d trials, %d refused (open or verify), %d truncated (acked facts lost)\n", trials, refused, truncated);
+  printf("crash suite: %ld injection points x 20 power-loss seeds = %ld runs\n", points, runs);
   printf("ngs M1 tests: %d checks, %d failures\n", checks, failures);
   mv_reset();
   return failures ? 1 : 0;

@@ -34,10 +34,9 @@
 ** duplicate id or a segment-header mismatch is NGS_CORRUPT. Signatures are
 ** checked by ngs_verify, not on open (cost).
 **
-** Limit of M1, stated plainly: damage confined to the very last synced write,
-** with nothing written after it, is indistinguishable from a torn tail without
-** an extra fsync per commit; open truncates it. ngs_verify on a live handle
-** still detects it, because the handle's index remembers the facts.
+** The final record gets one more test (looks_torn): an interrupted append
+** leaves the file short or leaves zero-filled sectors, a bit flip does not.
+** Only the torn shape is truncated; a flipped final record is refused.
 */
 #include "ngs_internal.h"
 #include <stdio.h>
@@ -442,6 +441,40 @@ static uint64_t later_durable_mark(const uint8_t *b, size_t from, size_t n) {
   return best;
 }
 
+/* Is the bad record at `off` shaped like an interrupted append, or like damage
+** to bytes that were written whole? An append that never finished leaves the
+** file short, or leaves never-written regions as zeros (a later sector reached
+** the disk, an earlier one did not). A bit flip leaves a full-length record
+** with a few wrong bits. Only the first shape may be truncated; anything else
+** is refused, so a flipped final record is reported, not silently dropped. */
+#define SECTOR 512u
+static int looks_torn(const uint8_t *b, size_t off, size_t n) {
+  size_t rem = n - off, end, s, i;
+  uint64_t len;
+  if (rem < REC_OVERHEAD) return 1;             /* a flip cannot shorten a file */
+  len = get_le(b + off, 4);
+  if (len == 0) {                               /* a zero length: unwritten bytes? */
+    size_t lim = rem < 16 ? rem : 16;
+    for (i = 0; i < lim; i++) if (b[off + i]) return 0;
+    return 1;
+  }
+  if (len > rem - REC_OVERHEAD) {               /* claims more bytes than exist */
+    size_t alt = rem - REC_OVERHEAD;            /* ...unless only the length flipped */
+    if (alt >= 1 && get_le(b + off + 5 + alt, 4) == ngs__crc32c(0, b + off + 4, alt + 1)) return 0;
+    return 1;
+  }
+  /* full length present but the CRC fails: torn only if some sector-aligned
+  ** stretch inside the record, at least 32 bytes long, is all zeros */
+  end = off + (size_t)len + REC_OVERHEAD;
+  for (s = (off / SECTOR + 1) * SECTOR; s < end; s += SECTOR) {
+    size_t stop = s + SECTOR < end ? s + SECTOR : end, k;
+    if (stop - s < 32) continue;
+    for (k = s; k < stop && b[k] == 0; k++) {}
+    if (k == stop) return 1;
+  }
+  return 0;
+}
+
 typedef struct { fact_ref ref; uint64_t seq; ngs_id prev; long chain; } pending_t;
 
 /* Replay one segment into the index. `last` = this is the final segment. */
@@ -454,6 +487,7 @@ static int replay_seg(ngs *db, uint32_t si, int last, int writable) {
   size_t n_pend = 0, cap_pend = 0, batch_start = SEG_HDR;
   uint64_t expect_rest = 0;
   int rc = NGS_OK, torn = 0;
+  size_t bad_at = (size_t)-1;
   if ((rc = db->vfs->size(s->f, &size))) return rc;
   if ((rc = read_all(db, s->f, size, &b))) return rc;
   n = (size_t)size;
@@ -487,10 +521,10 @@ static int replay_seg(ngs *db, uint32_t si, int last, int writable) {
     uint64_t prev_seq;
     const uint8_t *prev_id;
     size_t k;
-    if (n - off < REC_OVERHEAD) { torn = 1; break; }
+    if (n - off < REC_OVERHEAD) { torn = 1; bad_at = off; break; }
     len = get_le(b + off, 4);
     if (len < 1 || len > n - off - REC_OVERHEAD || b[off + 4] != REC_FACT ||
-        get_le(b + off + 5 + len, 4) != ngs__crc32c(0, b + off + 4, (size_t)len + 1)) { torn = 1; break; }
+        get_le(b + off + 5 + len, 4) != ngs__crc32c(0, b + off + 4, (size_t)len + 1)) { torn = 1; bad_at = off; break; }
     if (decode_fact(b + off + 5, (size_t)len, &d) != 0) { rc = fail(db, NGS_CORRUPT, "a CRC-valid record does not decode"); goto out; }
     if (memcmp(d.writer, s->writer, 32) != 0) { rc = fail(db, NGS_CORRUPT, "fact writer differs from its segment"); goto out; }
     if (n_pend > 0 && d.batch_rest + 1 != expect_rest) { rc = fail(db, NGS_CORRUPT, "batch framing broken"); goto out; }
@@ -537,6 +571,7 @@ static int replay_seg(ngs *db, uint32_t si, int last, int writable) {
     size_t cut = n_pend > 0 ? batch_start : off;
     if (!last) { rc = fail(db, NGS_CORRUPT, "damaged record before the last segment"); goto out; }
     if (later_durable_mark(b, cut + 1, n) > cut) { rc = fail(db, NGS_CORRUPT, "damage inside data that was already durable"); goto out; }
+    if (bad_at != (size_t)-1 && !looks_torn(b, bad_at, n)) { rc = fail(db, NGS_CORRUPT, "the final record is damaged, not torn: refusing to drop it"); goto out; }
     db->truncated_bytes += n - cut;
     if (writable) {
       if ((rc = db->vfs->truncate(s->f, cut)) || (rc = db->vfs->sync(s->f))) goto out;

@@ -30,7 +30,11 @@ Every other function returns `NGS_MISUSE`. `supersedes` on a fact is `NGS_MISUSE
 - **Atomic batches.** `batch_rest` counts down inside one write, so a torn batch is dropped whole.
 - **Torn tail versus corruption.** `synced_upto` records the offset that was durable when each
   write was issued. Open truncates a bad tail only if no later valid record proves those bytes were
-  already durable; otherwise it refuses with `NGS_CORRUPT`.
+  already durable; otherwise it refuses with `NGS_CORRUPT`. The final record gets one more test
+  (`looks_torn`): an interrupted append leaves the file short or leaves zero-filled sectors, and a
+  bit flip does neither. A full-length record that fails its CRC with no zero sector is refused,
+  not dropped. That case also covers a flipped length field: a short-looking record whose bytes
+  form a valid record at the true length is refused.
 - **Writer lock:** `flock`, not `fcntl(F_SETLK)` as SPEC 15 lists. fcntl locks belong to the
   process, so a second handle in the same process got the lock too, and closing either descriptor
   dropped it (the POSIX smoke test caught this).
@@ -39,10 +43,11 @@ Every other function returns `NGS_MISUSE`. `supersedes` on a fact is `NGS_MISUSE
 
 ## Known limits
 
-1. Damage confined to the **final** synced write, with nothing written after it, looks like a
-   torn tail, and open truncates it. In the bit-flip test this is 23 of 400 flips. The rest (377)
-   are refused, and none returns wrong data. `ngs_verify` on a live handle still catches it.
-   Closing this needs an extra fsync per commit (a commit marker); that is a design call for review.
+1. A genuinely torn final write that leaves random garbage (not zeros, and not short) is refused
+   rather than truncated: safe, but the store then needs an operator. In return, a bit flip in the
+   final record is never silently dropped (4,000 of 4,000 flips refused). A flip inside a
+   record that already holds a 512-byte-aligned run of 32 or more zero bytes would still read as
+   torn.
 2. `plat_win32.c` is not written: the platform layer is POSIX only, built and tested on macOS
    x86_64 (Apple clang 17). Not built with gcc or on Linux yet.
 3. One mutex per handle, and one write + fsync per call: no group commit yet (M2).
@@ -58,11 +63,11 @@ ASan + UBSan, and a real-filesystem smoke test against the amalgamation.
 
 Tests (`test/test_ngs.c`, in-memory VFS `test/memvfs.h`):
 - API round trips and misuse
-- bit flips at random positions, 400 trials
+- bit flips at random positions, 4,000 trials; any lost acknowledged fact fails the test
 - a byte changed under a live handle
 - 6 threads writing and reading
-- the crash suite: the process is killed at each of the workload's 39 mutating I/O calls, then 6
-  power-loss patterns each. Unsynced writes persist in any subset (reordering), torn at 512-byte
+- the crash suite: the process is killed at each of the workload's 39 mutating I/O calls, then 20
+  power-loss patterns each (780 runs). Unsynced writes persist in any subset (reordering), torn at 512-byte
   sectors, and files whose directory was never synced can vanish. After each, open must succeed,
   verify must pass, every acknowledged fact must be intact, every batch all-or-nothing, and the
   log must accept new writes.
