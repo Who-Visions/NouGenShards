@@ -40,6 +40,21 @@ def _env_path(name: str, fallback: str) -> str:
     return raw.strip() if raw and raw.strip() else fallback
 
 
+# A cold Gradle/Kotlin compile on a loaded Windows box can run past five minutes. The old
+# hardcoded 300 s turned that slowness into a false BUILD_BROKEN (2026-11-22: every non-ok
+# report in 30 was a timeout, never a compile error). Override with NOUGEN_RSI_BUILD_TIMEOUT_S.
+_BUILD_TIMEOUT_S_FALLBACK = 900
+
+
+def _build_timeout_s() -> int:
+    raw = os.environ.get("NOUGEN_RSI_BUILD_TIMEOUT_S", "").strip()
+    try:
+        value = int(raw) if raw else _BUILD_TIMEOUT_S_FALLBACK
+    except ValueError:
+        value = _BUILD_TIMEOUT_S_FALLBACK
+    return value if value > 0 else _BUILD_TIMEOUT_S_FALLBACK
+
+
 def _repo_path() -> Path:
     default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
     return Path(_env_path("NOUGEN_RSI_REPO", default))
@@ -70,8 +85,14 @@ def check_builds(repo: Path) -> Dict[str, Any]:
     gradlew = repo / "gradlew.bat" if os.name == "nt" else repo / "gradlew"
     if not gradlew.exists():
         return {"checked": False, "reason": "no gradlew in repo - not a Gradle project or wrong NOUGEN_RSI_REPO"}
-    result = _run([str(gradlew), "compileDebugKotlin"], cwd=repo, timeout=300)
-    return {"checked": True, **result}
+    limit = _build_timeout_s()
+    result = _run([str(gradlew), "compileDebugKotlin"], cwd=repo, timeout=limit)
+    out: Dict[str, Any] = {"checked": True, **result}
+    if result.get("error") == "timeout":
+        # Cut off before the compiler said anything: unknown, not broken.
+        out["timed_out"] = True
+        out["timeout_s"] = limit
+    return out
 
 
 def check_self_update_health(version_url: Optional[str] = None) -> Dict[str, Any]:
@@ -405,7 +426,10 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     proposal = (
         propose_improvement(repo, recent_titles, exa_hits=exa_temporal.get("hits"))
         if build.get("ok", True)
-        else {"skipped": True, "reason": "build is currently broken - fix that before proposing new work"}
+        else {"skipped": True,
+              "reason": ("build check timed out - result unknown, not proposing new work"
+                         if build.get("timed_out")
+                         else "build is currently broken - fix that before proposing new work")}
     )
 
     summary: Dict[str, Any] = {
@@ -418,7 +442,8 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         "exa_temporal_latest": exa_temporal,
         "proposal": proposal,
         "applied": False,  # gate-don't-write: this module never flips this to true itself
-        "status": ("BUILD_BROKEN" if not build.get("ok", True)
+        "status": (("BUILD_UNKNOWN" if build.get("timed_out") else "BUILD_BROKEN")
+                   if not build.get("ok", True)
                    else "DEGRADED" if (surfaces.get("degraded") or health.get("ok") is False)
                    else "ok"),
     }
