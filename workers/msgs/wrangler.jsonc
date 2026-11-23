@@ -1,0 +1,35 @@
+{
+  // NouGen msgs: native front for the NouGenMsg host (see worker.js header).
+  // Top level is a workers.dev PREVIEW with no route. env "production" binds a ROUTE
+  // (not a custom domain) so pass-through still reaches the existing tunnel origin.
+  // Nothing here deploys itself: production is a GM decision.
+  // Secrets (wrangler secret put): MSGS_NATIVE_TOKEN_SHA256, MSGS_ORIGIN_TOKEN.
+  // Queues (create once): wrangler queues create nougen-msgs-fanout; nougen-msgs-dlq.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "nougen-msgs-preview",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "LaneMailbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LaneMailbox"] }],
+  "queues": {
+    "producers": [{ "binding": "FANOUT", "queue": "nougen-msgs-fanout-preview" }],
+    "consumers": [{ "queue": "nougen-msgs-fanout-preview", "max_batch_size": 10, "max_retries": 10, "dead_letter_queue": "nougen-msgs-dlq-preview" }]
+  },
+  "vars": { "MSGS_ORIGIN_URL": "", "MSGS_MAX_BODY_BYTES": "262144", "MSGS_PAGE_SIZE": "100", "MSGS_ORIGIN_TIMEOUT_MS": "15000", "MSGS_RETRY_BASE_S": "5" },
+  "observability": { "enabled": true },
+  "env": {
+    "production": {
+      "name": "nougen-msgs",
+      "workers_dev": false,
+      "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "LaneMailbox" }] },
+      "queues": {
+        "producers": [{ "binding": "FANOUT", "queue": "nougen-msgs-fanout" }],
+        "consumers": [{ "queue": "nougen-msgs-fanout", "max_batch_size": 10, "max_retries": 10, "dead_letter_queue": "nougen-msgs-dlq" }]
+      },
+      "vars": { "MSGS_ORIGIN_URL": "https://msgs.nougenai.com", "MSGS_MAX_BODY_BYTES": "262144", "MSGS_PAGE_SIZE": "100", "MSGS_ORIGIN_TIMEOUT_MS": "15000", "MSGS_RETRY_BASE_S": "5" },
+      "observability": { "enabled": true },
+      "routes": [{ "pattern": "msgs.nougenai.com/*", "zone_name": "nougenai.com" }]
+    }
+  }
+}
