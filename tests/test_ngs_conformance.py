@@ -32,6 +32,26 @@ pytestmark = pytest.mark.skipif(
     reason="ngs.h not on this branch yet (PR 1199)",
 )
 
+# The judge is pinned to one header: PR 1199 head 685901aa (draft 0.3.1), which is
+# also docs/memory-engine/ngs.h on main. An entry is scored only against that exact
+# file, so a drifted header fails here instead of being judged against itself.
+# Re-pin deliberately: set NGS_HEADER_SHA256, add a dated "header changed" entry to
+# the scorecard, and re-score every entry.
+PINNED_HEADER_SHA256 = os.environ.get(
+    "NGS_HEADER_SHA256",
+    "b7eea2ccbed09fd188b08fce316135f00d313e59939d2ab6457165d7a86423f2",
+)
+
+
+def test_header_is_pinned() -> None:
+    import hashlib
+
+    got = hashlib.sha256((HEADER_DIR / "ngs.h").read_bytes()).hexdigest()
+    assert got == PINNED_HEADER_SHA256, (
+        f"{HEADER_DIR / 'ngs.h'} sha256 {got} is not the pinned judge header "
+        f"{PINNED_HEADER_SHA256}"
+    )
+
 
 def _compile(compiler: str, args: list[str]) -> None:
     exe = shutil.which(compiler)
