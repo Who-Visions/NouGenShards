@@ -12,7 +12,7 @@ no send tool on this surface, by design (see [Send flow](#send-flow)).
 landed on branch `feat/email-templates-mcp` and is awaiting review and
 merge. Until the PR merges and a supervisor release + deploy picks it
 up, no fleet lane can call these tools. The template itself is verified
-(the guest-pack render was checked against the sent tapagevison invite
+(the guest-pack render was checked against the first sent tester invite
 on 2026-11-22); the fleet tools are unit-tested locally
 (`tests/test_mcp_email_templates.py`).
 
@@ -24,7 +24,7 @@ with a real postal address on file.
 ## The template system
 
 One template ships today: **invite-tester** — the tester invitation
-email, generalized from the sent tapagevison invite
+email, generalized from the first sent tester invite
 (2026-11-22). Layout, neon-green styling, copy, structure, the public
 name "Unk", and the front-desk help line are unchanged from that source;
 only the tester-specific values became `{{placeholders}}`.
@@ -83,8 +83,8 @@ email_template_list()
 #   "variables": ["recipient_name", "recipient_email", ...], ...}]}
 
 email_template_render("invite-tester", {
-    "recipient_name": "Tapagevison",
-    "recipient_email": "tapagevison@gmail.com",
+    "recipient_name": "Ada Tester",
+    "recipient_email": "tester@example.com",
     "tester_folder_url": "https://drive.google.com/...",
     "roll_call_url": "https://docs.google.com/...",
     "guest_pack_01_url": "https://docs.google.com/...",
@@ -104,7 +104,7 @@ email_template_render("invite-tester", {
 
 | Variable | What it is |
 |---|---|
-| `{{recipient_name}}` | Tester's display name, e.g. `Tapagevison` |
+| `{{recipient_name}}` | Tester's display name, e.g. `Ada Tester` |
 | `{{recipient_email}}` | Tester's email address (the To: address) |
 | `{{tester_folder_url}}` | Google Drive URL of the Nougen Tester folder (editor) |
 | `{{roll_call_url}}` | Google Sheets URL of the roll call sheet (Sign-in tab) |
@@ -205,9 +205,9 @@ irreversible tools (`shards_forget`, `vault_put`, `dav1d_exec`,
   "Unk, Claude, WhoArt, Duet, Nou, and Jeannie" — the public-facing
   name for the phoebus Muse. The private name never appears in
   public-facing copy. Do not "correct" it to the private name.
-- **No "Dave is the landlord" line.** The template never says Dave is
+- **No "the operator is the landlord" line.** The template never says the operator is
   the landlord, and neither should any new template copy. The footer
-  signs "Mister Who, superintendent of Hotel Visions, for Dave" — that
+  signs "Mister Who, superintendent of Hotel Visions, for the operator" — that
   is the whole of the framing.
 - **Front desk, not help desk.** The help block is "Just reply to this
   email — Mister Who reads every reply." Replies are a deliverability
@@ -220,7 +220,7 @@ irreversible tools (`shards_forget`, `vault_put`, `dav1d_exec`,
   contrast. Dark-mode rules in the template switch to near-black /
   near-white greys — no pure black or pure white anywhere.
 - **Company: "Who Visions LLC".** The footer and copyright line use
-  exactly that (confirmed by Dave, 2026-11-22).
+  exactly that (confirmed by the operator, 2026-11-22).
 - One column, 600 px, centred, ≥24 px padding; single primary CTA
   above the fold ("Open my Tester folder", first person); the
   five-step checklist follows the CTA, then the Guest Pack, social

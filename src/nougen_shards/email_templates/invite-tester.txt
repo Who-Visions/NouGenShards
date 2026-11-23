@@ -91,7 +91,7 @@ Who Visions LLC — questions? Reply to this email or write to
 {{sender_email}}.
 {{business_address}}
 
-You're receiving this because Dave invited you to test NouGen as part
+You're receiving this because the Hotel Visions operator invited you to test NouGen as part
 of Hotel Visions. Your work stays yours; we never share your email or
 your work with anyone outside the Tester circle.
 
@@ -99,6 +99,6 @@ If you'd rather not hear from us, reply with the word "unsubscribe"
 and we'll take you off the list. No login needed.
 
 © 2026 Who Visions LLC · {{sender_name}}, superintendent of Hotel Visions,
-for Dave
+for the operator
 
 Powered by NouGen AI.

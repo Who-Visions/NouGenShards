@@ -20,8 +20,8 @@ EXPECTED_VARIABLES = [
 ]
 
 FULL_VARS = {
-    "recipient_name": "Tapagevison",
-    "recipient_email": "tapagevison@gmail.com",
+    "recipient_name": "Ada Tester",
+    "recipient_email": "tester@example.com",
     "tester_folder_url": "https://drive.example.com/tester-folder",
     "roll_call_url": "https://sheets.example.com/roll-call",
     "guest_pack_01_url": "https://docs.example.com/gp01",
@@ -70,7 +70,7 @@ def test_render_substitutes_variables():
     # No placeholder survives in either part.
     assert "{{" not in res["html"] and "{{" not in res["txt"]
     # Values land in both parts.
-    for value in ("Tapagevison", "tapagevison@gmail.com",
+    for value in ("Ada Tester", "tester@example.com",
                   "https://drive.example.com/tester-folder",
                   "123 Example Street, Anytown, ST 12345",
                   "whovisions@muse.ai"):
@@ -78,14 +78,14 @@ def test_render_substitutes_variables():
         assert value in res["txt"], value
     # HTML keeps its structure; the text part keeps its headers.
     assert res["html"].lstrip().startswith("<!DOCTYPE html")
-    assert res["txt"].startswith("To: Tapagevison <tapagevison@gmail.com>")
+    assert res["txt"].startswith("To: Ada Tester <tester@example.com>")
 
 
 def test_render_via_mcp_tool():
     res = json.loads(mcp.email_template_render("invite-tester", dict(FULL_VARS)))
     assert res["status"] == "ok"
-    assert "Tapagevison" in res["html"]
-    assert "Tapagevison" in res["txt"]
+    assert "Ada Tester" in res["html"]
+    assert "Ada Tester" in res["txt"]
 
 
 def test_render_reports_unused_variables():
