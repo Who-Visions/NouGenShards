@@ -8,6 +8,8 @@
 #   make test       build + run the M1 unit suite
 #   make crash      build + run the crash/tamper harness
 #   make standalone prove the amalgamation compiles on its own
+#   make sanitize   unit suite + crash harness under ASan + UBSan
+#   make bench      build + run the 50K scorecard (BENCH_N=50000)
 #
 # The engine itself is strict ISO C11: -std=c11 -pedantic. The test
 # programs use POSIX facilities (fork, mkdtemp) and say so via
@@ -26,7 +28,7 @@ HDR      = include/ngs.h
 
 TESTCFLAGS = $(CFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 
-.PHONY: all lib check test crash standalone clean
+.PHONY: all lib check test crash standalone sanitize bench clean
 all: lib check test crash standalone
 
 $(BUILD):
@@ -57,6 +59,21 @@ crash: $(BUILD)/crash_harness
 	$(BUILD)/crash_harness
 $(BUILD)/crash_harness: test/crash_harness.c $(SRC) $(HDR) | $(BUILD)
 	$(CC) $(TESTCFLAGS) $(INC) test/crash_harness.c -o $@
+
+SANFLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+sanitize: | $(BUILD)
+	$(CC) $(SANFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $(INC) test/test_m1.c test/kat_shim.c -o $(BUILD)/test_m1_san
+	$(BUILD)/test_m1_san
+	$(CC) $(SANFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $(INC) test/crash_harness.c -o $(BUILD)/crash_harness_san
+	$(BUILD)/crash_harness_san
+	@echo "sanitize (ASan + UBSan): OK"
+
+BENCH_N ?= 50000
+bench: $(BUILD)/bench_50k
+	rm -rf $(BUILD)/bench-run && mkdir -p $(BUILD)/bench-run
+	$(BUILD)/bench_50k $(BUILD)/bench-run $(BENCH_N)
+$(BUILD)/bench_50k: bench/bench_50k.c $(SRC) $(HDR) | $(BUILD)
+	$(CC) $(STD) $(WARN) $(CFLAGS) $(INC) bench/bench_50k.c $(SRC) -lpthread -o $@
 
 clean:
 	rm -rf $(BUILD)

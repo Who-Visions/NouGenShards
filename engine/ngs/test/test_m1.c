@@ -321,7 +321,10 @@ static void test_misuse_and_validation(void) {
     CHECK(ngs_heads(db, &heads, &nh) == NGS_MISUSE, "heads -> MISUSE");
     CHECK(ngs_sync_export(db, NULL, 0, &seg, &seglen) == NGS_MISUSE, "sync_export -> MISUSE");
     CHECK(ngs_sync_import(db, (const uint8_t *)"x", 1, &rep) == NGS_MISUSE && rep == NULL, "sync_import -> MISUSE");
-    CHECK(ngs_stats(db, &st) == NGS_MISUSE, "stats -> MISUSE");
+    CHECK(ngs_stats(db, &st) == NGS_OK && st.size == sizeof st, "stats -> OK (M1 counters)");
+    CHECK(ngs_stats(db, NULL) == NGS_MISUSE, "stats NULL -> MISUSE");
+    st.size = 1;
+    CHECK(ngs_stats(db, &st) == NGS_MISUSE, "stats short size -> MISUSE");
   }
 
   /* validation */

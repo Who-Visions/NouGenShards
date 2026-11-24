@@ -2944,9 +2944,23 @@ int ngs_sync_import(ngs *db, const uint8_t *segment, size_t len, ngs_sync_report
   if (db->rc_state) return db->rc_state;
   return ngs_set_err(db, NGS_MISUSE, "ngs_sync_import: not in M1 (federation is M5)");
 }
+/* M1 stats: every loaded entry is a FACT (no invalidation, links, redaction,
+** vectors or recall yet), so those counters stay 0. The caller's size field
+** versions the struct: we fill only the bytes the caller says it has. */
 int ngs_stats(ngs *db, ngs_stats_t *out) {
-  (void)out;
-  if (!db) return NGS_MISUSE;
+  ngs_stats_t st;
+  size_t n;
+  if (!db || !out) return NGS_MISUSE;
+  if (out->size < sizeof(uint32_t) + sizeof(uint64_t))
+    return ngs_set_err(db, NGS_MISUSE, "ngs_stats: out->size too small (use NGS_STATS_INIT)");
   if (db->rc_state) return db->rc_state;
-  return ngs_set_err(db, NGS_MISUSE, "ngs_stats: not in the M1 API slice");
+  memset(&st, 0, sizeof st);
+  ngs_mutex_lock(&db->mu);
+  st.facts = (uint64_t)db->n_ents;
+  st.log_bytes = db->log_bytes;
+  ngs_mutex_unlock(&db->mu);
+  n = out->size < sizeof st ? out->size : sizeof st;
+  st.size = out->size;
+  memcpy(out, &st, n);
+  return NGS_OK;
 }
