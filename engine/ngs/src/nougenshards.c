@@ -477,12 +477,12 @@ static void ngs_fe_carry(ngs_fe h) {
     for (i = 0; i < 9; i++) {
       int w = ngs_fe_width(i);
       int64_t c = h[i] >> w;              /* arithmetic shift: floor division */
-      h[i] -= c << w;
+      h[i] -= c * ((int64_t)1 << w);   /* not c << w: left shift of a negative value is UB (C11 6.5.7p4) */
       h[i + 1] += c;
     }
     {
       int64_t c = h[9] >> 25;
-      h[9] -= c << 25;
+      h[9] -= c * ((int64_t)1 << 25);
       h[0] += 19 * c;
     }
   }

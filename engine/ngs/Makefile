@@ -45,7 +45,7 @@ check: include/check/ngs_header_check.c | $(BUILD)
 	$(CC) $(STD) $(WARN) $(CFLAGS) $(INC) include/check/ngs_header_check.c -o $(BUILD)/ngs_header_check
 	$(BUILD)/ngs_header_check
 	$(CC) -std=c11 $(WARN) $(CFLAGS) $(INC) -c test/header_contract.c -o $(BUILD)/header_contract_c.o
-	$(CXX) -std=c++11 $(WARN) $(CFLAGS) $(INC) -c test/header_contract.c -o $(BUILD)/header_contract_cpp.o
+	$(CXX) -std=c++11 $(WARN) $(CFLAGS) $(INC) -x c++ -c test/header_contract.c -o $(BUILD)/header_contract_cpp.o
 	@echo "header contract (C11 + C++11): OK"
 
 test: $(BUILD)/test_m1
