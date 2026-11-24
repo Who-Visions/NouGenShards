@@ -1,0 +1,67 @@
+{
+  "doc": "china-ma.md",
+  "question": "According to this article, who was the official, how was he recruited, what did he provide, and what was the sentence? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 858,
+        "output": 261,
+        "stop": "end_turn",
+        "text": "According to the article, the official was surnamed Ma. He was approached and recruited by a foreign intelligence service while working abroad. The Gold Wall Press statement said he signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese, and later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\nHe provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nHe was sentenced to death for spying. The article does not identify the countries involved, state when or where he was sentenced, or say whether he has already been executed.",
+        "round": 1,
+        "cost": 0.0013947999999999999
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 858,
+        "output": 250,
+        "stop": "end_turn",
+        "text": "According to the article, the official was surnamed Ma. He was approached and recruited by a foreign intelligence service while working abroad. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese, and later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\nHe signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. In total, he provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nHe was sentenced to death. The article does not identify the countries involved, nor say when or where he was sentenced, or whether he has already been executed.",
+        "round": 2,
+        "cost": 0.0013398
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 2858,
+        "cache_read": 0,
+        "output": 570,
+        "stop": "end_turn",
+        "text": "According to the recalled AP report, the official was surnamed **Ma**. Gold Wall Press, a publisher linked to China's National Administration of State Secrets Protection, said he was **approached and recruited by a foreign intelligence service while working abroad**. He signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. An intelligence operative identified as \"Kailin\" frequently arranged meetings with him.\n\nHe **provided 35 pieces of information classified as national secrets** and received payments worth over 1 million yuan (about $150,000).\n\nHe was **sentenced to death** for spying for a foreign country and leaking state secrets.\n\nThe excerpt cuts off mid-sentence, so it doesn't give his first name, the foreign country, or the exact sentencing date.",
+        "round": 1,
+        "cost": 0.00857
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 2858,
+        "output": 507,
+        "stop": "end_turn",
+        "text": "According to the recalled article, the official was surnamed Ma. Gold Wall Press, a publisher associated with China's National Administration of State Secrets Protection, said he had been sentenced to death for spying for a foreign country.\n\nHe was approached and recruited by a foreign intelligence service while working abroad. He signed a cooperation agreement with clauses on \"confidentiality\" and \"loyalty\" and received fixed monthly payments. An intelligence operative identified as \"Kailin\" frequently arranged meetings with him, but the excerpt cuts off before describing those meetings further.\n\nHe provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nThe recalled context does not give his full name or any further details of the case.",
+        "round": 2,
+        "cost": 0.0028248
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 6000,
+  "recalled_shards": 5,
+  "totals": {
+    "raw": 0.0027346,
+    "shards": 0.0113948,
+    "ratio": 0.23998666058201984,
+    "saved_pct": -316.6898266656916
+  }
+}

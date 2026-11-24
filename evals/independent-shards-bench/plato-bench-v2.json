@@ -1,0 +1,67 @@
+{
+  "doc": "plato-egypt.md",
+  "question": "According to this article, how long did Plato spend in Egypt, who did he study under there, and which Egyptian ideas does Damien say shaped Plato's theory of Forms? Give the specifics from the article in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 10239,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "**Time in Egypt:** Damien says Plato was in Egypt \"for at least twelve years,\" later estimating \"twelve or thirteen years.\"\n\n**Teacher:** Damien says he thinks Plato \"studied under the",
+        "round": 1,
+        "cost": 0.0030279
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 10239,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "",
+        "round": 2,
+        "cost": 0.0030279
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1122,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "",
+        "round": 1,
+        "cost": 0.0021162
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1122,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "The recalled context doesn't fully answer this. The relevant passage is cut off, so it gives no specific time Plato spent in Egypt, no named",
+        "round": 2,
+        "cost": 0.0021162
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 2473,
+  "recalled_shards": 10,
+  "totals": {
+    "raw": 0.0060558,
+    "shards": 0.0042324,
+    "ratio": 1.4308193932520556,
+    "saved_pct": 30.109977211929063
+  }
+}
