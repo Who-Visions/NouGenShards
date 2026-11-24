@@ -232,3 +232,15 @@ test("a single malformed header pair rejects the whole node response", async () 
     assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, 502, JSON.stringify(headers));
   }
 });
+
+test("a browser opening the relay host gets a help page, other clients keep the 404", async () => {
+  const env = { RELAY: { idFromName: (x) => x, get: () => ({ fetch: async () => new Response("node") }) } };
+  const page = await worker.fetch(new Request("https://relay.example.test/", { headers: { accept: "text/html" } }), env);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /NouGen Relay/);
+  assert.match(html, /\/mcp/);
+  assert.doesNotMatch(html, /nougenai\.com/);
+  const api = await worker.fetch(new Request("https://relay.example.test/"), env);
+  assert.equal(api.status, 404);
+});
