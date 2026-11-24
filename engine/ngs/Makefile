@@ -8,6 +8,7 @@
 #   make test       build + run the M1 unit suite
 #   make crash      build + run the crash/tamper harness
 #   make standalone prove the amalgamation compiles on its own
+#   make cli        build build/ngs_cli, the JSON CLI the NGS console spawns
 #
 # The engine itself is strict ISO C11: -std=c11 -pedantic. The test
 # programs use POSIX facilities (fork, mkdtemp) and say so via
@@ -26,7 +27,7 @@ HDR      = include/ngs.h
 
 TESTCFLAGS = $(CFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 
-.PHONY: all lib check test crash standalone clean
+.PHONY: all lib check test crash standalone cli clean
 all: lib check test crash standalone
 
 $(BUILD):
@@ -52,6 +53,10 @@ test: $(BUILD)/test_m1
 	$(BUILD)/test_m1
 $(BUILD)/test_m1: test/test_m1.c test/kat_shim.c $(SRC) $(HDR) | $(BUILD)
 	$(CC) $(TESTCFLAGS) $(INC) test/test_m1.c test/kat_shim.c -o $@
+
+cli: $(BUILD)/ngs_cli
+$(BUILD)/ngs_cli: tools/ngs_cli.c $(BUILD)/libnougenshards.a $(HDR) | $(BUILD)
+	$(CC) $(STD) $(WARN) $(CFLAGS) $(INC) tools/ngs_cli.c $(BUILD)/libnougenshards.a -o $@
 
 crash: $(BUILD)/crash_harness
 	$(BUILD)/crash_harness
