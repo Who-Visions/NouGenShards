@@ -141,10 +141,12 @@ def get_space_orchestration_anchor(limit: int = 5, max_chars: int = 8000,
                                    space_id: Optional[str] = None,
                                    token_key: Optional[str] = None) -> str:
     """Return a compact anchor that layers HF Space over local handoffs."""
-    from . import hooks  # Local import avoids a hooks -> bridge import cycle.
+    # hooks.get_latest_anchor no longer exists; the newest local handoff text
+    # lives in agent_hooks.latest_handoff_text. `limit` is kept for API compat.
+    from . import agent_hooks  # Local import avoids an import cycle.
 
     credential = resolve_hf_credential(token_key)
-    local_anchor = hooks.get_latest_anchor(limit=limit, max_chars=max_chars // 2)
+    local_anchor = agent_hooks.latest_handoff_text(limit=max(1, max_chars // 2))
     lines = [
         "[HF_SPACE_ORCHESTRATION]",
         "Mode: additive control-plane; local handoff JSON and handoffs.db remain source of truth.",
