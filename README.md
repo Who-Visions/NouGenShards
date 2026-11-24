@@ -42,7 +42,7 @@ nougen hook install      # --dry-run to preview, `nougen hook status` to check, 
 | Hook | What it does |
 |---|---|
 | SessionStart | Injects the latest handoff and the newest shards before the first reply |
-| UserPromptSubmit | Budgeted recall against each message (fails open inside its time budget) |
+| UserPromptSubmit | The NouGen context call on every message: shards recall (local node, then the fleet gateway, then the in-process vault), new relay legs and inbox pings, under one hard wall (`NOUGEN_CONTEXT_CALL_BUDGET_MS`, default 2500). A timeout is diagnosed and repaired (a down or slow local node is restarted through its own supervisor, detached), and every call leaves a receipt in `~/.nougen/context_call/receipts.jsonl`. Run one by hand with `python -m nougen_shards.context_call "<prompt>"` |
 | Stop | Reminds the agent to leave a handoff when there is uncommitted work |
 | SessionEnd | Writes an auto-handoff if the session ended without one, so no session is traceless |
 

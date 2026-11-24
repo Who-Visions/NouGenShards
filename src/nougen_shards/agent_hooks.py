@@ -44,9 +44,14 @@ CLAUDE_EVENTS = {"session-start": "SessionStart", "prompt": "UserPromptSubmit",
 #: Signature that marks a settings entry as ours (install/uninstall touch only these).
 SIGNATURE = "nougen_shards.cli hook run"
 #: The per-tool events fire on every tool call, so they skip the CLI (0.84s to
-#: import, measured 2026-11-09) and enter this module directly (0.15s).
+#: import, measured 2026-11-09) and enter this module directly (0.15s). The
+#: prompt event fires on every message and runs the NouGen context call, so it
+#: takes the same fast path: the CLI import came out of the recall budget.
 FAST_SIGNATURE = "nougen_shards.agent_hooks run"
-FAST_EVENTS = ("pre-tool", "post-tool")
+FAST_EVENTS = ("pre-tool", "post-tool", "prompt")
+#: Host-side kill timeout per event (seconds), NOUGEN_HOOK_TIMEOUT_S overrides all.
+#: The prompt event's own wall is NOUGEN_CONTEXT_CALL_BUDGET_MS, well inside this.
+EVENT_TIMEOUT_S = {"session-end": 20, "pre-tool": 5, "post-tool": 5, "prompt": 10}
 #: Tool-name matchers for the per-tool events. PostToolUse only needs the tools
 #: that can count as work, a shard or a relay leg; anything else never spawns us.
 TOOL_MATCHERS = {
@@ -218,13 +223,25 @@ def prompt(evt: dict) -> dict:
     except ImportError:
         return {}
     text = str(evt.get("prompt") or "")
-    # Same budget source as claude_code_hook (env-tunable once #1087 lands).
-    budget = getattr(recall_hook, "_env_budget_ms", None)
-    result = recall_hook.recall_hook(text, **({"budget_ms": budget()} if budget else {}))
-    learn = getattr(recall_hook, "record_budget_sample", None)
-    if learn:
-        learn(result)
-    block = recall_hook.format_block(result)
+    result: Optional[dict] = None
+    block = ""
+    try:
+        from . import context_call  # pylint: disable=import-outside-toplevel
+        if context_call.enabled():
+            # The NouGen context call: shards recall + relay + inbox under one
+            # hard wall, and a timeout diagnosed and repaired, never skipped.
+            call = context_call.context_call(text, session_id=str(evt.get("session_id") or ""))
+            result, block = call["recall"], context_call.format_block(call)
+    except Exception:  # pylint: disable=broad-except
+        result = None
+    if result is None:
+        # Same budget source as claude_code_hook (env-tunable once #1087 lands).
+        budget = getattr(recall_hook, "_env_budget_ms", None)
+        result = recall_hook.recall_hook(text, **({"budget_ms": budget()} if budget else {}))
+        learn = getattr(recall_hook, "record_budget_sample", None)
+        if learn:
+            learn(result)
+        block = recall_hook.format_block(result)
     try:
         from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
         if cr.is_sensitive(text):
@@ -718,8 +735,7 @@ def plan_settings(settings: dict, python: str, uninstall: bool = False) -> dict:
     for event, claude_event in CLAUDE_EVENTS.items():
         kept = _strip_ours(hooks.get(claude_event, []))
         if not uninstall:
-            timeout = _int_env("NOUGEN_HOOK_TIMEOUT_S",
-                               20 if event == "session-end" else 5 if event in FAST_EVENTS else 10)
+            timeout = _int_env("NOUGEN_HOOK_TIMEOUT_S", EVENT_TIMEOUT_S.get(event, 10))
             entry: dict = {"hooks": [{"type": "command", "command": _command(event, python), "timeout": timeout}]}
             if event in TOOL_MATCHERS:
                 entry = {"matcher": TOOL_MATCHERS[event], **entry}
