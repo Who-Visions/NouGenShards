@@ -1,0 +1,67 @@
+{
+  "doc": "omar-search.md",
+  "question": "According to this article, what concerns did Judge Sharbaugh raise before authorizing the search of Rep. Omar's home, how were they resolved, and what did the unsealed records show about the search itself? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1480,
+        "output": 382,
+        "stop": "end_turn",
+        "text": "Judge Matthew Sharbaugh raised concerns about the \"Speech or Debate Clause\" implications of searching a private residence belonging to a member of Congress. The clause protects legislators from executive branch interference and includes a privilege against compelled disclosures. He disagreed with the government's argument that the privilege covers only official congressional offices and certain electronic devices, writing, \"That logic does not hold.\"\n\nHe concluded that the government's law-enforcement interests had to be balanced against Omar's constitutional rights. The concerns were resolved when the government agreed to a search protocol letting Omar invoke a privilege over any Speech or Debate Clause material before agents carried out the search. The judge also ruled that she was entitled to assert these privacy protections at the outset of the search.\n\nThe unsealed records do not appear to shed new light on the reason or outcome of the search itself, and they do not disclose new details of the immigration-fraud investigation. Chief Judge Boasberg also agreed that unsealing the 67-page search warrant affidavit would be premature. Omar has said agents seized 17 items, including ",
+        "round": 1,
+        "cost": 0.002062
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1480,
+        "output": 371,
+        "stop": "end_turn",
+        "text": "Before authorizing the search, Magistrate Judge Matthew Sharbaugh raised concerns about the \"Speech or Debate Clause\" implications of searching a member of Congress's private residence. The clause includes a privilege against compelled disclosures. He disagreed with the government's argument that the privilege applies only to official congressional offices and certain electronic devices, writing, \"That logic does not hold.\" He concluded that the government's law-enforcement interests had to be balanced against Omar's constitutional rights.\n\nThe disagreement was resolved when the government agreed to a search protocol allowing Omar to invoke a privilege over any Speech or Debate Clause material before agents carried out the search. Sharbaugh also ruled that she was entitled to assert these privacy protections at the outset of the search.\n\nAs for the search itself, the unsealed filings do not appear to shed new light on its reason or outcome. They also do not disclose new details of the immigration-fraud investigation. The filings were heavily redacted. Chief Judge James Boasberg kept a 67-page search warrant affidavit sealed, agreeing with the government that unsealing it would be p",
+        "round": 2,
+        "cost": 0.002007
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1500,
+        "cache_read": 0,
+        "output": 787,
+        "stop": "end_turn",
+        "text": "According to the article, Magistrate Judge Matthew Sharbaugh raised concerns about the **Speech or Debate Clause**, which protects legislators from executive branch interference and includes a privilege against compelled disclosures. He questioned whether the clause applies to a member of Congress's private residence. He rejected the government's argument that the privilege covers only official congressional offices and certain electronic devices, writing, \"That logic does not hold.\"\n\nThe disagreement was resolved by balancing the government's law-enforcement interests against Omar's constitutional rights as a member of Congress. The government agreed to a search protocol that let Omar invoke the privilege over any Speech or Debate Clause material before agents carried out the search. The article says she was entitled to assert that privilege at the outset of the search.\n\nAbout the search itself, the article says the unsealed records do not appear to shed new light on its reason or outcome. They also don't disclose new details of the immigration-fraud investigation Omar calls politically motivated. The article notes that the search of her Washington, D.C., home by Department of Hom",
+        "round": 1,
+        "cost": 0.006939
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1500,
+        "output": 765,
+        "stop": "end_turn",
+        "text": "**Concerns:** Before authorizing the search, Magistrate Judge Matthew Sharbaugh raised concerns about the \"Speech or Debate Clause\" implications of searching a member of Congress's private residence. He disagreed with the government's argument that the privilege applies only to official congressional offices and certain electronic devices, writing, \"That logic does not hold.\"\n\n**Resolution:** Sharbaugh weighed the government's law-enforcement interests against Omar's constitutional rights as a member of Congress. The government agreed to a search protocol that let Omar invoke the privilege over any Speech or Debate Clause material before agents carried out the search. The unsealed documents also show that Sharbaugh ruled Omar was entitled to assert those privacy protections at the outset of the search.\n\n**What the records show about the search:** The records do not appear to shed new light on the reason for or outcome of the search, and they do not disclose new details of the immigration-fraud investigation. The filings are heavily redacted. Chief Judge James Boasberg ordered only partial unsealing and found it premature to unseal the 67-page search warrant affidavit. The search of",
+        "round": 2,
+        "cost": 0.003979
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 4000,
+  "recalled_shards": 1,
+  "totals": {
+    "raw": 0.004069,
+    "shards": 0.010918,
+    "ratio": 0.37268730536728334,
+    "saved_pct": -168.32145490292461
+  }
+}

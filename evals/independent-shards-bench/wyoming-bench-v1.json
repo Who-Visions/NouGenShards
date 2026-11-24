@@ -1,0 +1,77 @@
+{
+  "doc": "wyoming-police.md",
+  "question": "When was the Wyoming Township Police Department founded, how many full-time officers did it start with, and what were they called? In 1960 who was Chief of Police, how many sworn officers were there, and how many reports, accidents and crimes were recorded? When did the department move to 2650 DeHoop Avenue, and what did the Police-Justice Building house? What happened in 2013 and 2014?",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 1508,
+        "cache_read": 0,
+        "output": 351,
+        "stop": "end_turn",
+        "text": "**Founding:** The Wyoming Township Police Department was founded December 12, 1941, with three full-time officers. They were constables at the time and were affectionately known as the \"Wyoming Cowboys.\"\n\n**1960:** John Vander Band was Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. The department took 3,199 reports, responded to 918 accidents, and recorded 699 crimes.\n\n**DeHoop Avenue move:** The department moved in January 1976 to the new headquarters at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level.\n\n**2013 and 2014:** In 2013, police officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff, and 30 senior volunteers, serving approximately 72,000 residents. In 2014, the Wyoming Police Department and the Wyoming Fire Department joined forces to become the Wyoming Department of Public Safety.",
+        "round": 1,
+        "cost": 0.004775
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1508,
+        "output": 364,
+        "stop": "end_turn",
+        "text": "**Founding:** The Wyoming Township Police Department was founded December 12, 1941, with three full-time police officers. They were constables at the time of organization and were affectionately known as the \"Wyoming Cowboys.\"\n\n**1960:** John Vander Band was Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. During the year, 3,199 reports were taken, officers responded to 918 accidents, and 699 crimes were reported.\n\n**DeHoop Avenue move:** The department moved in January 1976 to new headquarters at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level.\n\n**2013 and 2014:**\n- In 2013, police officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff, and 30 senior volunteers, serving approximately 72,000 residents.\n- In 2014, the Wyoming Police Department and the Wyoming Fire Department joined forces to become the Wyoming Department of Public Safety.",
+        "round": 2,
+        "cost": 0.0019748
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1429,
+        "cache_read": 0,
+        "output": 674,
+        "stop": "end_turn",
+        "text": "**Founding and early years:** The Wyoming Township Police Department was founded December 12, 1941, with three full-time officers. They were constables at the time and were affectionately known as the \"Wyoming Cowboys.\"\n\n**1960:** John Vander Band was Chief of Police. The department had 27 sworn officers, two civilian clerks, and eight police reserves. Records show 3,199 reports taken, 918 accidents responded to, and 699 crimes reported.\n\n**Move to DeHoop Avenue:** The department moved in January 1976 into new headquarters at 2650 DeHoop Avenue.\n\n**Police-Justice Building:** The recalled context doesn't mention a Police-Justice Building, so I can't say what it housed.\n\n**2013:** Police responded to 40,958 calls for service. The department had 83 sworn officers, 14 civilian staff, and 30 senior volunteers, serving approximately 72,000 residents.\n\n**2014:** The recalled context has no events for 2014. The 1994 entry (a first-place finish for the fifth time in a statewide competition, and Chief Lowell E. Henline's retirement after 22 years) is the only nearby date I found, and it isn't 2014.",
+        "round": 1,
+        "cost": 0.006232
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1429,
+        "output": 555,
+        "stop": "end_turn",
+        "text": "**Founding:** The Wyoming Township Police Department was founded on December 12, 1941, with three full-time officers. They were constables at the time and were affectionately known as the \"Wyoming Cowboys.\"\n\n**1960:** John Vander Band was Chief of Police. The department had 27 sworn officers, two civilian clerks, and eight police reserves. It took 3,199 reports, responded to 918 accidents, and recorded 699 crimes.\n\n**2026 move:** The department moved to new headquarters at 2650 DeHoop Avenue in January 1976. The recalled context does not say what the Police-Justice Building housed.\n\n**2013:** Officers responded to 40,958 calls for service. The department had 83 sworn officers, 14 civilian staff, and 30 senior volunteers, serving about 72,000 residents.\n\n**2014:** The recalled context has no information about 2014.",
+        "round": 2,
+        "cost": 0.0029219000000000003
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 3445,
+  "recall": {
+    "candidates": 10,
+    "top_k": 5,
+    "context_budget": 4000,
+    "effective_budget": 4000,
+    "min_term_len": 5,
+    "passage_chars": 900,
+    "query": "Wyoming Police Department history founded officers calls",
+    "query_used": "Wyoming Police Department history founded officers calls",
+    "heuristic": "DISTINCTIVE_TERM_COVERAGE"
+  },
+  "totals": {
+    "raw": 0.0067498,
+    "shards": 0.0091539,
+    "ratio": 0.7373687717803341,
+    "saved_pct": -35.61735162523332
+  }
+}

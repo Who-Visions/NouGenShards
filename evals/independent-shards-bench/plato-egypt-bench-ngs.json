@@ -1,0 +1,106 @@
+{
+  "doc": "plato-egypt.md",
+  "question": "According to this article, how long did Plato spend in Egypt, who did he study under there, and which Egyptian ideas does Damien say shaped Plato's theory of Forms? Give the specifics from the article in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "ngs": [
+      {
+        "input": 4,
+        "cache_write": 3870,
+        "cache_read": 0,
+        "output": 461,
+        "stop": "end_turn",
+        "text": "According to the article, Plato spent twelve or thirteen years in Egypt, studying with the sages of Heliopolis, where he slept in the great temple. Damien says he studied under the Horite priest Sechnuphis.\n\nDamien identifies several Egyptian ideas that shaped Plato's theory of Forms:\n\n- **Divine intelligence and creation:** Priests came to attribute the creation of the cosmos to the divine mind, culminating under Shabaka in the designation of Ptah as the supreme creator, who was intelligence itself.\n- **A finite set of pattern-forms:** Egyptian theologians held that Ptah made the cosmos by following pre-existing forms or ideas, with the diverse things of the cosmos being copies of those forms. For them, words denote concepts rather than things.\n- **Thoth as divine word:** Thoth, god of wisdom and \"Lord of Divine Words,\" became the divine craftsman who commanded the universe into existence according to these forms.\n- **The One and the Many:** Priests described a single hidden, transcendent divine entity from which all things originated, reconciling the One and the Many by saying the infinite Many were parts of the ineffable One. This gave Plato a category for a unifying principle b",
+        "round": 1,
+        "cost": 0.010049
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 3870,
+        "output": 406,
+        "stop": "end_turn",
+        "text": "According to the article, Plato spent twelve or thirteen years in Egypt, studying with the sages of Heliopolis. Damien says he studied under the Horite priest Sechnuphis, and that his sleeping quarters were in the great temple of Heliopolis.\n\nAs for the Egyptian ideas that shaped the theory of Forms, Damien points to several:\n\n- **Divine intelligence and creation:** Egyptian priests came to attribute the creation of the cosmos to the divine mind, reaching its fullest expression under Shabaka with Ptah as supreme creator and intelligence itself.\n- **A finite set of forms:** Egyptian theologians distinguished things from divine words. Ptah shaped the cosmos after a pattern of pre-existing forms, and the many things of the cosmos were copies of those forms or ideas.\n- **Thoth as divine craftsman:** Thoth, the \"Lord of Divine Words,\" became the creator who commanded the universe into existence according to these forms.\n- **The One and the Many:** Priests taught a single hidden, transcendent divine entity from which all things originated, with the infinite Many seen as parts of the ineffable One. This gave Plato a category for a unifying principle behind multiplicity.",
+        "round": 2,
+        "cost": 0.002421
+      }
+    ]
+  },
+  "order": "raw-first",
+  "ngs_ingest": {
+    "ingested": 12,
+    "sections": [
+      "Plato in Egypt (bench) \u2014 Int",
+      "Plato in Egypt (bench) \u2014 Plato's Extensive Trave",
+      "Plato in Egypt (bench) \u2014 Plato in Cyre",
+      "Plato in Egypt (bench) \u2014 Plato in Egy",
+      "Plato in Egypt (bench) \u2014 The Maxims of Ptahhot",
+      "Plato in Egypt (bench) \u2014 The Immortality of Write",
+      "Plato in Egypt (bench) \u2014 The One and the Many in Egy",
+      "Plato in Egypt (bench) \u2014 Pharaoh Amenhotep IV and the Sun God At",
+      "Plato in Egypt (bench) \u2014 Plato and His Theory of For",
+      "Plato in Egypt (bench) \u2014 The Divine Mi",
+      "Plato in Egypt (bench) \u2014 The Moses-Plato Connecti",
+      "Plato in Egypt (bench) \u2014 Postscri"
+    ]
+  },
+  "recalled_chars": 11338,
+  "recall": {
+    "source": "ngs",
+    "k": 5,
+    "token_budget": 4000,
+    "token_budget_unit": "engine tokens (chars/4 estimate); 4000 tokens is the same NUMBER as the fleet's 4000-char budget but ~4x the chars. R4: the budget binds, not k -- hits are returned in rank order until it is spent, past k when it allows; a fact that does not fit full is skipped for a smaller one that does, and a title-only stub is returned only for the highest-ranked deferred facts needed to reach k.",
+    "query": "Plato Egypt how long study Heliopolis Sechnuphis theory of Forms Ptahhotep Maat Akhenaten",
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 2882,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "hits": [
+      {
+        "title": "Plato in Egypt (bench) \u2014 The Maxims of Ptahhot",
+        "score": 2.16821,
+        "confidence": 0.7,
+        "tokens": 629,
+        "stub": 0
+      },
+      {
+        "title": "Plato in Egypt (bench) \u2014 The Divine Mi",
+        "score": 1.37385,
+        "confidence": 0.5,
+        "tokens": 864,
+        "stub": 0
+      },
+      {
+        "title": "Plato in Egypt (bench) \u2014 Plato and His Theory of For",
+        "score": 0.788646,
+        "confidence": 0.5,
+        "tokens": 770,
+        "stub": 0
+      },
+      {
+        "title": "Plato in Egypt (bench) \u2014 The One and the Many in Egy",
+        "score": 0.535947,
+        "confidence": 0.5,
+        "tokens": 619,
+        "stub": 0
+      }
+    ]
+  },
+  "totals": {
+    "ngs": 0.01247,
+    "raw": null,
+    "ratio": null,
+    "saved_pct": null
+  }
+}

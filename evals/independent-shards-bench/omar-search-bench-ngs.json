@@ -1,0 +1,74 @@
+{
+  "doc": "omar-search.md",
+  "question": "According to this article, what concerns did Judge Sharbaugh raise before authorizing the search of Rep. Omar's home, how were they resolved, and what did the unsealed records show about the search itself? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "ngs": [
+      {
+        "input": 4,
+        "cache_write": 1490,
+        "cache_read": 0,
+        "output": 354,
+        "stop": "end_turn",
+        "text": "Judge Matthew Sharbaugh raised concerns about the \"Speech or Debate Clause\" implications of searching a member of Congress's private residence. The clause protects legislators from executive branch interference and includes a privilege against compelled disclosures. He disagreed with the government's argument that the privilege covers only official congressional offices and certain electronic devices, writing, \"That logic does not hold.\"\n\nHe balanced the government's law-enforcement interests against Omar's constitutional rights as a member of Congress. The issue was resolved when the government agreed to a search protocol allowing Omar to invoke a privilege over any Speech or Debate Clause material before agents carried out the search. Per the article, she was entitled to assert that privilege at the outset of the search.\n\nAs for the search itself, the unsealed records do not appear to shed new light on its reason or outcome, nor do they disclose new details of the immigration-fraud investigation. The filings were heavily redacted. Chief Judge James Boasberg agreed that unsealing the 67-page search warrant affidavit would be premature, so it remains sealed.",
+        "round": 1,
+        "cost": 0.004754
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1490,
+        "output": 447,
+        "stop": "end_turn",
+        "text": "Judge Matthew Sharbaugh raised concerns about the \"Speech or Debate Clause\" implications of searching a member of Congress's private residence. The clause protects legislators from executive branch interference and includes a privilege against compelled disclosures. He disagreed with the government's argument that the privilege covers only official congressional offices and certain electronic devices, writing, \"That logic does not hold.\"\n\nHe balanced the government's law-enforcement interests against Omar's constitutional rights as a member of Congress. The government ultimately agreed to a search protocol letting Omar invoke a privilege over any Speech or Debate Clause material before agents carried out the search. The article says she was entitled to assert these privacy protections at the outset of the search.\n\nAs for the search itself, the unsealed records do not appear to shed new light on its reason or outcome, nor do they disclose new details of the immigration-fraud investigation. The filings were heavily redacted. Chief Judge James Boasberg agreed with the government that unsealing the 67-page search warrant affidavit would be premature, since it contains sensitive investi",
+        "round": 2,
+        "cost": 0.002388
+      }
+    ]
+  },
+  "order": "raw-first",
+  "ngs_ingest": {
+    "ingested": 1,
+    "sections": [
+      "Omar search (bench) \u2014 Int"
+    ]
+  },
+  "recalled_chars": 4227,
+  "recall": {
+    "source": "ngs",
+    "k": 5,
+    "token_budget": 4000,
+    "token_budget_unit": "engine tokens (chars/4 estimate); 4000 tokens is the same NUMBER as the fleet's 4000-char budget but ~4x the chars. R4: the budget binds, not k -- hits are returned in rank order until it is spent, past k when it allows; a fact that does not fit full is skipped for a smaller one that does, and a title-only stub is returned only for the highest-ranked deferred facts needed to reach k.",
+    "query": "Sharbaugh Speech or Debate Clause Omar search concerns privilege Boasberg unsealed records 17 items",
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 1067,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "hits": [
+      {
+        "title": "Omar search (bench) \u2014 Int",
+        "score": 6.00702,
+        "confidence": 0.9,
+        "tokens": 1067,
+        "stub": 0
+      }
+    ]
+  },
+  "totals": {
+    "ngs": 0.007142000000000001,
+    "raw": null,
+    "ratio": null,
+    "saved_pct": null
+  }
+}

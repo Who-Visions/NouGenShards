@@ -1,0 +1,74 @@
+{
+  "doc": "china-ma.md",
+  "question": "According to this article, who was the official, how was he recruited, what did he provide, and what was the sentence? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 858,
+        "output": 249,
+        "stop": "end_turn",
+        "text": "According to the article, the official was surnamed Ma. He was approached and recruited by a foreign intelligence service while working abroad. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese, and later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\nMa signed a cooperation agreement with clauses on \"confidentiality\" and \"loyalty\" and received fixed monthly payments. He provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nHe was sentenced to death. The article does not identify the countries involved, state when or where he was sentenced, or say whether he had already been executed.",
+        "round": 1,
+        "cost": 0.0013348
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 858,
+        "output": 311,
+        "stop": "end_turn",
+        "text": "According to the article:\n\n**Who:** A Chinese official surnamed Ma. The article does not give his full name or position beyond saying he worked abroad when he was approached.\n\n**How he was recruited:** A foreign intelligence service approached and recruited him while he was working abroad. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese. Kailin later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate. Ma signed a cooperation agreement containing clauses on \"confidentiality\" and \"loyalty.\"\n\n**What he provided:** He supplied 35 pieces of information classified as national secrets and received fixed monthly payments totaling over 1 million yuan (about $150,000).\n\n**Sentence:** He was sentenced to death. The post did not identify the countries involved, say when or where he was sentenced, or state whether he had already been executed.",
+        "round": 2,
+        "cost": 0.0016447999999999999
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 943,
+        "cache_read": 0,
+        "output": 380,
+        "stop": "end_turn",
+        "text": "According to the article, the official was surnamed Ma. He was sentenced to death for spying for a foreign country, as reported by Gold Wall Press, a publisher associated with China's National Administration of State Secrets Protection.\n\n**Recruitment:** A foreign intelligence service approached and recruited him while he was working abroad. An operative identified as \"Kailin\" often arranged meetings with him, citing an interest in learning Chinese. Kailin later introduced him to a colleague, who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\n**What he provided:** Ma signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. He provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\n**Sentence:** Death. The post did not say when or where he was sentenced, or whether he had already been executed.",
+        "round": 1,
+        "cost": 0.00379
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 943,
+        "output": 567,
+        "stop": "end_turn",
+        "text": "According to the article, the official was surnamed **Ma**, a Chinese official who was sentenced to **death** for spying for a foreign country. The Gold Wall Press statement did not say when or where he was sentenced, whether he had been executed, or which countries were involved.\n\n**Recruitment:** Ma was approached and recruited by a foreign intelligence service while working abroad. An operative identified as \"Kailin\" frequently arranged to meet him, citing an interest in learning Chinese. Kailin later introduced him to a colleague, who threatened to report Ma's earlier disclosures to Chinese authorities if he refused to cooperate.\n\n**What he provided:** Ma signed a cooperation agreement with clauses on \"confidentiality\" and \"loyalty\" and received fixed monthly payments. He provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nThe excerpt ends mid-sentence, so any details after that point are not in the recalled context.",
+        "round": 2,
+        "cost": 0.0029333000000000002
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 2449,
+  "recall": {
+    "candidates": 10,
+    "top_k": 3,
+    "context_budget": 4000,
+    "effective_budget": 2449,
+    "min_term_len": 5,
+    "heuristic": "DISTINCTIVE_TERM_COVERAGE"
+  },
+  "totals": {
+    "raw": 0.0029796,
+    "shards": 0.0067233,
+    "ratio": 0.4431752264512962,
+    "saved_pct": -125.64438179621425
+  }
+}

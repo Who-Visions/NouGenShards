@@ -1,0 +1,77 @@
+{
+  "doc": "deviantart-artnews.md",
+  "question": "What are DeviantArt's user and artwork numbers, what does its monetization model look like (fees, subscriptions, payments), what were creators' 2025 sales, and who is the CEO and what does he say about how the platform makes money?",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 2077,
+        "cache_read": 0,
+        "output": 759,
+        "stop": "end_turn",
+        "text": "**Users and artworks:** DeviantArt says it has more than 108 million users worldwide. More than 100 million new artworks across 150 genres and categories were uploaded in 2025.\n\n**Monetization model:**\n- **Fees and payouts:** The document says DeviantArt offers high payouts and some of the lowest platform fees compared to similar sites, as low as 2.5%.\n- **Payments:** The platform automates secure payment processing and file delivery. The Shop Analytics dashboard lets artists manage payouts and track sales.\n- **Subscriptions:** Artists can set up to 10 subscription tiers for recurring revenue. Followers (\"Watchers\") can also send tips through a digital tip jar. DeviantArt promotes subscriptions on profiles and across the site, and offers paid promotion options.\n- **Advertising:** The site has been free of third-party ads since 2019. Its revenue model instead prioritizes artist dividends.\n\n**2025 creator sales:** DeviantArt creators made $23 million in sales in 2025. That is 12 times 2022 sales and more than the previous five years combined.\n\n**CEO:** Moti Levy. He says, \"Today, DeviantArt makes money when our artists make money,\" and \"We're betting on our artists, the way a true cr",
+        "round": 1,
+        "cost": 0.007953
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 2077,
+        "output": 427,
+        "stop": "end_turn",
+        "text": "**Users and artwork:** DeviantArt reports more than 108 million users worldwide, with over 100 million new artworks across 150 artistic genres and categories uploaded in 2025.\n\n**Monetization model:**\n- **Ads:** The platform has been completely free of third-party ads since 2019. Its revenue model instead centers on artist dividends.\n- **Fees:** It advertises some of the lowest platform fees, as low as 2.5%, and high payouts.\n- **Payments:** It automates secure payment processing and file delivery. The Shop Analytics dashboard helps artists manage payouts and track sales.\n- **Subscriptions:** Artists can set up to 10 subscription tiers at different price points, creating recurring revenue. Followers (\"Watchers\") can also send tips through a digital tip jar. DeviantArt promotes subscriptions on artist profiles and across the site, and offers paid promotion options.\n\n**2025 creator sales:** Creators made $23 million in sales in 2025, which the document says was 12 times 2022 sales and more than the previous five years combined.\n\n**CEO and his view:** Moti Levy is CEO. In a blog on the site, he says, \"Today, DeviantArt makes money when our artists make money,\" and \"We're betting on ou",
+        "round": 2,
+        "cost": 0.0023466999999999997
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1812,
+        "cache_read": 0,
+        "output": 458,
+        "stop": "end_turn",
+        "text": "The recalled context doesn't cover DeviantArt, so I can't answer any part of this question from it. It contains no user or artwork counts, no fee, subscription, or payment details, no creator sales figures for 2025, and no CEO or statements about revenue.\n\nThe shards cover other topics:\n- **nougen subscribe** (PR #1006): proactive shard surfacing for tags and keywords.\n- **Meta commoditization thesis** (Nov 12, 2026): a YouTube commentary's claims about Meta's Muse model, with unverified figures.\n- **A cultural-trends app concept**: features and stack, including Firebase, Neo4j, and multi-model AI, with no DeviantArt mention.\n- **Newsletter feed wiring** (Nov 20, 2026): AI newsletters feeding the news casting pipeline.\n\nIf you have a DeviantArt source, such as its public statements, a filing, or a recent article, I can help you summarize or analyze it. I'd also need to check it against current sources, since my knowledge of its figures may be out of date.",
+        "round": 1,
+        "cost": 0.005918
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1812,
+        "output": 398,
+        "stop": "end_turn",
+        "text": "The recalled context doesn't cover DeviantArt, so I can't answer any part of this question from it. None of the four shards mention DeviantArt, its user or artwork counts, its fees, subscriptions or payments, creator sales in 2025, or its CEO.\n\nThe shards cover:\n- **nougen subscribe** (PR #1006), a feature that surfaces shards by tag or keyword.\n- **A Meta \"Muse\" commoditization thesis** from a Nov 12, 2026 YouTube commentary. Its figures are the speaker's unverified claims.\n- **An AI-culture app concept** with features like trend explanations and a \"Should I Hop On This\" risk score.\n- **A newsletter feed** wired into Nou's news casting on Nov 20, 2026.\n\nIf you want the DeviantArt figures, you'd need a source outside this recalled context, such as DeviantArt's own reports or a recent article. I can help you evaluate that material if you share it.",
+        "round": 2,
+        "cost": 0.0021752
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 3889,
+  "recall": {
+    "candidates": 10,
+    "top_k": 5,
+    "context_budget": 4000,
+    "effective_budget": 4000,
+    "min_term_len": 5,
+    "passage_chars": 900,
+    "query": "DeviantArt subscription fees artists sales 2025 sustainable careers",
+    "query_used": "subscription sustainable DeviantArt artists",
+    "heuristic": "DISTINCTIVE_TERM_COVERAGE"
+  },
+  "totals": {
+    "raw": 0.0102997,
+    "shards": 0.0080932,
+    "ratio": 1.2726362872534969,
+    "saved_pct": 21.4229540666233
+  }
+}

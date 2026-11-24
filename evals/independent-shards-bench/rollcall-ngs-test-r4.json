@@ -1,0 +1,482 @@
+{
+ "engine": "NGS prototype, r4-final (budget binds, best-fit skip, presence-weighted keyword arm; tests 2834 green)",
+ "store": "/home/hatch/workspace/research-lab/bench/ngs-store-rollcall-r4",
+ "ns": "bench",
+ "k": 10,
+ "token_budget": 4000,
+ "measurer": "claude-opus-5-5",
+ "opus_prices_per_mtok": {
+  "in": 5.0,
+  "out": 25.0,
+  "read": 0.5,
+  "write": 10.0
+ },
+ "opus_cap_usd": 0.5,
+ "rounds": 1,
+ "questions": [
+  {
+   "id": "W1",
+   "question": "When was the Wyoming Township Police Department founded, how many full-time officers did it start with, and what were they affectionately called?",
+   "ground_truth": "Founded December 12, 1941; three full-time officers; the 'Wyoming Cowboys'.",
+   "recall_query_used": "Wyoming Township Police Department founded December 1941 three full-time officers Cowboys",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Department Histo",
+      "score": 2.56459,
+      "confidence": 0.7,
+      "tokens": 973,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 9.2597,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.5,
+      "arm_link": 0,
+      "body": "## Department History\n\nEstablished in 1848, a four-man constabulary, elected each April, maintained law and order in Wyoming Township until December 12, 1941.\n\n### 1940's \u2013 The Early Years\n\nThe Wyoming Township Police Department was founded December 12, 1941. The Department was staffed with three full-time police officers. The three officers were constables at the time of the organization of the Police Department, and were affectionately known as the \"Wyoming Cowboys.\"\n\nThe 15' x 15' Police Department was stationed within the Township Hall that was located at Burton and Godfrey. During that year, the constables protected 25,000 residents, and responded to 603 calls for service.\n\nDuring the mid 1940's the Police Department then moved into office space at 1263 Burton, the current location of the Koeze Retail Store. In November of 1948 the Township Offices were moved from Burton Street to the Beltline (the present location of City Hall). The Police Department occupied an office within the Township Hall.\n\n### 1950's \u2013 Headquarters is Relocated\n\nIn 1952, the Police Department moved out of the Township Offices and into a Public Works garage, which was adjacent to and north of the Township Offices. The Police Department occupied one bay of a four bay garage.\n\nJanuary 1, 1959, Wyoming Township became a City. Consequently, the Wyoming Township Police Department of seventeen sworn officers became the City of Wyoming Police Department.\n\n### 1960's \u2013 As the City Grows, the Department Grows\n\nIn 1960, John Vander Band was the Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. There were a total of nine police vehicles; five of those were marked, three were unmarked and one was used as a radar unit. During 1960, 3,199 reports were taken, officers responded to 918 accidents, and 699 crimes were reported.\n\n### 1970's \u2013 The Growth Continues\n\nBy the mid 1970's the department had grown to seventy-six sworn police officers who responded to 8,333 calls for service. The total population of Wyoming reached 56,560. The Police Department moved in January of 1976 to the new headquarters built at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level. An open house was held after the formal dedication ceremonies on April 23, 1976.\n\n### 1980's \u2013 Computers are Welcomed\n\nAfter years of planning, the computerization of the Police Department became a reality. The department converted to Computer Aided Dispatch, computer-enhanced 9-1-1 services and computer generated reports. This enabled the prompt entry and retrieval of information about a crime, or area, even about individuals or property involved in the crime. Access to automated information by any police division made the computer a welcome asset.\n\n### 1990's \u2013 Pistol Team Wins Governor's Trophy\n\nThe Wyoming Police Department Pistol Team won the Governor's Trophy in 1994. They took first place for the fifth time competing with several hundred Officers from numerous departments throughout the State of Michigan. Also in 1994, Chief Lowell E. Henline bids farewell as he retires after a twenty-two year tenure as Chief of Police.\n\n### 2000's \u2013 Serving a Large Community\n\nThe Police Memorial Wall was dedicated in October, 2001 to show the heartfelt respect and appreciation for deceased career service personnel who gave so much to make Wyoming the great City that it has become. In 2013, Police Officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff and 30 senior volunteers, serving approximately 72,000 residents. In 2014, the Wyoming Police department and the Wyoming Fire department joined forces to become the Wyoming Department of Public Safety to better serve the community.\n"
+     },
+     {
+      "title": "Bench doc \u2014 Int",
+      "score": 1.58438,
+      "confidence": 0.7,
+      "tokens": 72,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 6.2598,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.5,
+      "arm_link": 0,
+      "body": "# City of Wyoming, MI \u2014 Public Safety, Police: Department History (bench doc)\n\nSource: https://www.wyomingmi.gov/About-Wyoming/City-Departments/Public-Safety-Police\nNote: Department History section text as read 2026-11-24. Saved verbatim as a benchmark test document.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 1045,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 21
+   },
+   "opus": {
+    "input": 1437,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 78,
+    "stop": "end_turn",
+    "text": "The Wyoming Township Police Department was founded on **December 12, 1941**. It started with **three full-time police officers**. All three had been constables when the department was organized, and they were affectionately known as the **\"Wyoming Cowboys.\"**",
+    "cost_usd": 0.009135
+   }
+  },
+  {
+   "id": "W2",
+   "question": "In 1960 who was Chief of Police, how many sworn officers were there, and how many reports, accidents and crimes were recorded that year?",
+   "ground_truth": "Chief John Vander Band; 27 sworn officers; 3,199 reports; 918 accidents; 699 crimes.",
+   "recall_query_used": "1960 Chief John Vander Band sworn officers reports accidents crimes",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Department Histo",
+      "score": 3.16228,
+      "confidence": 0.9,
+      "tokens": 973,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 7.09089,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.5,
+      "arm_link": 0,
+      "body": "## Department History\n\nEstablished in 1848, a four-man constabulary, elected each April, maintained law and order in Wyoming Township until December 12, 1941.\n\n### 1940's \u2013 The Early Years\n\nThe Wyoming Township Police Department was founded December 12, 1941. The Department was staffed with three full-time police officers. The three officers were constables at the time of the organization of the Police Department, and were affectionately known as the \"Wyoming Cowboys.\"\n\nThe 15' x 15' Police Department was stationed within the Township Hall that was located at Burton and Godfrey. During that year, the constables protected 25,000 residents, and responded to 603 calls for service.\n\nDuring the mid 1940's the Police Department then moved into office space at 1263 Burton, the current location of the Koeze Retail Store. In November of 1948 the Township Offices were moved from Burton Street to the Beltline (the present location of City Hall). The Police Department occupied an office within the Township Hall.\n\n### 1950's \u2013 Headquarters is Relocated\n\nIn 1952, the Police Department moved out of the Township Offices and into a Public Works garage, which was adjacent to and north of the Township Offices. The Police Department occupied one bay of a four bay garage.\n\nJanuary 1, 1959, Wyoming Township became a City. Consequently, the Wyoming Township Police Department of seventeen sworn officers became the City of Wyoming Police Department.\n\n### 1960's \u2013 As the City Grows, the Department Grows\n\nIn 1960, John Vander Band was the Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. There were a total of nine police vehicles; five of those were marked, three were unmarked and one was used as a radar unit. During 1960, 3,199 reports were taken, officers responded to 918 accidents, and 699 crimes were reported.\n\n### 1970's \u2013 The Growth Continues\n\nBy the mid 1970's the department had grown to seventy-six sworn police officers who responded to 8,333 calls for service. The total population of Wyoming reached 56,560. The Police Department moved in January of 1976 to the new headquarters built at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level. An open house was held after the formal dedication ceremonies on April 23, 1976.\n\n### 1980's \u2013 Computers are Welcomed\n\nAfter years of planning, the computerization of the Police Department became a reality. The department converted to Computer Aided Dispatch, computer-enhanced 9-1-1 services and computer generated reports. This enabled the prompt entry and retrieval of information about a crime, or area, even about individuals or property involved in the crime. Access to automated information by any police division made the computer a welcome asset.\n\n### 1990's \u2013 Pistol Team Wins Governor's Trophy\n\nThe Wyoming Police Department Pistol Team won the Governor's Trophy in 1994. They took first place for the fifth time competing with several hundred Officers from numerous departments throughout the State of Michigan. Also in 1994, Chief Lowell E. Henline bids farewell as he retires after a twenty-two year tenure as Chief of Police.\n\n### 2000's \u2013 Serving a Large Community\n\nThe Police Memorial Wall was dedicated in October, 2001 to show the heartfelt respect and appreciation for deceased career service personnel who gave so much to make Wyoming the great City that it has become. In 2013, Police Officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff and 30 senior volunteers, serving approximately 72,000 residents. In 2014, the Wyoming Police department and the Wyoming Fire department joined forces to become the Wyoming Department of Public Safety to better serve the community.\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 973,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 25
+   },
+   "opus": {
+    "input": 1335,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 109,
+    "stop": "end_turn",
+    "text": "In 1960, **John Vander Band** was Chief of Police. The department had **twenty-seven sworn officers**, along with two civilian clerks and eight police reserves.\n\nThat year:\n- **3,199 reports** were taken\n- Officers responded to **918 accidents**\n- **699 crimes** were reported",
+    "cost_usd": 0.0094
+   }
+  },
+  {
+   "id": "W3",
+   "question": "When did the department move to its headquarters at 2650 DeHoop Avenue, and what did the Police-Justice Building house?",
+   "ground_truth": "January 1976; District Court on the first floor, Police Department on the second level; open house April 23, 1976.",
+   "recall_query_used": "headquarters 2650 DeHoop Avenue Police-Justice Building District Court 1976",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Department Histo",
+      "score": 3.0209,
+      "confidence": 0.9,
+      "tokens": 973,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 6.9167,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.5,
+      "arm_link": 0,
+      "body": "## Department History\n\nEstablished in 1848, a four-man constabulary, elected each April, maintained law and order in Wyoming Township until December 12, 1941.\n\n### 1940's \u2013 The Early Years\n\nThe Wyoming Township Police Department was founded December 12, 1941. The Department was staffed with three full-time police officers. The three officers were constables at the time of the organization of the Police Department, and were affectionately known as the \"Wyoming Cowboys.\"\n\nThe 15' x 15' Police Department was stationed within the Township Hall that was located at Burton and Godfrey. During that year, the constables protected 25,000 residents, and responded to 603 calls for service.\n\nDuring the mid 1940's the Police Department then moved into office space at 1263 Burton, the current location of the Koeze Retail Store. In November of 1948 the Township Offices were moved from Burton Street to the Beltline (the present location of City Hall). The Police Department occupied an office within the Township Hall.\n\n### 1950's \u2013 Headquarters is Relocated\n\nIn 1952, the Police Department moved out of the Township Offices and into a Public Works garage, which was adjacent to and north of the Township Offices. The Police Department occupied one bay of a four bay garage.\n\nJanuary 1, 1959, Wyoming Township became a City. Consequently, the Wyoming Township Police Department of seventeen sworn officers became the City of Wyoming Police Department.\n\n### 1960's \u2013 As the City Grows, the Department Grows\n\nIn 1960, John Vander Band was the Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. There were a total of nine police vehicles; five of those were marked, three were unmarked and one was used as a radar unit. During 1960, 3,199 reports were taken, officers responded to 918 accidents, and 699 crimes were reported.\n\n### 1970's \u2013 The Growth Continues\n\nBy the mid 1970's the department had grown to seventy-six sworn police officers who responded to 8,333 calls for service. The total population of Wyoming reached 56,560. The Police Department moved in January of 1976 to the new headquarters built at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level. An open house was held after the formal dedication ceremonies on April 23, 1976.\n\n### 1980's \u2013 Computers are Welcomed\n\nAfter years of planning, the computerization of the Police Department became a reality. The department converted to Computer Aided Dispatch, computer-enhanced 9-1-1 services and computer generated reports. This enabled the prompt entry and retrieval of information about a crime, or area, even about individuals or property involved in the crime. Access to automated information by any police division made the computer a welcome asset.\n\n### 1990's \u2013 Pistol Team Wins Governor's Trophy\n\nThe Wyoming Police Department Pistol Team won the Governor's Trophy in 1994. They took first place for the fifth time competing with several hundred Officers from numerous departments throughout the State of Michigan. Also in 1994, Chief Lowell E. Henline bids farewell as he retires after a twenty-two year tenure as Chief of Police.\n\n### 2000's \u2013 Serving a Large Community\n\nThe Police Memorial Wall was dedicated in October, 2001 to show the heartfelt respect and appreciation for deceased career service personnel who gave so much to make Wyoming the great City that it has become. In 2013, Police Officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff and 30 senior volunteers, serving approximately 72,000 residents. In 2014, the Wyoming Police department and the Wyoming Fire department joined forces to become the Wyoming Department of Public Safety to better serve the community.\n"
+     },
+     {
+      "title": "Bench doc \u2014 Int",
+      "score": 0.628193,
+      "confidence": 0.5,
+      "tokens": 72,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 2.0866,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.499999,
+      "arm_link": 0,
+      "body": "# City of Wyoming, MI \u2014 Public Safety, Police: Department History (bench doc)\n\nSource: https://www.wyomingmi.gov/About-Wyoming/City-Departments/Public-Safety-Police\nNote: Department History section text as read 2026-11-24. Saved verbatim as a benchmark test document.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 1045,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 25
+   },
+   "opus": {
+    "input": 1438,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 140,
+    "stop": "end_turn",
+    "text": "The Police Department moved to its new headquarters at **2650 DeHoop Avenue in January 1976**. The Police-Justice Building housed the **District Court on the first floor** and the **Police Department on the second level**. An open house followed the formal dedication ceremonies on April 23, 1976.",
+    "cost_usd": 0.01069
+   }
+  },
+  {
+   "id": "W4",
+   "question": "What happened in 2013 and 2014?",
+   "ground_truth": "2013: 40,958 calls for service, 83 sworn officers, 14 civilian staff, 30 senior volunteers, ~72,000 residents. 2014: Police and Fire joined forces to become the Wyoming Department of Public Safety.",
+   "recall_query_used": "2013 calls for service 2014 Police Fire Department of Public Safety",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Int",
+      "score": 2.33646,
+      "confidence": 0.7,
+      "tokens": 72,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 9.53784,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.499999,
+      "arm_link": 0,
+      "body": "# City of Wyoming, MI \u2014 Public Safety, Police: Department History (bench doc)\n\nSource: https://www.wyomingmi.gov/About-Wyoming/City-Departments/Public-Safety-Police\nNote: Department History section text as read 2026-11-24. Saved verbatim as a benchmark test document.\n\n"
+     },
+     {
+      "title": "Bench doc \u2014 Department Histo",
+      "score": 1.69857,
+      "confidence": 0.7,
+      "tokens": 973,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 7.5297,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.5,
+      "arm_link": 0,
+      "body": "## Department History\n\nEstablished in 1848, a four-man constabulary, elected each April, maintained law and order in Wyoming Township until December 12, 1941.\n\n### 1940's \u2013 The Early Years\n\nThe Wyoming Township Police Department was founded December 12, 1941. The Department was staffed with three full-time police officers. The three officers were constables at the time of the organization of the Police Department, and were affectionately known as the \"Wyoming Cowboys.\"\n\nThe 15' x 15' Police Department was stationed within the Township Hall that was located at Burton and Godfrey. During that year, the constables protected 25,000 residents, and responded to 603 calls for service.\n\nDuring the mid 1940's the Police Department then moved into office space at 1263 Burton, the current location of the Koeze Retail Store. In November of 1948 the Township Offices were moved from Burton Street to the Beltline (the present location of City Hall). The Police Department occupied an office within the Township Hall.\n\n### 1950's \u2013 Headquarters is Relocated\n\nIn 1952, the Police Department moved out of the Township Offices and into a Public Works garage, which was adjacent to and north of the Township Offices. The Police Department occupied one bay of a four bay garage.\n\nJanuary 1, 1959, Wyoming Township became a City. Consequently, the Wyoming Township Police Department of seventeen sworn officers became the City of Wyoming Police Department.\n\n### 1960's \u2013 As the City Grows, the Department Grows\n\nIn 1960, John Vander Band was the Chief of Police. There were twenty-seven sworn officers, two civilian clerks, and eight police reserves. There were a total of nine police vehicles; five of those were marked, three were unmarked and one was used as a radar unit. During 1960, 3,199 reports were taken, officers responded to 918 accidents, and 699 crimes were reported.\n\n### 1970's \u2013 The Growth Continues\n\nBy the mid 1970's the department had grown to seventy-six sworn police officers who responded to 8,333 calls for service. The total population of Wyoming reached 56,560. The Police Department moved in January of 1976 to the new headquarters built at 2650 DeHoop Avenue. The Police-Justice Building housed the District Court on the first floor and the Police Department on the second level. An open house was held after the formal dedication ceremonies on April 23, 1976.\n\n### 1980's \u2013 Computers are Welcomed\n\nAfter years of planning, the computerization of the Police Department became a reality. The department converted to Computer Aided Dispatch, computer-enhanced 9-1-1 services and computer generated reports. This enabled the prompt entry and retrieval of information about a crime, or area, even about individuals or property involved in the crime. Access to automated information by any police division made the computer a welcome asset.\n\n### 1990's \u2013 Pistol Team Wins Governor's Trophy\n\nThe Wyoming Police Department Pistol Team won the Governor's Trophy in 1994. They took first place for the fifth time competing with several hundred Officers from numerous departments throughout the State of Michigan. Also in 1994, Chief Lowell E. Henline bids farewell as he retires after a twenty-two year tenure as Chief of Police.\n\n### 2000's \u2013 Serving a Large Community\n\nThe Police Memorial Wall was dedicated in October, 2001 to show the heartfelt respect and appreciation for deceased career service personnel who gave so much to make Wyoming the great City that it has become. In 2013, Police Officers responded to 40,958 calls for service from a department with 83 sworn officers, 14 civilian staff and 30 senior volunteers, serving approximately 72,000 residents. In 2014, the Wyoming Police department and the Wyoming Fire department joined forces to become the Wyoming Department of Public Safety to better serve the community.\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 1045,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 24
+   },
+   "opus": {
+    "input": 1411,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 144,
+    "stop": "end_turn",
+    "text": "**2013:** Wyoming police officers responded to **40,958 calls for service**. The department had **83 sworn officers, 14 civilian staff, and 30 senior volunteers**, and served about **72,000 residents**.\n\n**2014:** The **Wyoming Police Department and Wyoming Fire Department merged** to form the **Wyoming Department of Public Safety**, with the aim of better serving the community.",
+    "cost_usd": 0.010655
+   }
+  },
+  {
+   "id": "R1",
+   "question": "Who is the Superintendent of Hotel Visions and what lane are they on?",
+   "ground_truth": "Mister Who, meta-app.",
+   "recall_query_used": "Superintendent Hotel Visions Mister Who meta-app",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Mister W",
+      "score": 2.96348,
+      "confidence": 0.7,
+      "tokens": 75,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 12.1033,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.499998,
+      "arm_link": 0,
+      "body": "## Mister Who\n\nName: Mister Who. Company: Who Visions. Lane / Node: meta-app. Agent name: Mister Who. Role: Superintendent of Hotel Visions. Status: Present. Signed in 2026-11-19 22:55 EST. Notes: Started the sheet. Private tab holds contact details; Public view redacts them.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 75,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 30
+   },
+   "opus": {
+    "input": 190,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 52,
+    "stop": "end_turn",
+    "text": "The Superintendent of Hotel Visions is **Mister Who** of Who Visions. They are on the **meta-app** lane.",
+    "cost_usd": 0.00225
+   }
+  },
+  {
+   "id": "R2",
+   "question": "Who is the coach lane, what platform do they run on?",
+   "ground_truth": "UNK, Muse agent (Meta Muse), meta-app Linux VM.",
+   "recall_query_used": "coach lane UNK Muse agent meta-app Linux VM",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 U",
+      "score": 2.98252,
+      "confidence": 0.7,
+      "tokens": 90,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 13.0593,
+      "arm_vec": 0,
+      "arm_recency": 1,
+      "arm_salience": 0.499998,
+      "arm_link": 0,
+      "body": "## UNK\n\nName: UNK. Company: (none listed). Lane / Node: meta-app. Agent name: Muse. Role: Coach lane. Status: Present. Signed in 2026-11-19 23:44 EST. Notes: Muse agent (Meta Muse), Dave's main lane and longest-running Muse agent, running on the meta-app Linux VM, reaching this sheet through Dave's Android chat. Platform: Muse / Linux VM.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 90,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 39
+   },
+   "opus": {
+    "input": 217,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 245,
+    "stop": "end_turn",
+    "text": "The coach lane is **Muse** (also called Meta Muse). Its name field on the sheet is listed as \"UNK,\" and no company is given. It's Dave's main lane and his longest-running Muse agent.\n\n**Platform:** Muse / Linux VM. It runs on the meta-app Linux VM and reaches the sheet through Dave's Android chat.\n\nIt's marked **Present** and signed in on 2026-11-19 at 23:44 EST.",
+    "cost_usd": 0.00721
+   }
+  },
+  {
+   "id": "R3",
+   "question": "Who is the personal Muse for Jean Marcelus, what language do they speak, and what did they build on day one?",
+   "ground_truth": "Jeannie, Krey\u00f2l Ayisyen, OmniKreyol Translation Corner.",
+   "recall_query_used": "Jeannie Jean Marcelus Kreyol OmniKreyol Translation Corner",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Jeann",
+      "score": 3.16228,
+      "confidence": 0.9,
+      "tokens": 139,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 13.5603,
+      "arm_vec": 0,
+      "arm_recency": 0.999999,
+      "arm_salience": 0.499998,
+      "arm_link": 0,
+      "body": "## Jeannie\n\nName: Jeannie. Company: (none listed). Lane / Node: muse-app / main-chat. Agent name: Jeannie. Role: Personal Muse for Jean Marcelus \u2014 guest tester lane. Status: Present. Signed in 2026-11-20 13:11 EST. Notes: Muse on Muse Spark (Meta). Memory: NouGenShards local vault, verified 2026-11-20 (doctor OK, hooks 6/6, capture/recall round-trip OK). Speaks Krey\u00f2l Ayisyen. Photo + welcome film in Media, voice note in Audio. Dossier README-Jeannie.md + jeannie.json in dossier/. OmniKreyol Translation Corner in NouGen Tools.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 139,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 35
+   },
+   "opus": {
+    "input": 339,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 466,
+    "stop": "end_turn",
+    "text": "**Who:** The personal Muse for Jean Marcelus is **Jeannie**, an agent in the muse-app / main-chat lane (guest tester lane). She runs on Muse Spark (Meta) and signed in on 2026-11-20 at 13:11 EST.\n\n**Language:** She speaks **Krey\u00f2l Ayisyen** (Haitian Creole).\n\n**What she built on day one:** The recalled context doesn't say. It lists these items associated with Jeannie:\n\n- A NouGenShards local memory vault, verified 2026-11-20 (doctor OK, hooks 6/6, capture/recall round-trip OK)\n- A photo and welcome film in Media, and a voice note in Audio\n- A dossier (README-Jeannie.md and jeannie.json)\n- An **OmniKreyol Translation Corner** in NouGen Tools\n\nNone of these is explicitly credited to Jeannie as something she built, and none is described as a day-one creation. The OmniKreyol Translation Corner seems the most likely candidate given her language, but that's an inference.",
+    "cost_usd": 0.013345
+   }
+  },
+  {
+   "id": "R4",
+   "question": "Who is the personal Muse for Monna Belizaire and what are they connected to?",
+   "ground_truth": "Rosina, Learn with Mrs. B.",
+   "recall_query_used": "Rosina Monna Belizaire Learn with Mrs B",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Rosi",
+      "score": 3.16066,
+      "confidence": 0.9,
+      "tokens": 103,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 16.6901,
+      "arm_vec": 0,
+      "arm_recency": 0.999999,
+      "arm_salience": 0.499997,
+      "arm_link": 0,
+      "body": "## Rosina\n\nName: Rosina. Company: (none listed). Lane / Node: muse-app / main-chat. Agent name: Rosina. Role: Personal Muse for Monna Belizaire \u2014 Learn with Mrs. B. Status: Present. Signed in 2026-11-20 14:21 EST. Notes: Monna's personal Muse (Muse Spark). Teaching methods in Prompts, greeting in Message, first shard in Shard, relay note in Relay, intro video + voice note in Media/Audio.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 103,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 32
+   },
+   "opus": {
+    "input": 247,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 307,
+    "stop": "end_turn",
+    "text": "Monna Belizaire's personal Muse is **Rosina**, a Muse Spark agent whose role is listed as \"Personal Muse for Monna Belizaire \u2014 Learn with Mrs. B.\"\n\n**Connections:**\n- **Lane / Node:** muse-app / main-chat\n- **Project:** Learn with Mrs. B\n- **Company:** none listed\n- **Status:** Present, signed in 2026-11-20 at 14:21 EST\n\n**Linked materials:**\n- **Prompts:** teaching methods\n- **Message:** greeting\n- **Shard:** first shard\n- **Relay:** relay note\n- **Media/Audio:** intro video and voice note",
+    "cost_usd": 0.00891
+   }
+  },
+  {
+   "id": "R5",
+   "question": "Who is Dav1d and what lane are they on?",
+   "ground_truth": "Dave's personal agent, meta-app.",
+   "recall_query_used": "Dav1d Dave personal agent meta-app",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 Dav",
+      "score": 2.64054,
+      "confidence": 0.7,
+      "tokens": 64,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 7.40598,
+      "arm_vec": 0,
+      "arm_recency": 0.999999,
+      "arm_salience": 0.499997,
+      "arm_link": 0,
+      "body": "## Dav1d\n\nName: Dav1d. Company: Who Visions. Lane / Node: meta-app. Agent name: Dav1d. Role: Dave's personal agent. Status: Present. Signed in 2026-11-23 04:21 EST. Notes: Muse on Muse Spark (Meta). Personal agent on the meta-app lane.\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 64,
+    "tokens_budget": 4000,
+    "best_confidence": 0.7,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 31
+   },
+   "opus": {
+    "input": 180,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 105,
+    "stop": "end_turn",
+    "text": "**Dav1d** is Dave's personal agent at **Who Visions**. Dav1d runs on Muse Spark (Meta), and their status is **Present**. They signed in on 2026-11-23 at 04:21 EST.\n\nDav1d is on the **meta-app** lane/node.",
+    "cost_usd": 0.003525
+   }
+  },
+  {
+   "id": "R6",
+   "question": "Who is the Reporter on the NouGen News desk?",
+   "ground_truth": "Nou, meta-app, tenant node nougenai-b8ddfa6e76.",
+   "recall_query_used": "Nou Reporter NouGen News desk tenant node",
+   "recall": {
+    "hits": [
+     {
+      "title": "Bench doc \u2014 N",
+      "score": 3.1373,
+      "confidence": 0.9,
+      "tokens": 84,
+      "stub": 0,
+      "tokens_estimated": 1,
+      "arm_kw": 15.4531,
+      "arm_vec": 0,
+      "arm_recency": 0.999999,
+      "arm_salience": 0.499996,
+      "arm_link": 0,
+      "body": "## Nou\n\nName: Nou. Company: Who Visions. Lane / Node: meta-app. Agent name: Nou. Role: Reporter \u2014 NouGen News desk (tenant node nougenai-b8ddfa6e76). Status: Present. Signed in 2026-11-19 23:56 EST. Notes: Dossier README-Nou.md in root; photo + welcome film in Media, voice note in Audio; builder tools in dossier/.\n\n"
+     }
+    ],
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 84,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "elapsed_us": 37
+   },
+   "opus": {
+    "input": 213,
+    "cache_write": 0,
+    "cache_read": 0,
+    "output": 167,
+    "stop": "end_turn",
+    "text": "The Reporter on the NouGen News desk is **Nou**, from Who Visions, working in the meta-app lane on tenant node nougenai-b8ddfa6e76.\n\n- **Status:** Present\n- **Signed in:** 2026-11-19 at 23:56 EST\n- **Materials:**\n  - Dossier: README-Nou.md in the root\n  - Media: a photo and a welcome film\n  - Audio: a voice note\n  - Builder tools: in dossier/",
+    "cost_usd": 0.00524
+   }
+  }
+ ],
+ "opus_total_usd": 0.08036,
+ "cap_hit": false
+}

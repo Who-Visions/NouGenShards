@@ -1,0 +1,74 @@
+{
+  "doc": "china-ma.md",
+  "question": "According to this article, who was the official, how was he recruited, what did he provide, and what was the sentence? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "ngs": [
+      {
+        "input": 4,
+        "cache_write": 868,
+        "cache_read": 0,
+        "output": 251,
+        "stop": "end_turn",
+        "text": "According to the AP report, the official was surnamed Ma. He was approached and recruited by a foreign intelligence service while working abroad. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese, and later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\nMa signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. He provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nHe was sentenced to death. The post did not identify the countries involved, say when or where he was sentenced, or say whether he had already been executed.",
+        "round": 1,
+        "cost": 0.002995
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 868,
+        "output": 309,
+        "stop": "end_turn",
+        "text": "According to the AP article, the official was surnamed Ma. Gold Wall Press, a publisher associated with China's National Administration of State Secrets Protection, said he was approached and recruited by a foreign intelligence service while working abroad.\n\nRecruitment: An intelligence operative identified as \"Kailin\" frequently met Ma, ostensibly to help him learn Chinese, and later introduced him to a colleague who threatened to report his earlier disclosures to Chinese authorities if he refused to keep cooperating.\n\nWhat he provided: Ma signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. He reportedly provided 35 pieces of information classified as national secrets and received payments worth over 1 million yuan (about $150,000).\n\nSentence: He was sentenced to death. The post did not identify the countries involved, say when or where he was sentenced, or say whether he had already been executed.",
+        "round": 2,
+        "cost": 0.0016358
+      }
+    ]
+  },
+  "order": "raw-first",
+  "ngs_ingest": {
+    "ingested": 1,
+    "sections": [
+      "China Ma (bench) \u2014 Int"
+    ]
+  },
+  "recalled_chars": 2449,
+  "recall": {
+    "source": "ngs",
+    "k": 5,
+    "token_budget": 4000,
+    "token_budget_unit": "engine tokens (chars/4 estimate); 4000 tokens is the same NUMBER as the fleet's 4000-char budget but ~4x the chars. R4: the budget binds, not k -- hits are returned in rank order until it is spent, past k when it allows; a fact that does not fit full is skipped for a smaller one that does, and a title-only stub is returned only for the highest-ranked deferred facts needed to reach k.",
+    "query": "Ma Kailin China death sentence state secrets Gold Wall Press 35",
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 619,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "hits": [
+      {
+        "title": "China Ma (bench) \u2014 Int",
+        "score": 4.85629,
+        "confidence": 0.9,
+        "tokens": 619,
+        "stub": 0
+      }
+    ]
+  },
+  "totals": {
+    "ngs": 0.0046308,
+    "raw": null,
+    "ratio": null,
+    "saved_pct": null
+  }
+}
