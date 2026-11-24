@@ -1,5 +1,26 @@
 # NGS 50K scorecard, main engine (meta-app M1 entry)
 
+## After the write-path elevation (2026-11-24, 5:40 PM EST, same box)
+
+| Phase | Before | After | vs Phoebus entry |
+|---|---|---|---|
+| A bulk ingest (NO_SYNC, flush/1000) | 1,027/s | **5,736/s** (5.6x) | 4,146/s |
+| B batched ingest (remember_many x100) | 1,026/s | **5,175/s** (5.0x) | |
+| C durable singles, 1 thread | 846/s, p50 1.11 ms | **2,575/s, p50 0.36 ms** | |
+| D group commit, 8 threads | 773/s | **7,950/s** (10.3x) | 6,192/s |
+| E random get | 1.36M/s | 1.39M/s | 249K/s |
+| G verify | 742/s | **1,089/s** (1.5x) | ~740/s |
+| H reopen | 0.231 s | 0.200 s, 407 B/fact | |
+
+What changed: signing reuses the expanded key and public key instead of re-deriving both per fact,
+the base point is multiplied with a 64x16 constant-time comb (64 additions, no doublings), inversion
+uses the 11-multiply addition chain, the signature is computed outside the writer mutex, appends
+enter the log in reservation order, durable writers share one fdatasync per group, and a batch is
+one pwrite per segment. Durability contract unchanged: a durable call returns only after an
+fdatasync covering its bytes. Sign 145 us, verify ~1.0 ms on this box.
+
+## Before (2026-11-24, 4:55 PM EST)
+
 Run 2026-11-24, 4:55 PM EST, cloud Linux box: 4 vCPU Intel Xeon @ 2.30 GHz, GCC 13.3 `-O2`,
 `src/nougenshards.c` (`ngs_libversion()` = 0.3.1-draft), 50,000 facts with ~200-byte bodies.
 Reproduce from `engine/ngs`: `make bench` (`BENCH_N=` to change the size).

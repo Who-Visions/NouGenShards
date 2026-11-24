@@ -544,14 +544,56 @@ static void ngs_fe_pow(ngs_fe h, const ngs_fe f, const uint8_t e[32]) {
   ngs_fe_copy(h, r);
 }
 
+/* h = f squared n times (n >= 1). */
+static void ngs_fe_sqn(ngs_fe h, const ngs_fe f, int n) {
+  int i;
+  ngs_fe_sq(h, f);
+  for (i = 1; i < n; i++) ngs_fe_sq(h, h);
+}
+
+/* The shared addition chain behind inversion and square roots:
+** out = z^(2^250 - 1), z11 = z^11. 250 squarings and 11 multiplies, where
+** the generic square-and-multiply over p-2 spends ~500 field operations. */
+static void ngs_fe_pow250(ngs_fe out, ngs_fe z11, const ngs_fe z) {
+  ngs_fe t0, t1, t2, t3;
+  ngs_fe_sq(t0, z);                 /* z^2 */
+  ngs_fe_sqn(t1, t0, 2);            /* z^8 */
+  ngs_fe_mul(t1, z, t1);            /* z^9 */
+  ngs_fe_mul(t0, t0, t1);           /* z^11 */
+  ngs_fe_copy(z11, t0);
+  ngs_fe_sq(t2, t0);                /* z^22 */
+  ngs_fe_mul(t1, t1, t2);           /* z^(2^5 - 1) */
+  ngs_fe_sqn(t2, t1, 5);
+  ngs_fe_mul(t1, t2, t1);           /* z^(2^10 - 1) */
+  ngs_fe_sqn(t2, t1, 10);
+  ngs_fe_mul(t2, t2, t1);           /* z^(2^20 - 1) */
+  ngs_fe_sqn(t3, t2, 20);
+  ngs_fe_mul(t2, t3, t2);           /* z^(2^40 - 1) */
+  ngs_fe_sqn(t2, t2, 10);
+  ngs_fe_mul(t1, t2, t1);           /* z^(2^50 - 1) */
+  ngs_fe_sqn(t2, t1, 50);
+  ngs_fe_mul(t2, t2, t1);           /* z^(2^100 - 1) */
+  ngs_fe_sqn(t3, t2, 100);
+  ngs_fe_mul(t2, t3, t2);           /* z^(2^200 - 1) */
+  ngs_fe_sqn(t2, t2, 50);
+  ngs_fe_mul(out, t2, t1);          /* z^(2^250 - 1) */
+}
+
 static void ngs_fe_invert(ngs_fe h, const ngs_fe f) {
-  /* exponent p-2 = 2^255 - 21 */
-  static const uint8_t e[32] = {
-    0xeb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f
-  };
-  ngs_fe_pow(h, f, e);
+  /* exponent p-2 = 2^255 - 21 = (2^250 - 1) * 2^5 + 11 */
+  ngs_fe t, z11;
+  ngs_fe_pow250(t, z11, f);
+  ngs_fe_sqn(t, t, 5);
+  ngs_fe_mul(h, t, z11);
+}
+
+/* h = f^((p+3)/8) = f^(2^252 - 2) = (f^(2^251 - 1))^2. */
+static void ngs_fe_pow_p38(ngs_fe h, const ngs_fe f) {
+  ngs_fe t, z11;
+  ngs_fe_pow250(t, z11, f);
+  ngs_fe_sq(t, t);
+  ngs_fe_mul(t, t, f);
+  ngs_fe_sq(h, t);
 }
 
 static void ngs_fe_tobytes(uint8_t s[32], const ngs_fe f0) {
@@ -686,18 +728,14 @@ static void ngs_ge_double(ngs_ge_p3 *r, const ngs_ge_p3 *p) {
 /* Recover x from y and a sign bit; returns 0 on success. */
 static int ngs_ed_recover_x(const ngs_ed_ctx *ctx, ngs_fe x, const ngs_fe y, int sign) {
   /* xx = (y^2 - 1) / (d y^2 + 1); x = xx^((p+3)/8), corrected by I. */
-  static const uint8_t e_p38[32] = {   /* (p+3)/8 = 2^252 - 2 */
-    0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f
-  };
+  /* x = xx^((p+3)/8), (p+3)/8 = 2^252 - 2, via ngs_fe_pow_p38 */
   ngs_fe y2, u, v, xx, x2;
   ngs_fe_sq(y2, y);
   ngs_fe_1(u); ngs_fe_sub(u, y2, u);
   ngs_fe_mul(v, y2, ctx->d); ngs_fe_1(xx); ngs_fe_add(v, v, xx);
   ngs_fe_invert(v, v);
   ngs_fe_mul(xx, u, v);
-  ngs_fe_pow(x, xx, e_p38);
+  ngs_fe_pow_p38(x, xx);
   ngs_fe_sq(x2, x);
   if (!ngs_fe_eq(x2, xx)) {
     ngs_fe_mul(x, x, ctx->I);
@@ -784,20 +822,89 @@ static void ngs_ed_ctx_init(ngs_ed_ctx *ctx) {
   }
 }
 
+/* Fixed-base comb: ngs_comb[i][j] = j * 16^i * B in cached (affine) form,
+** j = 0 being the identity. scalar * B is then 64 additions and no
+** doublings (the windowed ladder spent 256 doublings + 64 additions).
+** Built once per process from the derived constants (no embedded table);
+** 64 x 16 x 240 B = 240 KiB. ngs_comb_ensure lives in the platform layer
+** (pthread_once). */
+static ngs_ge_cached ngs_comb[64][16];
+static void ngs_comb_ensure(void);
+/* Cached form of p given zinv = 1/Z (shared by the batch inversion). */
+static void ngs_ge_to_cached_zinv(const ngs_ed_ctx *ctx, ngs_ge_cached *c,
+                                  const ngs_ge_p3 *p, const ngs_fe zinv) {
+  ngs_fe x, y, t;
+  ngs_fe_mul(x, p->X, zinv);
+  ngs_fe_mul(y, p->Y, zinv);
+  ngs_fe_mul(t, p->T, zinv);
+  ngs_fe_sub(c->YmX, y, x);
+  ngs_fe_add(c->YpX, y, x);
+  ngs_fe_mul(c->T2d, t, ctx->d2);
+}
+
+/* Row i holds j * 16^i * B for j = 0..15; pts[16] = 16^(i+1) * B seeds the
+** next row. The 17 Z coordinates of a row share one field inversion
+** (Montgomery's trick), so the whole table costs 64 inversions, not 1024:
+** a writer's first open stays fast even under sanitizers. */
+static void ngs_comb_build(void) {
+  ngs_ed_ctx ctx;
+  ngs_ge_p3 P, pts[17];
+  ngs_ge_cached pc;
+  ngs_fe acc[17], inv, zinv;
+  int i, j;
+  ngs_ed_ctx_init(&ctx);
+  P = ctx.B;                                   /* affine: Z = 1 */
+  for (i = 0; i < 64; i++) {
+    ngs_fe_1(zinv);
+    ngs_ge_to_cached_zinv(&ctx, &pc, &P, zinv);
+    ngs_ge_p3_identity(&pts[0]);
+    for (j = 1; j < 17; j++) ngs_ge_add(&pts[j], &pts[j - 1], &pc);
+    ngs_fe_copy(acc[0], pts[0].Z);
+    for (j = 1; j < 17; j++) ngs_fe_mul(acc[j], acc[j - 1], pts[j].Z);
+    ngs_fe_invert(inv, acc[16]);
+    for (j = 16; j >= 0; j--) {
+      if (j > 0) { ngs_fe_mul(zinv, inv, acc[j - 1]); ngs_fe_mul(inv, inv, pts[j].Z); }
+      else ngs_fe_copy(zinv, inv);
+      if (j < 16) {
+        ngs_ge_to_cached_zinv(&ctx, &ngs_comb[i][j], &pts[j], zinv);
+      } else {
+        ngs_fe_mul(P.X, pts[16].X, zinv);
+        ngs_fe_mul(P.Y, pts[16].Y, zinv);
+        ngs_fe_1(P.Z);
+        ngs_fe_mul(P.T, P.X, P.Y);
+      }
+    }
+  }
+}
+
+/* Constant-time table lookup: every entry is read, the digit only steers
+** masks, so the secret nonce does not pick a memory address or a branch. */
+static void ngs_ge_cached_select(ngs_ge_cached *t, const ngs_ge_cached row[16], unsigned digit) {
+  int j, k;
+  *t = row[0];
+  for (j = 1; j < 16; j++) {
+    int64_t m = -(int64_t)((((uint32_t)j ^ (uint32_t)digit) - 1u) >> 31);
+    for (k = 0; k < 10; k++) {
+      t->YmX[k] ^= m & (t->YmX[k] ^ row[j].YmX[k]);
+      t->YpX[k] ^= m & (t->YpX[k] ^ row[j].YpX[k]);
+      t->T2d[k] ^= m & (t->T2d[k] ^ row[j].T2d[k]);
+    }
+  }
+}
+
 /* out = scalar * B, scalar any 32-byte little-endian value. */
 static void ngs_ge_scalarmult_base(const ngs_ed_ctx *ctx, ngs_ge_p3 *out, const uint8_t scalar[32]) {
-  ngs_ge_p3 r;
-  int nib, i;
+  ngs_ge_p3 r, t;
+  ngs_ge_cached e;
+  int i;
+  (void)ctx;
+  ngs_comb_ensure();
   ngs_ge_p3_identity(&r);
-  for (nib = 63; nib >= 0; nib--) {
-    int digit;
-    for (i = 0; i < 4; i++) ngs_ge_double(&r, &r);
-    digit = (nib & 1) ? (scalar[nib >> 1] >> 4) & 0xF : scalar[nib >> 1] & 0xF;
-    if (digit) {
-      ngs_ge_p3 t;
-      ngs_ge_add(&t, &r, &ctx->Btab[digit - 1]);
-      r = t;
-    }
+  for (i = 0; i < 64; i++) {
+    unsigned digit = (i & 1) ? (unsigned)(scalar[i >> 1] >> 4) & 0xFu : (unsigned)scalar[i >> 1] & 0xFu;
+    ngs_ge_cached_select(&e, ngs_comb[i], digit);
+    ngs_ge_add(&t, &r, &e);
+    r = t;
   }
   *out = r;
 }
@@ -943,17 +1050,27 @@ static void ngs_ed25519_pubkey(const ngs_ed_ctx *ctx, const uint8_t seed[32], ui
   memset(h, 0, sizeof h); memset(a, 0, sizeof a);
 }
 
-static void ngs_ed25519_sign(const ngs_ed_ctx *ctx, const uint8_t seed[32],
-                             const uint8_t *msg, size_t msg_len, uint8_t sig[64]) {
-  uint8_t h[64], a[32], pub[32], rhash[64], r[32], khash[64], k[32];
-  ngs_ge_p3 R;
-  ngs_sha512_ctx c;
+/* RFC 8032 5.1.5 key expansion: a = clamped low half, prefix = high half. */
+static void ngs_ed25519_expand(const uint8_t seed[32], uint8_t a[32], uint8_t prefix[32]) {
+  uint8_t h[64];
   ngs_sha512(seed, 32, h);
   memcpy(a, h, 32);
   a[0] &= 248; a[31] &= 63; a[31] |= 64;
-  ngs_ed25519_pubkey(ctx, seed, pub);
+  memcpy(prefix, h + 32, 32);
+  memset(h, 0, sizeof h);
+}
+
+/* Sign with an already expanded key and known public key. The writer
+** expands its key once at open; re-deriving it per fact cost a SHA-512
+** and a full base-point multiply for every signature. */
+static void ngs_ed25519_sign_expanded(const ngs_ed_ctx *ctx, const uint8_t a[32],
+                                      const uint8_t prefix[32], const uint8_t pub[32],
+                                      const uint8_t *msg, size_t msg_len, uint8_t sig[64]) {
+  uint8_t rhash[64], r[32], khash[64], k[32];
+  ngs_ge_p3 R;
+  ngs_sha512_ctx c;
   ngs_sha512_init(&c);
-  ngs_sha512_update(&c, h + 32, 32);
+  ngs_sha512_update(&c, prefix, 32);
   if (msg_len > 0) ngs_sha512_update(&c, msg, msg_len);
   ngs_sha512_final(&c, rhash);
   ngs_sc_reduce64(r, rhash);
@@ -966,7 +1083,6 @@ static void ngs_ed25519_sign(const ngs_ed_ctx *ctx, const uint8_t seed[32],
   ngs_sha512_final(&c, khash);
   ngs_sc_reduce64(k, khash);
   ngs_sc_muladd(sig + 32, k, a, r);
-  memset(h, 0, sizeof h); memset(a, 0, sizeof a);
   memset(rhash, 0, sizeof rhash); memset(r, 0, sizeof r);
   memset(khash, 0, sizeof khash); memset(k, 0, sizeof k);
 }
@@ -1223,6 +1339,15 @@ static void ngs_mutex_lock(ngs_mutex *x) { pthread_mutex_lock(&x->m); }
 static void ngs_mutex_unlock(ngs_mutex *x) { pthread_mutex_unlock(&x->m); }
 static void ngs_mutex_destroy(ngs_mutex *x) { pthread_mutex_destroy(&x->m); }
 
+typedef struct { pthread_cond_t c; } ngs_cond;
+static void ngs_cond_init(ngs_cond *x) { pthread_cond_init(&x->c, NULL); }
+static void ngs_cond_wait(ngs_cond *x, ngs_mutex *m) { pthread_cond_wait(&x->c, &m->m); }
+static void ngs_cond_broadcast(ngs_cond *x) { pthread_cond_broadcast(&x->c); }
+static void ngs_cond_destroy(ngs_cond *x) { pthread_cond_destroy(&x->c); }
+
+static pthread_once_t ngs_comb_once = PTHREAD_ONCE_INIT;
+static void ngs_comb_ensure(void) { (void)pthread_once(&ngs_comb_once, ngs_comb_build); }
+
 /* Returned engine objects are single 16-aligned allocations (ngs.h "Align"). */
 static void *ngs_alloc16(size_t n) {
   void *p = NULL;
@@ -1293,6 +1418,7 @@ static int ngs_p_pwrite_full(int fd, const uint8_t *buf, size_t len, uint64_t of
   return 0;
 }
 static int ngs_p_datasync(int fd) { return fdatasync(fd) == 0 ? 0 : -1; }
+static int ngs_p_dup(int fd) { return fcntl(fd, F_DUPFD_CLOEXEC, 0); }
 static int ngs_p_truncate(int fd, uint64_t len) { return ftruncate(fd, (off_t)len) == 0 ? 0 : -1; }
 static int64_t ngs_p_size(int fd) {
   struct stat st;
@@ -1401,8 +1527,19 @@ struct ngs {
   uint32_t cur_seg;
   uint64_t seg_size;            /* valid bytes in the current segment */
   uint64_t segment_bytes;
-  int dirty;
   int corrupt;                  /* corruption found at open (preserved on disk) */
+  /* Write pipeline (group commit). A write reserves its chain position
+  ** under mu, signs outside it, then appends in reservation order and
+  ** joins a shared fdatasync. See ngs_remember. */
+  ngs_cond cv_turn;             /* appends enter the log in ticket order */
+  ngs_cond cv_sync;             /* followers wait for the leader's fdatasync */
+  uint64_t next_ticket;         /* next reservation */
+  uint64_t turn;                /* ticket allowed to append now */
+  uint64_t wlsn;                /* bytes appended since open */
+  uint64_t slsn;                /* bytes known durable since open */
+  int syncing;                  /* a leader is inside fdatasync */
+  int wfail;                    /* sticky write-pipeline failure, 0 = healthy */
+  uint8_t ska[32], skp[32];     /* expanded signing key: scalar a, nonce prefix */
   ngs_ent *ents; size_t n_ents, cap_ents;
   uint32_t *htab; size_t hcap, hcount;
   ngs_nshead *heads; size_t n_heads, cap_heads;
@@ -2026,6 +2163,8 @@ int ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out) {
   db->seg_fd = -1;
   db->segment_bytes = NGS_DEFAULT_SEG_BYTES;
   ngs_mutex_init(&db->mu);
+  ngs_cond_init(&db->cv_turn);
+  ngs_cond_init(&db->cv_sync);
   ngs_crc_init();
   ngs_ed_ctx_init(&db->ed);
   (void)ngs_mono_us();   /* platform clock is live (deadlines arrive in M4) */
@@ -2117,6 +2256,7 @@ int ngs_open(const char *dir, const ngs_open_opts *opts, ngs **out) {
   }
   if (db->have_secret) {
     ngs_ed25519_pubkey(&db->ed, db->seed, db->pub.b);
+    ngs_ed25519_expand(db->seed, db->ska, db->skp);
     db->pub_known = 1;
   }
 
@@ -2180,7 +2320,7 @@ fail:
 
 int ngs_close(ngs *db) {
   if (!db) return NGS_MISUSE;
-  if (!db->rc_state && !db->readonly && db->seg_fd >= 0 && db->dirty) {
+  if (!db->rc_state && !db->readonly && db->seg_fd >= 0 && !db->wfail && db->wlsn > db->slsn) {
     (void)ngs_p_datasync(db->seg_fd);
   }
   if (db->seg_fd >= 0) ngs_p_close(db->seg_fd);
@@ -2190,6 +2330,10 @@ int ngs_close(ngs *db) {
   free(db->htab);
   free(db->dir);
   ngs_wipe(db->seed, sizeof db->seed);
+  ngs_wipe(db->ska, sizeof db->ska);
+  ngs_wipe(db->skp, sizeof db->skp);
+  ngs_cond_destroy(&db->cv_turn);
+  ngs_cond_destroy(&db->cv_sync);
   ngs_mutex_destroy(&db->mu);
   free(db);
   return NGS_OK;
@@ -2203,14 +2347,54 @@ int ngs_node_pubkey(ngs *db, ngs_pubkey *out) {
   return NGS_OK;
 }
 
+/* Group commit. Returns once every byte appended before `target` is
+** durable. Called with db->mu held; drops it around the fdatasync. One
+** caller becomes the leader and syncs everything appended so far (a dup
+** of the segment fd, so a concurrent rollover can close the original);
+** callers arriving meanwhile wait and are covered by that sync or by the
+** next leader's. N concurrent durable writers cost about two fdatasyncs,
+** not N, with no added delay for a lone writer. A failed fdatasync is
+** sticky: after one, the kernel may have dropped the dirty pages, so a
+** later "successful" sync proves nothing (reopen to recover). */
+static int ngs_sync_to(ngs *db, uint64_t target) {
+  while (db->slsn < target) {
+    uint64_t upto;
+    int fd, ok;
+    if (db->wfail) return db->wfail;
+    if (db->syncing) { ngs_cond_wait(&db->cv_sync, &db->mu); continue; }
+    upto = db->wlsn;
+    fd = ngs_p_dup(db->seg_fd);
+    db->syncing = 1;
+    ngs_mutex_unlock(&db->mu);
+    ok = fd >= 0 && ngs_p_datasync(fd) == 0;
+    if (fd >= 0) ngs_p_close(fd);
+    ngs_mutex_lock(&db->mu);
+    db->syncing = 0;
+    if (ok) {
+      if (upto > db->slsn) db->slsn = upto;
+    } else if (!db->wfail) {
+      db->wfail = ngs_set_err(db, NGS_IOERR, "fdatasync failed; writes refuse until reopen");
+    }
+    ngs_cond_broadcast(&db->cv_sync);
+  }
+  return NGS_OK;
+}
+
+/* Wait until every reserved write has entered the log (caller holds mu).
+** Readers of the chain heads (checkpoint) need the heads and the entry
+** table to describe the same facts. */
+static void ngs_drain(ngs *db) {
+  while (db->turn != db->next_ticket) ngs_cond_wait(&db->cv_turn, &db->mu);
+}
+
 int ngs_flush(ngs *db) {
   int rc = NGS_OK;
   if (!db) return NGS_MISUSE;
   if (db->rc_state) return db->rc_state;
   ngs_mutex_lock(&db->mu);
-  if (!db->readonly && db->seg_fd >= 0 && db->dirty) {
-    if (ngs_p_datasync(db->seg_fd) != 0) rc = ngs_set_err(db, NGS_IOERR, "ngs_flush: fdatasync failed");
-    else db->dirty = 0;
+  if (!db->readonly && db->seg_fd >= 0) {
+    if (db->wfail) rc = db->wfail;
+    else rc = ngs_sync_to(db, db->wlsn);
   }
   ngs_mutex_unlock(&db->mu);
   return rc;
@@ -2315,130 +2499,128 @@ static int ngs_prepare(ngs *db, const ngs_fact_in *in, ngs_prep *p) {
   return NGS_OK;
 }
 
-/* Append one prepared fact. Caller holds db->mu. sync_now forces the
-** fdatasync for this record; otherwise the caller syncs at the end. */
-static int ngs_append_one(ngs *db, const ngs_prep *p, int sync_now, ngs_id *out_id) {
-  ngs_nshead *head;
+/* A write moves through three stages:
+**   reserve  (under mu)    chain position: seq, prev, t_record, fact id;
+**                          the namespace head advances here, so the next
+**                          writer chains onto this fact at once.
+**   seal     (no lock)     Ed25519 signature + CBOR record + CRC. This is
+**                          the CPU-heavy part; concurrent writers do it in
+**                          parallel instead of queueing on the mutex.
+**   commit   (under mu,    append in reservation (ticket) order, so the
+**             ticket order) file stays gapless and in chain order, then
+**                          index; durable writes join ngs_sync_to.
+** Any failure after a reservation leaves a reserved fact that never
+** reaches the log, so later facts would chain onto a missing parent: the
+** pipeline poisons itself (wfail) and every later write refuses until
+** reopen, which replays the log as it truly is. Validation errors happen
+** in ngs_prepare, before any reservation, and stay non-sticky. */
+typedef struct {
+  ngs_prep p;
   uint64_t seq;
-  uint8_t prev[32];
-  ngs_time t_record, now;
-  uint8_t id[32], sig[64];
-  int oom = 0, rc;
-  ngs_buf payload, rec;
-  ngs_ent e;
+  uint8_t prev[32], id[32], sig[64];
+  ngs_time t_record;
+  ngs_buf rec;
+} ngs_stage;
 
-  head = ngs_db_head(db, p->ns, p->ns_len, 1);
+static int ngs_reserve(ngs *db, ngs_stage *s) {
+  ngs_nshead *head;
+  ngs_time now;
+  int oom = 0;
+  head = ngs_db_head(db, s->p.ns, s->p.ns_len, 1);
   if (!head) return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory");
-  seq = head->seq + 1;
-  memcpy(prev, head->id.b, 32);
-
+  s->seq = head->seq + 1;
+  memcpy(s->prev, head->id.b, 32);
   now = ngs_wall_us();
-  t_record = now > db->last_trecord ? now : db->last_trecord + 1;
-
-  ngs_fact_id(p->ns, p->ns_len, p->kind, db->pub.b, seq, prev,
-              p->t_event, t_record, p->valid_from, p->title, p->title_len,
-              p->body, p->body_len, p->tags, p->n_tags, p->attrs, p->attrs_len,
-              p->schema, id, &oom);
+  s->t_record = now > db->last_trecord ? now : db->last_trecord + 1;
+  ngs_fact_id(s->p.ns, s->p.ns_len, s->p.kind, db->pub.b, s->seq, s->prev,
+              s->p.t_event, s->t_record, s->p.valid_from, s->p.title, s->p.title_len,
+              s->p.body, s->p.body_len, s->p.tags, s->p.n_tags, s->p.attrs, s->p.attrs_len,
+              s->p.schema, s->id, &oom);
   if (oom) return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory");
-  ngs_ed25519_sign(&db->ed, db->seed, id, 32, sig);
+  head->seq = s->seq;
+  memcpy(head->id.b, s->id, 32);
+  db->last_trecord = s->t_record;
+  return NGS_OK;
+}
 
+/* Undo reservations made in this critical section (newest first). */
+static void ngs_unreserve(ngs *db, ngs_stage *st, size_t n) {
+  while (n > 0) {
+    ngs_stage *s = &st[--n];
+    ngs_nshead *h = ngs_db_head(db, s->p.ns, s->p.ns_len, 0);
+    if (h) { h->seq = s->seq - 1; memcpy(h->id.b, s->prev, 32); }
+  }
+}
+
+/* No lock held: reads only immutable handle state (keys, curve ctx). */
+static int ngs_seal(ngs *db, ngs_stage *s) {
+  ngs_buf payload;
+  const ngs_prep *p = &s->p;
+  ngs_ed25519_sign_expanded(&db->ed, db->ska, db->skp, db->pub.b, s->id, 32, s->sig);
   memset(&payload, 0, sizeof payload);
-  ngs_encode_fact(&payload, 0, p->ns, p->ns_len, p->kind, db->pub.b, seq, prev,
-                  p->t_event, t_record, p->valid_from, p->title, p->title_len,
+  ngs_encode_fact(&payload, 0, p->ns, p->ns_len, p->kind, db->pub.b, s->seq, s->prev,
+                  p->t_event, s->t_record, p->valid_from, p->title, p->title_len,
                   p->body, p->body_len, NULL, p->tags, p->n_tags,
-                  p->attrs, p->attrs_len, p->schema, sig);
-  if (payload.oom) { ngs_buf_free(&payload); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
-
-  memset(&rec, 0, sizeof rec);
+                  p->attrs, p->attrs_len, p->schema, s->sig);
+  if (payload.oom) { ngs_buf_free(&payload); return NGS_NOMEM; }
+  memset(&s->rec, 0, sizeof s->rec);
   {
-    uint8_t hdr5[5];
+    uint8_t hdr5[5], cb[4];
     uint32_t crc;
     ngs_store32le(hdr5, (uint32_t)payload.len);
     hdr5[4] = NGS_REC_FACT;
-    ngs_buf_put(&rec, hdr5, 5);
-    ngs_buf_put(&rec, payload.p, payload.len);
+    ngs_buf_put(&s->rec, hdr5, 5);
+    ngs_buf_put(&s->rec, payload.p, payload.len);
     crc = ngs_crc32c(&hdr5[4], 1, 0);
     crc = ngs_crc32c(payload.p, payload.len, crc);
-    {
-      uint8_t cb[4];
-      ngs_store32le(cb, crc);
-      ngs_buf_put(&rec, cb, 4);
-    }
+    ngs_store32le(cb, crc);
+    ngs_buf_put(&s->rec, cb, 4);
   }
   ngs_buf_free(&payload);
-  if (rec.oom) { ngs_buf_free(&rec); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
+  if (s->rec.oom) { ngs_buf_free(&s->rec); return NGS_NOMEM; }
+  return NGS_OK;
+}
 
-  /* segment rollover */
-  if (db->seg_fd < 0) { ngs_buf_free(&rec); return ngs_set_err(db, NGS_IOERR, "ngs_remember: no active segment"); }
-  if (db->seg_size >= NGS_SEG_HDR && db->seg_size + rec.len > db->segment_bytes) {
-    int nfd = -1;
-    if (ngs_seg_create(db, db->cur_seg + 1, seq, &nfd) != 0) {
-      ngs_buf_free(&rec);
-      return ngs_set_err(db, NGS_IOERR, "ngs_remember: segment rollover failed");
-    }
-    ngs_p_close(db->seg_fd);
-    db->seg_fd = nfd;
-    db->cur_seg += 1;
-    db->seg_size = NGS_SEG_HDR;
-  }
-  {
-    size_t rec_len = rec.len;   /* ngs_buf_free zeroes len; capture it first */
-    if (ngs_p_pwrite_full(db->seg_fd, rec.p, rec_len, db->seg_size) != 0) {
-      ngs_buf_free(&rec);
-      db->dirty = 1;
-      return ngs_set_err(db, NGS_IOERR, "ngs_remember: write failed (torn tail will be truncated on open)");
-    }
-    ngs_buf_free(&rec);
-    db->seg_size += rec_len;
-    db->log_bytes += rec_len;
-  }
-  if (sync_now) {
-    if (ngs_p_datasync(db->seg_fd) != 0) {
-      db->dirty = 1;
-      return ngs_set_err(db, NGS_IOERR, "ngs_remember: fdatasync failed");
-    }
-    db->dirty = 0;
-  } else {
-    db->dirty = 1;
-  }
-
-  /* in-memory index */
+/* In-memory index entry for a fact already in the log. */
+static int ngs_index_add(ngs *db, const ngs_stage *s) {
+  const ngs_prep *p = &s->p;
+  ngs_ent e;
   memset(&e, 0, sizeof e);
-  memcpy(e.id.b, id, 32);
+  memcpy(e.id.b, s->id, 32);
   e.ns = ngs_strdup_n(p->ns, p->ns_len);
   e.title = ngs_strdup_n(p->title, p->title_len);
   e.body = (uint8_t *)malloc(p->body_len ? p->body_len : 1);
   e.attrs = (uint8_t *)malloc(p->attrs_len ? p->attrs_len : 1);
-  if (!e.ns || !e.title || !e.body || !e.attrs) { ngs_ent_clear(&e); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
+  if (!e.ns || !e.title || !e.body || !e.attrs) { ngs_ent_clear(&e); return NGS_NOMEM; }
   e.ns_len = p->ns_len;
   e.kind = p->kind;
   e.writer = db->pub;
-  e.seq = seq;
-  memcpy(e.prev.b, prev, 32);
-  e.t_event = p->t_event; e.t_record = t_record; e.valid_from = p->valid_from;
+  e.seq = s->seq;
+  memcpy(e.prev.b, s->prev, 32);
+  e.t_event = p->t_event; e.t_record = s->t_record; e.valid_from = p->valid_from;
   e.title_len = p->title_len;
   if (p->body_len > 0) memcpy(e.body, p->body, p->body_len);
   e.body_len = p->body_len;
   if (p->attrs_len > 0) memcpy(e.attrs, p->attrs, p->attrs_len);
   e.attrs_len = p->attrs_len;
   e.schema = p->schema;
-  memcpy(e.sig, sig, 64);
+  memcpy(e.sig, s->sig, 64);
   if (p->n_tags > 0) {
     size_t i;
     e.tags = (char **)calloc(p->n_tags, sizeof(char *));
     e.tag_lens = (size_t *)calloc(p->n_tags, sizeof(size_t));
-    if (!e.tags || !e.tag_lens) { ngs_ent_clear(&e); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
+    if (!e.tags || !e.tag_lens) { ngs_ent_clear(&e); return NGS_NOMEM; }
     e.n_tags = p->n_tags;
     for (i = 0; i < p->n_tags; i++) {
       e.tags[i] = ngs_strdup_n(p->tags[i].p, p->tags[i].n);
-      if (!e.tags[i]) { ngs_ent_clear(&e); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
+      if (!e.tags[i]) { ngs_ent_clear(&e); return NGS_NOMEM; }
       e.tag_lens[i] = p->tags[i].n;
     }
   }
   if (db->n_ents == db->cap_ents) {
     size_t ncap = db->cap_ents ? db->cap_ents * 2 : 64;
     ngs_ent *ne = (ngs_ent *)realloc(db->ents, ncap * sizeof(ngs_ent));
-    if (!ne) { ngs_ent_clear(&e); return ngs_set_err(db, NGS_NOMEM, "ngs_remember: out of memory"); }
+    if (!ne) { ngs_ent_clear(&e); return NGS_NOMEM; }
     db->ents = ne; db->cap_ents = ncap;
   }
   db->ents[db->n_ents] = e;
@@ -2446,59 +2628,152 @@ static int ngs_append_one(ngs *db, const ngs_prep *p, int sync_now, ngs_id *out_
   if (ngs_htab_insert(db, db->n_ents - 1) != 0) {
     (void)ngs_htab_rebuild(db, db->n_ents * 2 + 2);
   }
-  head = ngs_db_head(db, p->ns, p->ns_len, 0);
-  if (head) { head->seq = seq; memcpy(head->id.b, id, 32); }
-  db->last_trecord = t_record;
-  if (out_id) memcpy(out_id->b, id, 32);
-  rc = NGS_OK;
+  return NGS_OK;
+}
+
+static int ngs_poison(ngs *db, int rc, const char *msg) {
+  if (!db->wfail) db->wfail = ngs_set_err(db, rc, msg);
+  return db->wfail;
+}
+
+/* Write `len` staged bytes at the end of the current segment. */
+static int ngs_append_bytes(ngs *db, const uint8_t *p, size_t len) {
+  if (len == 0) return NGS_OK;
+  if (ngs_p_pwrite_full(db->seg_fd, p, len, db->seg_size) != 0) {
+    return ngs_poison(db, NGS_IOERR, "ngs_remember: write failed (torn tail will be truncated on open)");
+  }
+  db->seg_size += len;
+  db->log_bytes += len;
+  db->wlsn += len;
+  return NGS_OK;
+}
+
+/* Close the current segment and start the next. The old segment is made
+** durable first: the group-commit leader only syncs the live segment, so
+** NO_SYNC records left in a rolled-over segment would otherwise never be
+** covered by a later sync point. */
+static int ngs_rollover(ngs *db, uint64_t first_seq) {
+  int nfd = -1;
+  if (ngs_p_datasync(db->seg_fd) != 0) {
+    return ngs_poison(db, NGS_IOERR, "ngs_remember: fdatasync before segment rollover failed");
+  }
+  if (db->wlsn > db->slsn) { db->slsn = db->wlsn; ngs_cond_broadcast(&db->cv_sync); }
+  if (ngs_seg_create(db, db->cur_seg + 1, first_seq, &nfd) != 0) {
+    return ngs_poison(db, NGS_IOERR, "ngs_remember: segment rollover failed");
+  }
+  ngs_p_close(db->seg_fd);
+  db->seg_fd = nfd;
+  db->cur_seg += 1;
+  db->seg_size = NGS_SEG_HDR;
+  return NGS_OK;
+}
+
+/* Commit stage for st[0..n): caller holds mu and owns the current turn.
+** Contiguous records are coalesced into one pwrite per segment. */
+static int ngs_commit(ngs *db, ngs_stage *st, size_t n, ngs_id *out_ids) {
+  size_t i;
+  ngs_buf run;           /* records not yet written, all for the live segment */
+  int rc = NGS_OK;
+  if (db->wfail) return db->wfail;
+  if (db->seg_fd < 0) return ngs_poison(db, NGS_IOERR, "ngs_remember: no active segment");
+  memset(&run, 0, sizeof run);
+  for (i = 0; i < n && rc == NGS_OK; i++) {
+    size_t rl = st[i].rec.len;
+    uint64_t used = db->seg_size + run.len;
+    if (used > NGS_SEG_HDR && used + rl > db->segment_bytes) {
+      rc = ngs_append_bytes(db, run.p, run.len);
+      run.len = 0;
+      if (rc == NGS_OK) rc = ngs_rollover(db, st[i].seq);
+      if (rc != NGS_OK) break;
+    }
+    if (n == 1) break;    /* a single record is written straight from its buffer */
+    ngs_buf_put(&run, st[i].rec.p, rl);
+    if (run.oom) rc = ngs_poison(db, NGS_NOMEM, "ngs_remember_many: out of memory");
+  }
+  if (rc == NGS_OK) {
+    if (n == 1) rc = ngs_append_bytes(db, st[0].rec.p, st[0].rec.len);
+    else rc = ngs_append_bytes(db, run.p, run.len);
+  }
+  ngs_buf_free(&run);
+  if (rc != NGS_OK) return rc;
+  for (i = 0; i < n; i++) {
+    if (ngs_index_add(db, &st[i]) != NGS_OK) {
+      return ngs_poison(db, NGS_NOMEM, "ngs_remember: out of memory indexing a logged fact");
+    }
+    if (out_ids) memcpy(out_ids[i].b, st[i].id, 32);
+  }
+  return NGS_OK;
+}
+
+static int ngs_write_gate(ngs *db, const char *who) {
+  char m[128];
+  if (db->readonly) { snprintf(m, sizeof m, "%s: read-only handle", who); return ngs_set_err(db, NGS_ERROR, m); }
+  if (db->corrupt) { snprintf(m, sizeof m, "%s: store is corrupt; writes refuse", who); return ngs_set_err(db, NGS_CORRUPT, m); }
+  if (!db->have_secret) { snprintf(m, sizeof m, "%s: no node key", who); return ngs_set_err(db, NGS_ERROR, m); }
+  if (db->wfail) return db->wfail;
+  return NGS_OK;
+}
+
+/* Shared body of ngs_remember / ngs_remember_many. */
+static int ngs_write(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags, ngs_id *out_ids,
+                     const char *who) {
+  ngs_stage one, *st;
+  uint64_t ticket, end_lsn;
+  size_t i, reserved = 0;
+  int rc;
+  if (n == 1) { st = &one; memset(&one, 0, sizeof one); }
+  else {
+    st = (ngs_stage *)calloc(n, sizeof(ngs_stage));
+    if (!st) return ngs_set_err(db, NGS_NOMEM, "ngs_remember_many: out of memory");
+  }
+  ngs_mutex_lock(&db->mu);
+  rc = ngs_write_gate(db, who);
+  for (i = 0; i < n && rc == NGS_OK; i++) rc = ngs_prepare(db, &in[i], &st[i].p);
+  for (i = 0; i < n && rc == NGS_OK; i++) {
+    rc = ngs_reserve(db, &st[i]);
+    if (rc == NGS_OK) reserved++;
+  }
+  if (rc != NGS_OK) {
+    ngs_unreserve(db, st, reserved);
+    ngs_mutex_unlock(&db->mu);
+    if (st != &one) free(st);
+    return rc;
+  }
+  ticket = db->next_ticket++;
+  ngs_mutex_unlock(&db->mu);
+
+  for (i = 0; i < n && rc == NGS_OK; i++) rc = ngs_seal(db, &st[i]);
+
+  ngs_mutex_lock(&db->mu);
+  while (db->turn != ticket) ngs_cond_wait(&db->cv_turn, &db->mu);
+  if (rc != NGS_OK) rc = ngs_poison(db, rc, "ngs_remember: out of memory sealing a reserved fact");
+  else rc = ngs_commit(db, st, n, out_ids);
+  end_lsn = db->wlsn;
+  db->turn++;
+  ngs_cond_broadcast(&db->cv_turn);
+  if (rc == NGS_OK && !(flags & NGS_WRITE_NO_SYNC)) rc = ngs_sync_to(db, end_lsn);
+  ngs_mutex_unlock(&db->mu);
+
+  for (i = 0; i < n; i++) ngs_buf_free(&st[i].rec);
+  if (st != &one) free(st);
   return rc;
 }
 
 int ngs_remember(ngs *db, const ngs_fact_in *in, int32_t flags, ngs_id *out_id) {
-  ngs_prep p;
-  int rc;
   if (!db) return NGS_MISUSE;
   if (db->rc_state) return db->rc_state;
   if (flags & ~NGS_WRITE_NO_SYNC) return ngs_set_err(db, NGS_MISUSE, "ngs_remember: unknown flags");
-  ngs_mutex_lock(&db->mu);
-  if (db->readonly) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_ERROR, "ngs_remember: read-only handle"); }
-  if (db->corrupt) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_CORRUPT, "ngs_remember: store is corrupt; writes refuse"); }
-  if (!db->have_secret) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_ERROR, "ngs_remember: no node key"); }
-  rc = ngs_prepare(db, in, &p);
-  if (rc == NGS_OK) rc = ngs_append_one(db, &p, !(flags & NGS_WRITE_NO_SYNC), out_id);
-  ngs_mutex_unlock(&db->mu);
-  return rc;
+  return ngs_write(db, in, 1, flags, out_id, "ngs_remember");
 }
 
 int ngs_remember_many(ngs *db, const ngs_fact_in *in, size_t n, int32_t flags, ngs_id *out_ids) {
-  ngs_prep *preps;
-  size_t i;
-  int rc = NGS_OK;
   if (!db) return NGS_MISUSE;
   if (db->rc_state) return db->rc_state;
   if (flags & ~NGS_WRITE_NO_SYNC) return ngs_set_err(db, NGS_MISUSE, "ngs_remember_many: unknown flags");
   if (n == 0) return NGS_OK;
   if (!in) return ngs_set_err(db, NGS_MISUSE, "ngs_remember_many: NULL array");
   if (n > (size_t)1 << 20) return ngs_set_err(db, NGS_TOOBIG, "ngs_remember_many: batch too large");
-  ngs_mutex_lock(&db->mu);
-  if (db->readonly) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_ERROR, "ngs_remember_many: read-only handle"); }
-  if (db->corrupt) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_CORRUPT, "ngs_remember_many: store is corrupt; writes refuse"); }
-  if (!db->have_secret) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_ERROR, "ngs_remember_many: no node key"); }
-  preps = (ngs_prep *)malloc(n * sizeof(ngs_prep));
-  if (!preps) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_NOMEM, "ngs_remember_many: out of memory"); }
-  for (i = 0; i < n; i++) {
-    rc = ngs_prepare(db, &in[i], &preps[i]);
-    if (rc != NGS_OK) { free(preps); ngs_mutex_unlock(&db->mu); return rc; }
-  }
-  for (i = 0; i < n; i++) {
-    int last = (i + 1 == n);
-    rc = ngs_append_one(db, &preps[i], last && !(flags & NGS_WRITE_NO_SYNC),
-                        out_ids ? &out_ids[i] : NULL);
-    if (rc != NGS_OK) break;
-  }
-  free(preps);
-  ngs_mutex_unlock(&db->mu);
-  return rc;
+  return ngs_write(db, in, n, flags, out_ids, "ngs_remember_many");
 }
 
 /* --- reading --- */
@@ -2689,6 +2964,7 @@ int ngs_checkpoint(ngs *db, uint8_t **ckpt, size_t *len) {
   *ckpt = NULL; *len = 0;
   if (db->rc_state) return db->rc_state;
   ngs_mutex_lock(&db->mu);
+  ngs_drain(db);
   if (!db->have_secret) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_ERROR, "ngs_checkpoint: needs the node key to sign"); }
   if (db->corrupt) { ngs_mutex_unlock(&db->mu); return ngs_set_err(db, NGS_CORRUPT, "ngs_checkpoint: store is corrupt"); }
   if (db->n_heads > 0) {
@@ -2710,7 +2986,7 @@ int ngs_checkpoint(ngs *db, uint8_t **ckpt, size_t *len) {
     ngs_encode_ckpt_head(&b, 0, tr, db->n_ents, sorted, db->n_heads, NULL, merkle, db->pub.b, NULL);
     if (b.oom) { rc = NGS_NOMEM; goto done; }
     ngs_blake3_hash(b.p, b.len, hash);
-    ngs_ed25519_sign(&db->ed, db->seed, hash, 32, sig);
+    ngs_ed25519_sign_expanded(&db->ed, db->ska, db->skp, db->pub.b, hash, 32, sig);
     ngs_buf_free(&b);
     memset(&b, 0, sizeof b);
     ngs_encode_ckpt_head(&b, 1, tr, db->n_ents, sorted, db->n_heads, NULL, merkle, db->pub.b, sig);

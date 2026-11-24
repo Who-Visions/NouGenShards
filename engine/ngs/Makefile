@@ -53,7 +53,7 @@ check: include/check/ngs_header_check.c | $(BUILD)
 test: $(BUILD)/test_m1
 	$(BUILD)/test_m1
 $(BUILD)/test_m1: test/test_m1.c test/kat_shim.c $(SRC) $(HDR) | $(BUILD)
-	$(CC) $(TESTCFLAGS) $(INC) test/test_m1.c test/kat_shim.c -o $@
+	$(CC) $(TESTCFLAGS) $(INC) test/test_m1.c test/kat_shim.c -pthread -o $@
 
 crash: $(BUILD)/crash_harness
 	$(BUILD)/crash_harness
@@ -62,7 +62,7 @@ $(BUILD)/crash_harness: test/crash_harness.c $(SRC) $(HDR) | $(BUILD)
 
 SANFLAGS = -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 sanitize: | $(BUILD)
-	$(CC) $(SANFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $(INC) test/test_m1.c test/kat_shim.c -o $(BUILD)/test_m1_san
+	$(CC) $(SANFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $(INC) test/test_m1.c test/kat_shim.c -pthread -o $(BUILD)/test_m1_san
 	$(BUILD)/test_m1_san
 	$(CC) $(SANFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $(INC) test/crash_harness.c -o $(BUILD)/crash_harness_san
 	$(BUILD)/crash_harness_san
