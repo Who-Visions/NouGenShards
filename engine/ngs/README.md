@@ -82,6 +82,21 @@ reference implementation.
   (possibly empty) stays readable, the corruption is sticky, writes
   refuse, and `ngs_verify` reports `NGS_CORRUPT`.
 
+## Write path (group commit)
+
+A write reserves its chain position under the mutex (seq, prev, t_record,
+fact id), signs and encodes outside it, then appends in reservation order,
+so the log stays gapless and in chain order while signatures are computed
+in parallel. Durable writers join `ngs_sync_to`: one caller leads a single
+fdatasync covering everything appended so far and the rest wait on it, so
+N concurrent durable writers cost about two syncs, not N, with no added
+delay for a lone writer (`group_commit_ms` is parsed but no timer is
+used). `ngs_remember_many` reserves the whole batch at once and writes it
+with one pwrite per segment. A segment is fdatasync'd before rollover, so
+NO_SYNC records in it are not stranded. Any failure after a reservation
+(I/O, fdatasync, OOM) is sticky until reopen, because later facts already
+chain onto the lost one; validation errors stay non-sticky.
+
 ## Gates (all green at submission)
 
 - `cc -std=c11 -Wall -Wextra -pedantic -Werror`: clean.
@@ -89,7 +104,7 @@ reference implementation.
 - Phoebus's `header_contract.c`: compiles as C11 and C++11; his
   `tests/test_ngs_conformance.py` passes 3/3 against this tree.
 - Amalgamation compiles standalone.
-- Unit suite: 117 passed, 0 failed.
+- Unit suite: 133 passed, 0 failed (includes 8-thread group commit across segment rollovers).
 - Crash harness: 29 passed, 0 failed — kill-mid-write (176 fsynced
   batches acknowledged by the writer child, all 176 recovered intact
   after SIGKILL), torn tail, mid-record truncation, payload tamper
