@@ -1868,7 +1868,14 @@ def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
 
 
 
-_PR_REVIEW_LEDGER = Path.home() / ".nougen" / "research" / "reviews" / "aiwithdav3" / "ledger.jsonl"
+def _pr_review_ledger() -> Path:
+    """The reviewer account's ledger: $NOUGEN_PR_REVIEWER, else the one reviewer dir this box has."""
+    root = Path.home() / ".nougen" / "research" / "reviews"
+    who = os.environ.get("NOUGEN_PR_REVIEWER", "").strip()
+    if not who:
+        dirs = [d.name for d in root.iterdir() if (d / "ledger.jsonl").exists()] if root.is_dir() else []
+        who = dirs[0] if len(dirs) == 1 else "reviewer"
+    return root / who / "ledger.jsonl"
 
 
 def _pr_review_script() -> Path:
@@ -1881,7 +1888,7 @@ def _pr_review_script() -> Path:
 
 @mcp.tool()
 def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
-    """Review a GitHub PR as aiwithdav3 (free lanes -> local e2b -> agy, second-lane supervisor).
+    """Review a GitHub PR as the configured reviewer account (free lanes -> local e2b -> agy, second-lane supervisor).
 
     dry_run=True (default) reviews without posting. dry_run=False posts one GitHub review per head SHA.
     Never merges. Gated: set NOUGEN_ENABLE_PR_REVIEW=1 on the server to enable.
@@ -1924,7 +1931,7 @@ def _run_review_ts(args: List[str], timeout: int = 900) -> dict:
 
 @mcp.tool()
 def rsi_status() -> str:
-    """aiwithdav3 reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only."""
+    """PR reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only."""
     out = _run_review_ts(["rsi", "status"], timeout=120)
     try:
         return json.dumps(json.loads(out.get("stdout") or ""), ensure_ascii=False)
@@ -2001,17 +2008,18 @@ def rsi_reverse(targets: List[str], lanes: int = 2) -> str:
 
 @mcp.tool()
 def pr_review_status(repo: str = "", pr: int = 0, limit: int = 10) -> str:
-    """Latest aiwithdav3 review verdicts from the local ledger, newest first. Read-only."""
+    """Latest PR reviewer verdicts from the local ledger, newest first. Read-only."""
     rows = []
-    if _PR_REVIEW_LEDGER.exists():
-        for line in _PR_REVIEW_LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+    ledger = _pr_review_ledger()
+    if ledger.exists():
+        for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
             if isinstance(e, dict) and (not repo or e.get("repo") == repo) and (not pr or e.get("pr") == int(pr)):
                 rows.append(e)
-    return json.dumps({"ledger": str(_PR_REVIEW_LEDGER), "reviews": rows[::-1][:max(1, min(int(limit), 50))]},
+    return json.dumps({"ledger": str(ledger), "reviews": rows[::-1][:max(1, min(int(limit), 50))]},
                       ensure_ascii=False, default=str)
 
 

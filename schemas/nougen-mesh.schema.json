@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nougen-mesh/1",
+  "title": "mesh.json: one box's runtime config for the NouGen mesh (lives in NOUGEN_ROOT, default ~/.nougen)",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "nougen-mesh/1"
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"
+        },
+        "tenant": {
+          "type": "string"
+        }
+      }
+    },
+    "ingress": {
+      "type": "string",
+      "description": "Front door other nodes are reached through: <ingress>/<node>/<service>"
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "This box's services when not on loopback"
+    },
+    "repos": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Short repo name -> checkout path"
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "host_patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "machine": {
+            "type": "string",
+            "description": "The machine name this node's legs and usage carry, when it differs from the node name."
+          },
+          "coach": {
+            "type": "string",
+            "description": "Coach route this node answers to (NouGenRelay)."
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other names that route to this node."
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Words that route a relay leg to this node."
+          },
+          "msg_cli": {
+            "type": "string",
+            "description": "Path of the NouGenMsg CLI on this node, for ssh fallback."
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "Per-repo model choices on this box, e.g. code (local model NouGenCode runs) and code_open (model asked of NouGenOpen).",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "code_open": {
+          "type": "string"
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "description": "Local folders a repo needs that are not package checkouts, e.g. edge_ai.",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "edge_ai": {
+          "type": "string"
+        }
+      }
+    },
+    "relay_live": {
+      "type": "object",
+      "description": "Relay live daemon settings. self: extra <machine>/<agent> legs this box writes and should not wake on (its own machine/agent is always included).",
+      "properties": {
+        "self": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

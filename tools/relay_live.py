@@ -19,11 +19,12 @@ Cadence (all env, constants are logged fallbacks):
   NOUGEN_RELAY_LIVE_WAKE             wake file (default ~/.nougen/state/relay_live.wake)
   NOUGEN_RELAY_LIVE_WAKE_POLL_S      how often the sleeping daemon checks the wake file (default 0.5)
 
-Registry: NOUGEN_RELAY_DIR (default resolves Watchtower/NouGen/NouGenRelay beside this repo,
-then NOUGEN_RELAY_REPO), NOUGEN_RELAY_LIVE_CURSOR (~/.nougen/state/relay_live.json),
+Registry: NOUGEN_RELAY_DIR, then NOUGEN_RELAY_REPO, then the NouGenRelay checkout the mesh
+finds, NOUGEN_RELAY_LIVE_CURSOR (~/.nougen/state/relay_live.json),
 NOUGEN_RELAY_LIVE_FETCH=0 to skip git, NOUGEN_RELAY_LIVE_GIT_TIMEOUT_S (40),
-NOUGEN_RELAY_LIVE_SELF (machine/agent legs to skip, default
-"blade1tb/claude-cli,claude-app/g-whoentertains"), NOUGEN_RELAY_LIVE_MAX (legs per pass, 8).
+NOUGEN_RELAY_LIVE_SELF (machine/agent legs to skip; default is this box's own
+<machine>/<agent> from the mesh plus any listed under "relay_live": {"self": [...]}
+in mesh.json), NOUGEN_RELAY_LIVE_MAX (legs per pass, 8).
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
+from nougen_shards import mesh  # noqa: E402
 from nougen_shards.nougenmsg import AgentPinger  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _agy_live_delivery import (  # noqa: E402
@@ -60,10 +62,13 @@ def relay_dir() -> Path:
     for raw in (os.environ.get("NOUGEN_RELAY_DIR", ""), os.environ.get("NOUGEN_RELAY_REPO", "")):
         if raw.strip() and Path(raw).is_dir():
             return Path(raw)
-    guess = HERE.parent.parent / "NouGenRelay"
-    if guess.is_dir():
-        return guess
-    return Path.home() / ".nougen" / "relay"
+    try:
+        found = mesh.repo_dir("relay", str(HERE))
+    except Exception:  # noqa: BLE001 - discovery is best effort
+        found = None
+    if found:
+        return Path(found)
+    return mesh.home() / "relay"
 
 
 def cursor_path() -> Path:
@@ -396,8 +401,14 @@ def created_epoch(leg: dict) -> float | None:
 
 
 def self_labels() -> set:
-    raw = os.environ.get("NOUGEN_RELAY_LIVE_SELF", "blade1tb/claude-cli,claude-app/g-whoentertains")
-    return {x.strip() for x in raw.split(",") if x.strip()}
+    """Legs this daemon wrote itself, so it never wakes on its own posts."""
+    raw = os.environ.get("NOUGEN_RELAY_LIVE_SELF", "")
+    if raw.strip():
+        return {x.strip() for x in raw.split(",") if x.strip()}
+    labels = {f"{mesh.machine()}/{mesh.agent()}"}
+    extra = (mesh.load().get("relay_live") or {}).get("self") or []
+    labels.update(str(x).strip() for x in extra if str(x).strip())
+    return labels
 
 
 def render(leg: dict) -> str:

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nougen-tools/1",
+  "title": "nougen.tools.json: the tools one NouGen repo offers the mesh",
+  "type": "object",
+  "required": ["schema", "repo", "tools"],
+  "properties": {
+    "schema": {"const": "nougen-tools/1"},
+    "repo": {"enum": ["shards", "relay", "msg", "code", "design", "tracker", "open", "fleet-mcp", "claude", "portable"]},
+    "mesh_version": {"type": "string"},
+    "version": {"type": "string"},
+    "service": {"type": "string", "description": "Mesh service name whose endpoint http tools are sent to"},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "transport"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"},
+          "description": {"type": "string"},
+          "transport": {"enum": ["mcp", "python", "cli", "http"]},
+          "server": {"type": "string", "description": "mcp: module:attr of the MCP server or its builder"},
+          "tool": {"type": "string", "description": "mcp: tool name on that server when it differs from name"},
+          "entry": {"type": "string", "description": "python: module:function"},
+          "pythonpath": {"type": "array", "items": {"type": "string"}},
+          "argv": {"type": "array", "items": {"type": "string"}, "description": "cli: argv, {arg} and {arg?} are filled from args"},
+          "method": {"enum": ["GET", "POST", "PUT", "DELETE"]},
+          "path": {"type": "string"},
+          "args": {"type": "object", "description": "JSON Schema of the arguments"}
+        }
+      }
+    }
+  }
+}
