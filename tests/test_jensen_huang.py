@@ -142,9 +142,8 @@ def test_messages_tasks_and_per_task_model(monkeypatch):
         {"id": "p", "prompt": "from prompt", "model": "some/model"},
     ], lanes=2)
     assert all(r["status"] == "ok" for r in results)
-    assert seen[0] == ("auto", [{"role": "user", "content": "from messages"}])
-    assert seen[1][0] == "some/model"
-    assert seen[1][1] == [{"role": "user", "content": "from prompt"}]
+    assert ("auto", [{"role": "user", "content": "from messages"}]) in seen
+    assert ("some/model", [{"role": "user", "content": "from prompt"}]) in seen
 
 
 def test_summarize_empty_results():
