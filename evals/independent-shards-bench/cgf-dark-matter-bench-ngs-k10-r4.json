@@ -1,0 +1,162 @@
+{
+  "doc": "cgf-dark-matter.md",
+  "question": "According to this paper, what is the dark matter, what is the CGF, what are its key numbers (present density, equation of state, present oscillation), and how does the author say the theory can be tested?",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "ngs": [
+      {
+        "input": 4,
+        "cache_write": 4100,
+        "cache_read": 0,
+        "output": 791,
+        "stop": "end_turn",
+        "text": "**Dark matter:** The paper says the CGF *is* the dark matter. Dark matter is a classical phenomenon of the Standard Model. In the leading-order classical approximation the universe contains only dark matter, and ordinary matter enters only as a small perturbation from fluctuations.\n\n**The CGF:** The cosmological gauge field is a classical SU(2)-weak gauge field, B_i = b(t)\u03b3_i, with b(t) = k cn(z,k)/\u03b5. It produces the electroweak transition and then evolves as a non-relativistic fluid.\n\n**Key numbers:**\n- **Equation of state:** w_CGF = 0 (non-relativistic), though for a \u2264 a_EW the paper gives p = (1/3)\u03c1 \u2212 (1/(6\u03bb\u00b2))\u0127/t_Higgs\u2074.\n- **Present density:** \u03a9_CGF = 0.315, with \u03a9_\u039b = 0.685, so \u03a9_CGF + \u03a9_\u039b = 1 (curvature |\u03a9_k| < 0.001). The present values are k\u2080\u00b2 = 7.89\u00d710\u207b\u2075\u2076 and a\u2080 = 4.54\u00d710\u00b9\u2078 a_EW.\n- **Present oscillation:** The CGF oscillates harmonically at the bottom of the massive gauge potential, B^phys = k\u2080\u03c9_W cos(\u03c9_W t)\u03b3_i, with k\u2080 = 2.81\u00d710\u207b\u00b2\u2078 and \u03c9_W = 1.22\u00d710\u00b2\u2076 s\u207b\u00b9. The period is 5.15\u00d710\u207b\u00b2\u2076 s.\n\n**Testing:** The author proposes two approaches:\n1. Construct the initial thermal state of the fluctuations and calculate its time evolution to see whether the right amount of ordinary matte",
+        "round": 1,
+        "cost": 0.012159
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 4100,
+        "output": 683,
+        "stop": "end_turn",
+        "text": "**Dark matter:** According to the paper, the dark matter is the CGF itself. It is a classical phenomenon of the Standard Model, and the classical universe contains only dark matter, with ordinary matter arising at next-to-leading order from fluctuations.\n\n**CGF:** The cosmological gauge field is a classical SU(2)-weak gauge field, B_i = b(t)\u03b3_i, with b(t) = k cn(z,k)/\u03b5. After the electroweak transition it evolves as a non-relativistic fluid.\n\n**Key numbers:**\n- **Present density:** \u03a9_CGF = 0.315 and \u03a9_\u039b = 0.685, so \u03a9_CGF + \u03a9_\u039b = 1 at the present time (H = H_0). The present curvature is |\u03a9_curvature| < 0.001.\n- **Equation of state:** w_CGF = 0 (non-relativistic). For a \u2264 a_EW, p_CGF = (1/3)\u03c1_CGF \u2212 (1/(6\u03bb\u00b2))\u0127/t_Higgs\u2074.\n- **Present oscillation:** The CGF oscillates harmonically at the bottom of the massive gauge potential, with B^phys = k\u2080\u03c9_W cos(\u03c9_W t)\u03b3_i. Here k\u2080 = 2.81\u00d710\u207b\u00b2\u2078, \u03c9_W = 1.22\u00d710\u00b2\u2076 s\u207b\u00b9, and the period is 5.15\u00d710\u207b\u00b2\u2076 s.\n\n**Testing:** The paper proposes two approaches. First, compute the time evolution of the thermal initial state to check whether the right amount of ordinary matter results. Second, determine whether the CGF can be detected. This involves solving the TOV equ",
+        "round": 2,
+        "cost": 0.003829
+      }
+    ]
+  },
+  "order": "raw-first",
+  "ngs_ingest": {
+    "ingested": 33,
+    "sections": [
+      "CGF dark matter (bench) \u2014 Int",
+      "CGF dark matter (bench) \u2014 Abstra",
+      "CGF dark matter (bench) \u2014 1 Introducti",
+      "CGF dark matter (bench) \u2014 1.1 Assumptio",
+      "CGF dark matter (bench) \u2014 1.2 The CGF cosmolo",
+      "CGF dark matter (bench) \u2014 1.3 Physical paramete",
+      "CGF dark matter (bench) \u2014 2 Spin(4)-symmetric initial conditi",
+      "CGF dark matter (bench) \u2014 2.2 Initial CGF ener",
+      "CGF dark matter (bench) \u2014 2.3 Coordinates for local physi",
+      "CGF dark matter (bench) \u2014 2.4 Start of the electroweak transition at a = a_",
+      "CGF dark matter (bench) \u2014 2.5 CGF density and pressure for a <= a_",
+      "CGF dark matter (bench) \u2014 2.6 Realizing the electroweak transiti",
+      "CGF dark matter (bench) \u2014 2.7 Adiabatic condition for a <= a_",
+      "CGF dark matter (bench) \u2014 2.8 Temperature from the C",
+      "CGF dark matter (bench) \u2014 3 Mathematical literatu",
+      "CGF dark matter (bench) \u2014 4.1 Oscillating CGF at a >= a_",
+      "CGF dark matter (bench) \u2014 4.2 Adiabatic invaria",
+      "CGF dark matter (bench) \u2014 4.3 a as a function of the elliptic parameter k",
+      "CGF dark matter (bench) \u2014 4.4 CGF density and pressure after a_",
+      "CGF dark matter (bench) \u2014 4.5 Parametrize the time evolution by k",
+      "CGF dark matter (bench) \u2014 5.1 Omega_CGF + Omega_Lambda = 1 in the prese",
+      "CGF dark matter (bench) \u2014 5.2 w_CGF approximately 0 after 10^2 a_",
+      "CGF dark matter (bench) \u2014 5.3 The CGF in the prese",
+      "CGF dark matter (bench) \u2014 5.4 CGF equation of sta",
+      "CGF dark matter (bench) \u2014 5.5 Adiabatic condition for a >= a_",
+      "CGF dark matter (bench) \u2014 6.1 Testing the CGF cosmolo",
+      "CGF dark matter (bench) \u2014 6.2 Spin(4) and fluctuatio",
+      "CGF dark matter (bench) \u2014 6.3 Thermalization before a_",
+      "CGF dark matter (bench) \u2014 6.4 CGF temperature after a_",
+      "CGF dark matter (bench) \u2014 6.5 CP violati",
+      "CGF dark matter (bench) \u2014 6.6 Semi-classical approximati",
+      "CGF dark matter (bench) \u2014 6.7 Neutrin",
+      "CGF dark matter (bench) \u2014 Appendix"
+    ]
+  },
+  "recalled_chars": 10645,
+  "recall": {
+    "source": "ngs",
+    "k": 10,
+    "token_budget": 4000,
+    "token_budget_unit": "engine tokens (chars/4 estimate); 4000 tokens is the same NUMBER as the fleet's 4000-char budget but ~4x the chars. R4: the budget binds, not k -- hits are returned in rank order until it is spent, past k when it allows; a fact that does not fit full is skipped for a smaller one that does, and a title-only stub is returned only for the highest-ranked deferred facts needed to reach k.",
+    "query": "CGF dark matter cosmological gauge field Omega_CGF equation of state dark matter stars testing TOV",
+    "abstained": 0,
+    "arms_complete": 14,
+    "timed_out": 0,
+    "tokens_used": 2777,
+    "tokens_budget": 4000,
+    "best_confidence": 0.9,
+    "min_confidence": 0.35,
+    "confidence_calibrated": 0,
+    "hits": [
+      {
+        "title": "CGF dark matter (bench) \u2014 6.1 Testing the CGF cosmolo",
+        "score": 3.26008,
+        "confidence": 0.9,
+        "tokens": 333,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 1 Introducti",
+        "score": 1.89821,
+        "confidence": 0.7,
+        "tokens": 692,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 5.3 The CGF in the prese",
+        "score": 1.3851,
+        "confidence": 0.5,
+        "tokens": 245,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 2.5 CGF density and pressure for a <= a_",
+        "score": 1.28105,
+        "confidence": 0.5,
+        "tokens": 118,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 5.1 Omega_CGF + Omega_Lambda = 1 in the prese",
+        "score": 1.09485,
+        "confidence": 0.5,
+        "tokens": 333,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 Abstra",
+        "score": 1.04081,
+        "confidence": 0.5,
+        "tokens": 326,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 2.8 Temperature from the C",
+        "score": 0.941236,
+        "confidence": 0.5,
+        "tokens": 257,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 2 Spin(4)-symmetric initial conditi",
+        "score": 0.634845,
+        "confidence": 0.5,
+        "tokens": 320,
+        "stub": 0
+      },
+      {
+        "title": "CGF dark matter (bench) \u2014 6.3 Thermalization before a_",
+        "score": 0.622256,
+        "confidence": 0.5,
+        "tokens": 153,
+        "stub": 0
+      }
+    ]
+  },
+  "totals": {
+    "ngs": 0.015988,
+    "raw": null,
+    "ratio": null,
+    "saved_pct": null
+  }
+}

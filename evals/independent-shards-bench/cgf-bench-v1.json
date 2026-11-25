@@ -1,0 +1,75 @@
+{
+  "doc": "cgf-dark-matter.md",
+  "question": "According to this paper, what is the dark matter, what is the CGF, what are its key numbers (present density, equation of state, present oscillation), and how does the author say the theory can be tested? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 11939,
+        "cache_read": 0,
+        "output": 684,
+        "stop": "end_turn",
+        "text": "Per the document, the dark matter is the cosmological gauge field (CGF): a classical, Spin(4)-symmetric SU(2)-weak gauge field, B_i = b(t)\u03b3_i, that drives the expanding universe after the electroweak transition. The paper calls it \"a classical phenomenon of the Standard Model\" and says the leading-order universe contains only this dark matter, with ordinary matter arising at next-to-leading order from Standard Model fluctuations.\n\nKey numbers:\n- **Present density:** \u03a9_CGF = 0.315 at H = H\u2080, with \u03a9_\u039b = 0.685 and |\u03a9_curvature| < 0.001, so \u03a9_CGF + \u03a9_\u039b = 1 (the paper's stated values are \u03a9_CDM = 0.266 and \u03a9_ordinary = 0.049).\n- **Equation of state:** w_CGF \u2248 0 after about 10\u00b2 a_EW; \u03c1_CGF = 0.890 m_Higgs/a\u00b3.\n- **Present oscillation:** B^phys = k \u03c9_W cos(\u03c9_W t) \u03b3_i, with \u03c9_W = 1.22 \u00d7 10\u00b2\u2076 s\u207b\u00b9, k\u2080 = 2.81 \u00d7 10\u207b\u00b2\u2078, and period 2\u03c0/\u03c9_W = 5.15 \u00d7 10\u207b\u00b2\u2076 s.\n\nTesting: the author proposes (1) constructing the initial thermal state of the fluctuations and checking whether the right amount of ordinary matter results; and (2) asking whether the CGF can be detected. For the second, he suggests CGF fluctuations collapse into self-gravitating dark matter stars (mass up to 9.14 \u00d7 10\u207b\u2076 solar masses, radius 5",
+        "round": 1,
+        "cost": 0.027302
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 11939,
+        "output": 714,
+        "stop": "end_turn",
+        "text": "**Dark matter and CGF:** According to the paper, the dark matter is the cosmological gauge field (CGF), a classical SU(2)-weak gauge field configuration that is a phenomenon of the Standard Model. The CGF is described by a single degree of freedom b(t), an anharmonic oscillator solved by elliptic functions, and it is the only matter in the leading-order classical universe. Ordinary matter appears only at next-to-leading order, as a small perturbation.\n\n**Key numbers:**\n- **Present density:** Omega_CGF = 0.315 at H = H_0 (with Omega_Lambda = 0.685), so Omega_CGF + Omega_Lambda = 1 given |Omega_curvature| < 0.001. The CGF energy density after 10^2 a_EW is rho_CGF = 0.890 m_Higgs/a^3.\n- **Equation of state:** w_CGF approximately 0 (non-relativistic perfect fluid) from about 10^2 a_EW onward; w \u2248 1/3 before the electroweak transition. At late times, p = (c_a/2) rho^2 with c_a = 0.992.\n- **Present oscillation:** The CGF oscillates harmonically at the bottom of the massive gauge field potential, B_CGF,i = k omega_W cos(omega_W t) gamma_i, with omega_W = 1.22 x 10^26 s^-1, period 5.15 x 10^-26 s, and k_0 = 2.81 x 10^-28.\n\n**Testing:** The author proposes two approaches: (1) construct the ",
+        "round": 2,
+        "cost": 0.004767899999999999
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1816,
+        "cache_read": 0,
+        "output": 433,
+        "stop": "end_turn",
+        "text": "The recalled context doesn't answer this. None of it mentions dark matter, a CGF (I can't tell whether that's a field, a model, or an acronym for something else), a paper, or any of the numbers you asked about: present density, equation of state, or present oscillation. It also doesn't describe how the author proposes to test anything.\n\nThe context covers something else: NouGen connector authentication. It includes a canon decision (ID 32016) that every connector should use a Canva/Dropbox-style OAuth flow with a branded login page, Google account chooser, consent page, and redirect. It also records that the flow was proven on November 2, 2026, and that a Cloudflare Configuration Rule was added to fix a 403 error.\n\nThe three follow-up lookups (shard IDs 37562, 37149, and 33764) all returned \"not found\" across databases 1\u20139, so they didn't add anything relevant.\n\nIf you can share the paper or the relevant text, I can answer from that. Otherwise I can't give those specifics without guessing.",
+        "round": 1,
+        "cost": 0.005801
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1816,
+        "output": 365,
+        "stop": "end_turn",
+        "text": "The recalled context doesn't answer this. None of it covers dark matter, a \"CGF,\" a paper, or any cosmology. The three shard lookups (37562, 37149, 33764) returned \"found: false\" across all nine databases, so those IDs don't appear in the available records.\n\nThe only relevant material is a set of records about NouGen connector authentication: the OAuth flow (register, authorize, Google sign-in, consent, token), the proven connection on Nov 2, 2026, and a Cloudflare rule that disables Browser Integrity Check for eye.nougenai.com. The mention of a physics paper isn't there.\n\nIf you can share the paper or its text, or give me a recall query that might find it (a title, author, or the term \"CGF\" with more context), I can answer from that.",
+        "round": 2,
+        "cost": 0.0020106
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 3874,
+  "recall": {
+    "candidates": 10,
+    "top_k": 5,
+    "context_budget": 4000,
+    "effective_budget": 4000,
+    "min_term_len": 5,
+    "passage_chars": 900,
+    "heuristic": "DISTINCTIVE_TERM_COVERAGE"
+  },
+  "totals": {
+    "raw": 0.0320699,
+    "shards": 0.0078116,
+    "ratio": 4.105420144400635,
+    "saved_pct": 75.64195709995978
+  }
+}

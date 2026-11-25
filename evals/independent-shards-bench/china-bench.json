@@ -1,0 +1,67 @@
+{
+  "doc": "china-ma.md",
+  "question": "According to this article, who was the official, how was he recruited, what did he provide, and what was the sentence? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 858,
+        "cache_read": 0,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "**Who:** An official surnamed Ma. The document gives no further identifying details.\n\n**How he was recruited:** While working abroad, he was approached by a foreign intelligence service. An operative identified as \"Kailin\" often arranged meetings with him, citing an interest in learning Chinese. Kailin later introduced him to a colleague, who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate.\n\n**What he provided:** He signed a cooperation agreement with \"confidentiality\" and \"loyalty\" clauses and received fixed monthly payments. He supplied 35 pieces of information classified as national secrets and received payments worth over 1 million",
+        "round": 1,
+        "cost": 0.00372
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 858,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "**The official:** A Chinese official surnamed Ma. The document gives no first name, title, or department.\n\n**How he was recruited:** While working abroad, he was approached and recruited by a foreign intelligence service. An operative identified as \"Kailin\" frequently arranged meetings with him, citing an interest in learning Chinese. Kailin later introduced him to a colleague, who threatened to report his earlier disclosures to Chinese authorities if he refused to cooperate. Ma signed a cooperation agreement with clauses on \"conf",
+        "round": 2,
+        "cost": 0.0020898
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1226,
+        "cache_read": 0,
+        "output": 391,
+        "stop": "end_turn",
+        "text": "The recalled context doesn't contain enough of the article to answer these questions. It has the headline, \"China sentences an official to death for spying and leaking national secrets,\" and a truncated summary saying \"A Chinese official has been sentenced to death for passin[g state secrets to a foreign spy].\" It also notes that the CNN page was paywalled and only partially fetched.\n\nBased on the recalled text, I can confirm:\n- **Official:** Not named in the recalled context.\n- **Recruitment:** Not described.\n- **What was provided:** Described only as state secrets passed to a foreign spy.\n- **Sentence:** Death sentence, per the headline and summary.\n\nTo get the full details, the article itself would need to be read, since the recalled fragments cut off before the specifics.",
+        "round": 1,
+        "cost": 0.004411
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1226,
+        "output": 400,
+        "stop": "max_tokens",
+        "text": "The recalled context doesn't contain these details. It includes only:\n\n- **Headline:** \"China sentences an official to death for spying and leaking national secrets\"\n- **Lead (truncated):** \"A Chinese official has been sentenced to death for passin\u2026\"\n- **Source:** CNN, Sylvie Zhuang, published Nov 24, 2026. The fetched page was partial and paywalled.\n\nSo I can't tell you:\n- **Who the official was** (no name, title, or agency)\n- **How he was recruited** (no mention of the recruiting party or method)\n- **What he provided** (only \"state secrets\" is implied by the headline)\n- **The sentence details** beyond the death sentence in the headline and",
+        "round": 2,
+        "cost": 0.0021265999999999998
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 2473,
+  "recalled_shards": 10,
+  "totals": {
+    "raw": 0.0058098,
+    "shards": 0.006537599999999999,
+    "ratio": 0.8886747430249634,
+    "saved_pct": -12.527109366931711
+  }
+}

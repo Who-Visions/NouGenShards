@@ -1,0 +1,77 @@
+{
+  "doc": "cgf-dark-matter.md",
+  "question": "According to this paper, what is the dark matter, what is the CGF, what are its key numbers (present density, equation of state, present oscillation), and how does the author say the theory can be tested? Give the specifics in under 200 words.",
+  "model": "claude-haiku-5-5",
+  "prices": {
+    "in": 1.0,
+    "out": 5.0,
+    "read": 0.1,
+    "write": 2.0
+  },
+  "rounds": 2,
+  "arms": {
+    "raw": [
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 11939,
+        "output": 680,
+        "stop": "end_turn",
+        "text": "**Dark matter:** According to the paper, the dark matter is the cosmological gauge field (CGF), a classical phenomenon of the Standard Model: an SU(2)-weak gauge field b(t) in a Spin(4)-symmetric initial condition on a 3-sphere universe. In the leading classical approximation, the universe contains only this dark matter, with ordinary matter appearing at next-to-leading order.\n\n**Key numbers:**\n- **Present density:** Omega_CGF = 0.315 at H = H_0, with Omega_Lambda = 0.685 and |Omega_curvature| < 0.001, so Omega_CGF + Omega_Lambda = 1. The asymptotic density is rho_CGF = 0.890 m_Higgs/a^3.\n- **Equation of state:** w_CGF approximately 0 after about 10^2 a_EW (w = (3/8 - 3g\u00b2/(64\u03bb\u00b2))k\u00b2 \u2192 0), so it behaves as a non-relativistic perfect fluid.\n- **Present oscillation:** The CGF oscillates harmonically at the bottom of the W-mass potential, B^phys = k\u2080\u03c9_W cos(\u03c9_W t) \u03b3_i, with \u03c9_W = 1.22 \u00d7 10\u00b2\u2076 s\u207b\u00b9, period 5.15 \u00d7 10\u207b\u00b2\u2076 s, and k\u2080 = 2.81 \u00d7 10\u207b\u00b2\u2078.\n\n**Testing:** The paper proposes (1) constructing the initial thermal state of the Standard Model fluctuations and checking whether the right amount of ordinary matter (Omega_ordinary/Omega_CDM) results; and (2) detecting the CGF. It suggests the CG",
+        "round": 1,
+        "cost": 0.004597899999999999
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 11939,
+        "output": 696,
+        "stop": "end_turn",
+        "text": "**Dark matter:** According to the paper, the dark matter is the cosmological gauge field (CGF), a classical phenomenon of the Standard Model. The classical universe contains only dark matter, and ordinary matter arises at next-to-leading order from Standard Model fluctuations.\n\n**CGF:** An SU(2)-weak gauge field B_i = b(t)\u03b3_i with Spin(4) symmetry, described by an anharmonic oscillator b(t) = k cn(z,k)/\u03b5. It drives the electroweak transition at a_EW = 0.585 \u0127/m_Higgs, then evolves as a non-relativistic perfect fluid.\n\n**Key numbers:**\n- Present density: \u03a9_CGF + \u03a9_\u039b = 1, with \u03a9_CGF = 0.315 at H = H\u2080 and \u03a9_\u039b = 0.685 (|\u03a9_curvature| < 0.001).\n- Equation of state: w_CGF \u2248 0 after about 10\u00b2 a_EW (w = (3/8 \u2212 3g\u00b2/(64\u03bb\u00b2))k\u00b2 \u2192 0). Asymptotically, \u03c1\u0302 \u2192 0 with p = (c_a/2)\u03c1\u00b2, c_a = 0.992.\n- Present oscillation: harmonic at the bottom of the W-mass potential, with \u03c9_W = 1.22\u00d710\u00b2\u2076 s\u207b\u00b9, period 5.15\u00d710\u207b\u00b2\u2076 s, and k\u2080 = 2.81\u00d710\u207b\u00b2\u2078.\n\n**Testing:** The author lists two routes: (1) construct the initial thermal state of the fluctuations and check whether the correct amount of ordinary matter (\u03a9_ordinary/\u03a9_CDM) results; (2) detect the CGF directly, including via TOV dark matter stars (masses up to 9.14\u00d710\u207b",
+        "round": 2,
+        "cost": 0.0046779
+      }
+    ],
+    "shards": [
+      {
+        "input": 4,
+        "cache_write": 1541,
+        "cache_read": 0,
+        "output": 979,
+        "stop": "end_turn",
+        "text": "**Dark matter and CGF:** The dark matter is a classical phenomenon of the Standard Model. The CGF (classical SU(2)-weak cosmological gauge field) is the initial condition. After the electroweak transition, it evolves as a non-relativistic fluid to become the present dark matter. At leading order the universe contains only dark matter, and ordinary matter appears as a small perturbation from Standard Model field fluctuations.\n\n**Key numbers:**\n- **Equation of state:** w_CGF = 0. The paper says the dark matter equation of state is derived in analytic form, but the recalled context does not give that expression.\n- **Before the electroweak transition (a \u2264 a_EW):** the gauge field contributes a perfect fluid with w = 1/3, and the Higgs vacuum energy contributes a perfect fluid with w = -1.\n- **Dark matter stars:** masses from 0 up to 9.14 \u00d7 10\u207b\u2076 solar masses, with radii between 5.23 cm and 13.6 cm. For M above 5.09 \u00d7 10\u207b\u2076 solar masses, multiple radii are possible, which could release about 10\u2074\u00b9 J in about 10\u207b\u00b9\u2070 s.\n- **Present density and present oscillation:** the recalled context gives neither value.\n\n**Testing:** The paper proposes two approaches. (1) Construct the initial thermal sta",
+        "round": 1,
+        "cost": 0.007981
+      },
+      {
+        "input": 4,
+        "cache_write": 0,
+        "cache_read": 1541,
+        "output": 946,
+        "stop": "end_turn",
+        "text": "**Dark matter and the CGF:** The paper says the CGF, a classical SU(2)-weak cosmological gauge field, is the initial condition. After the electroweak transition it behaves as a non-relativistic fluid and becomes the present dark matter. At leading order the universe contains only this dark matter. Ordinary matter appears at the next order as a small perturbation from Standard Model field fluctuations.\n\n**Key numbers:**\n- Equation of state: w_CGF = 0, derived in analytic form.\n- Dark matter stars (TOV solutions): mass up to 9.14 \u00d7 10\u207b\u2076 solar masses, radii between 5.23 cm and 13.6 cm.\n- For masses above 5.09 \u00d7 10\u207b\u2076 solar masses, multiple radii are possible, which could release about 10\u2074\u00b9 J in about 10\u207b\u00b9\u2070 s.\n- Present density and present oscillation: the recalled context does not give values for either, so I can't report them.\n\n**Testing:** The author proposes two approaches:\n1. Construct the initial thermal state of the fluctuations and evolve it in time to check whether the right amount of ordinary matter results. The companion paper begins this.\n2. Detect the CGF directly. Ask what form it takes today and how it interacts with ordinary matter. Fluctuations are expected to have coll",
+        "round": 2,
+        "cost": 0.0048881
+      }
+    ]
+  },
+  "order": "shards-first",
+  "recalled_chars": 3897,
+  "recall": {
+    "candidates": 10,
+    "top_k": 5,
+    "context_budget": 4000,
+    "effective_budget": 4000,
+    "min_term_len": 5,
+    "passage_chars": 900,
+    "query": "CGF dark matter cosmological gauge field Omega_CGF equation of state dark matter stars testing TOV",
+    "query_used": "CGF dark matter cosmological gauge field Omega_CGF equation of state dark matter stars testing TOV",
+    "heuristic": "DISTINCTIVE_TERM_COVERAGE"
+  },
+  "totals": {
+    "raw": 0.009275799999999999,
+    "shards": 0.012869100000000001,
+    "ratio": 0.7207807849810786,
+    "saved_pct": -38.73843765497318
+  }
+}
