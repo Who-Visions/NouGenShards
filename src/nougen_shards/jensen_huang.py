@@ -96,8 +96,8 @@ class JensenHuang:
                 "error": f"bad task: {exc}",
                 "latency_s": round(time.perf_counter() - started, 3),
             }
-        client = self._new_client()
         try:
+            client = self._new_client()
             content = client.chat(model, messages, max_tokens=self.max_tokens,
                                   fallbacks=self.models)
         except Exception as exc:  # noqa: BLE001 - one lane must never kill the batch
@@ -138,12 +138,18 @@ class JensenHuang:
         count for this call. A missing key, a bad task, or a failing lane
         records a per-task error; nothing here raises for a single task.
         """
+        import contextvars
         worker_count = _resolve_lanes(lanes if lanes is not None else self.lanes)
         task_list = list(tasks)
-        indexed = [(task.get("id", index), task) for index, task in enumerate(task_list)]
+        indexed = [
+            (task.get("id", index) if isinstance(task, dict) else index, task)
+            for index, task in enumerate(task_list)
+        ]
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            futures = [pool.submit(self._run_one, task, task_id)
-                       for task_id, task in indexed]
+            futures = [
+                pool.submit(contextvars.copy_context().run, self._run_one, task, task_id)
+                for task_id, task in indexed
+            ]
             return [future.result() for future in futures]
 
     @staticmethod
