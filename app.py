@@ -3560,6 +3560,70 @@ def _relay_handoffs_dir() -> "Path":
     return Path(core.active_home()) / "relay" / ".handoffs"
 
 
+def _relay_registry_root() -> "Optional[Path]":
+    """The owner's NouGenRelay git clone, so legs land where the fleet reads them.
+
+    ``NOUGEN_RELAY_REGISTRY`` names it explicitly; otherwise ``~/NouGen/nougenrelay``
+    is used when it is a git checkout. None means no registry clone on this box, and
+    legs fall back to the unpublished ``active_home()/relay`` board.
+    """
+    from pathlib import Path
+    explicit = os.environ.get("NOUGEN_RELAY_REGISTRY", "").strip()
+    candidates = [Path(explicit).expanduser()] if explicit else [Path.home() / "NouGen" / "nougenrelay"]
+    for root in candidates:
+        if (root / ".git").exists():
+            return root
+    return None
+
+
+def _relay_identity(agent: str = "") -> "tuple[str, str]":
+    """(machine, agent) for a leg byline, using the relay CLI's conventions.
+
+    Machine: NOUGEN_MACHINE, then the fleet node name, then the hostname.
+    Agent: the caller's value, then NOUGEN_AGENT, then "mcp". Never a hardcoded lane.
+    """
+    import socket
+
+    def slug(value: str) -> str:
+        return re.sub(r"[^a-z0-9._-]+", "-", value.strip().lower()).strip("-")
+
+    machine = os.environ.get("NOUGEN_MACHINE", "").strip()
+    if not machine:
+        try:
+            from nougen_shards.nougenmsg import get_current_node
+            node = get_current_node()
+        except Exception:
+            node = "standalone"
+        machine = node if node and node != "standalone" else socket.gethostname().split(".")[0]
+    agent = agent.strip() or os.environ.get("NOUGEN_AGENT", "").strip() or "mcp"
+    return slug(machine) or "unknown-machine", slug(agent) or "mcp"
+
+
+def _relay_publish(root: "Path", files: "list", message: str, attempts: int = 3) -> dict:
+    """Commit ``files`` in the registry clone and push, rebasing on a race. Never raises."""
+    def git(*args: str) -> "subprocess.CompletedProcess":
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=120)
+
+    rels = [str(f.relative_to(root)) for f in files]
+    added = git("add", "--", *rels)
+    if added.returncode != 0:
+        return {"published": False, "error": added.stderr.strip()[-300:]}
+    committed = git("commit", "-m", message, "--", *rels)
+    if committed.returncode != 0:
+        return {"published": False, "error": (committed.stderr or committed.stdout).strip()[-300:]}
+    error = ""
+    for _ in range(attempts):
+        pushed = git("push", "-q")
+        if pushed.returncode == 0:
+            sha = git("rev-parse", "--short=9", "HEAD").stdout.strip()
+            return {"published": True, "sha": sha}
+        error = pushed.stderr.strip()[-300:]
+        if git("pull", "-q", "--rebase").returncode != 0:
+            git("rebase", "--abort")
+            break
+    return {"published": False, "committed": True, "error": error or "rebase failed; leg is committed locally"}
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_open_legs(limit: int = 15) -> list:
@@ -3596,9 +3660,10 @@ def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
 
 @node_mcp.tool()
 @_offloaded
-def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
+def relay_claim_leg(leg_id: str, claimed_by: str = "") -> dict:
     """Claim an open relay leg atomically to prevent duplicate swarm execution."""
     from pathlib import Path
+    claimed_by = claimed_by.strip() or "/".join(_relay_identity())
     claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
@@ -3620,15 +3685,26 @@ def relay_create_leg(
     target: str = "@all",
     body: str = "",
     branch: str = "main",
-    stack: str = "python"
+    stack: str = "python",
+    agent: str = "",
+    publish: bool = True
 ) -> dict:
-    """Create and publish a new coordination handoff leg on the NouGenRelay board."""
+    """Create and publish a new coordination handoff leg on the NouGenRelay board.
+
+    The leg is bylined with this box's lane (NOUGEN_MACHINE / fleet node / hostname)
+    and ``agent`` (or NOUGEN_AGENT), written as the .md + .json pair the relay CLI
+    reads, and, for the owner with a registry clone, committed and pushed.
+    """
     from pathlib import Path
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    leg_id = f"{stamp}__phoebus__antigravity"
-    handoffs_dir = _relay_handoffs_dir()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    machine, agent = _relay_identity(agent)
+    leg_id = f"{stamp}__{machine}__{agent}"
+    # Owner legs go into the registry clone the fleet pulls; tenants keep their own vault board.
+    registry = None if core.is_tenant_context() else _relay_registry_root()
+    handoffs_dir = registry / ".handoffs" if (registry is not None and publish) else _relay_handoffs_dir()
     handoffs_dir.mkdir(parents=True, exist_ok=True)
-    md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
+    md_content = f"""# 🤝 Git Handoff — {machine} / {agent}
 
 **Goal**: {goal}
 **Target**: {target}
@@ -3646,7 +3722,31 @@ Verified and acknowledged by target nodes.
     leg_file = handoffs_dir / f"{leg_id}.md"
     with open(leg_file, "w", encoding="utf-8") as f:
         f.write(md_content)
-    return {"leg_id": leg_id, "file": str(leg_file), "status": "created"}
+    meta = {
+        "id": leg_id,
+        "machine": machine,
+        "agent": agent,
+        "goal": goal,
+        "target": target,
+        "branch": branch,
+        "created_utc": now.isoformat(),
+        "stack": {"manifests": [], "frameworks": [stack] if stack else []},
+        "status": "open",
+        "relay": [],
+    }
+    meta_file = handoffs_dir / f"{leg_id}.json"
+    with open(meta_file, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+    result = {"leg_id": leg_id, "file": str(leg_file), "meta_file": str(meta_file), "status": "created"}
+
+    if not publish:
+        result["published"] = False
+    elif registry is None:
+        result.update(published=False, error="no NouGenRelay git clone (set NOUGEN_RELAY_REGISTRY); leg is local only")
+    else:
+        result.update(_relay_publish(registry, [leg_file, meta_file], f"handoff({machine}): {goal}"[:200]))
+    return result
 
 
 @node_mcp.tool()
@@ -3655,10 +3755,11 @@ def relay_ack_leg(
     leg_id: str,
     code_artifact: str,
     test_result: str,
-    observer_node: str = "phoebus"
+    observer_node: str = ""
 ) -> dict:
     """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
     from pathlib import Path
+    observer_node = observer_node.strip() or _relay_identity()[0]
     claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
