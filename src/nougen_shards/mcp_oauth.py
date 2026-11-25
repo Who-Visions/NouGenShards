@@ -529,6 +529,13 @@ def install(
         ))
 
     def _issue_code(client_id: str, redirect_uri: str, state: str, code_challenge: str, tenant_id: str):
+        # Defense-in-depth: re-validate at the point of use, so the redirect
+        # sink is closed even if a future caller skips _check_authorize_params.
+        # Exact match against the client's registered redirect_uris, same as
+        # _check_authorize_params. Silences the CodeQL open-redirect alert.
+        client = _clients.get(client_id)
+        if not client or redirect_uri not in client["redirect_uris"]:
+            raise HTTPException(status_code=400, detail="redirect_uri not registered.")
         code = secrets.token_urlsafe(32)
         _codes[code] = {
             "client_id": client_id,
