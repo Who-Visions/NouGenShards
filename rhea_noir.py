@@ -350,6 +350,7 @@ def _run_tool(call: dict) -> dict:
             return {"error": "relay lane not configured "
                              "(NOUGEN_RELAY_GITHUB_TOKEN / GITHUB_TOKEN unset)"}
         import base64
+        leg_id = str(call.get("id") or "").strip()
         def _gh(path):
             req = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}",
                                          headers={"Authorization": f"Bearer {gh_token}",
