@@ -3202,7 +3202,7 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal",
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
     # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
     # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
-    from nougen_shards.nougenmsg import NouGenMsgBus, target_unknown
+    from nougen_shards.nougenmsg import NouGenMsgBus, delivery_status, target_unknown
     clean_target = target.lstrip("@").lower() if target else "all"
     refusal = target_unknown(clean_target)
     if refusal:
@@ -3214,7 +3214,7 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal",
     res = NouGenMsgBus.send_resolved(clean_target, message, background=_msg_fanout_async(),
                                      origin=fwd, forwarded=fwd is not None)
     return {
-        "status": "delivered",
+        "status": delivery_status(res),
         "target": target,
         "priority": priority,
         "results": res

@@ -1317,6 +1317,53 @@ class AgentPinger:
 
 
 
+def delivery_status(res: Dict[str, Any]) -> str:
+    """One honest word for a send_resolved() result.
+
+    "delivered" only when every route answered without an error and none said
+    its delivery was unverified; "unverified" when a route took the message but
+    reported delivery_verified:false (Claude pipes, by design); "queued" when a
+    route was handed to a background send or only an inbox file was dropped;
+    "partial" when some routes failed; "failed" when all did; the refusal
+    status when the target did not resolve. A tool must never say delivered
+    for a queued or unverified send.
+    """
+    if not isinstance(res, dict):
+        return "failed"
+    if res.get("delivered") is False:
+        return str(res.get("status") or "failed")
+    results = res.get("results")
+    values = list(results.values()) if isinstance(results, dict) else []
+    if not values:
+        return "failed"
+
+    def _reached_nobody(v: Dict[str, Any]) -> bool:
+        # Claude pipes report delivered as the list of sessions written to;
+        # an empty list (registered:0) reached no one.
+        return isinstance(v.get("delivered"), list) and not v["delivered"]
+
+    def _bad(v: Any) -> bool:
+        if isinstance(v, str):
+            return v.startswith(("Error:", "Error "))
+        if isinstance(v, dict):
+            if v.get("delivered") is False or str(v.get("status", "")).lower() in {"failed", "error"}:
+                return True
+            return _reached_nobody(v) and not v.get("inbox_file")
+        return False
+
+    bad = sum(1 for v in values if _bad(v))
+    if bad == len(values):
+        return "failed"
+    if bad:
+        return "partial"
+    dicts = [v for v in values if isinstance(v, dict)]
+    if any(v.get("queued") or _reached_nobody(v) for v in dicts):
+        return "queued"
+    if any(v.get("delivery_verified") is False for v in dicts):
+        return "unverified"
+    return "delivered"
+
+
 class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
 

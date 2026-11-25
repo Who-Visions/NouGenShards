@@ -48,10 +48,27 @@ def _known_nodes() -> dict:
 KNOWN_NODES = _known_nodes()
 
 
+def _msg_token() -> str:
+    tok = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from nougen_shards.keymaker import get_secret
+        return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"cc_msg: no /msg token from keymaker ({type(exc).__name__}); sending without X-NGS-Token", file=sys.stderr)
+        return ""
+
+
 def send_http(host: str, port: int, payload: dict) -> dict:
     url = f"http://{host}:{port}/msg"
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", "User-Agent": "cc_msg_parity/1.0"})
+    headers = {"Content-Type": "application/json", "User-Agent": "cc_msg_parity/1.0"}
+    token = _msg_token()
+    if token:
+        headers["X-NGS-Token"] = token  # /msg answers 401 without it once auth is latched
+    req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=3.0) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
