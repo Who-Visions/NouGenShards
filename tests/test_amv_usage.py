@@ -365,3 +365,15 @@ def test_reader_skips_malformed_rows_and_ignores_other_sources(tmp_path):
     rows, malformed = read_usage_events(ledger)
     assert len(rows) == 1
     assert malformed == 1
+
+
+@pytest.mark.parametrize("junk", ["null", "[]", "7", '"text"', "[{\"event_id\": \"event-1\"}]"])
+def test_append_skips_non_object_rows_instead_of_crashing(tmp_path, junk):
+    ledger = tmp_path / "usage.jsonl"
+    ledger.write_text(junk + "\n", encoding="utf-8")
+    event = _event()
+    assert append_usage_event(event, ledger) is True
+    assert append_usage_event(event, ledger) is False
+    rows, malformed = read_usage_events(ledger)
+    assert [r["event_id"] for r in rows] == ["event-1"]
+    assert malformed == 0

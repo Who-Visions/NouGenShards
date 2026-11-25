@@ -241,10 +241,13 @@ def append_usage_event(event: AMVUsageEvent, path: str | os.PathLike | None = No
             with os.fdopen(os.dup(fd), "r", encoding="utf-8") as reader:
                 for line in reader:
                     try:
-                        if json.loads(line).get("event_id") == event.event_id:
-                            return False
+                        row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    # Valid JSON that is not an object (null, [], 7) is a
+                    # malformed row: skip it like read_usage_events does.
+                    if isinstance(row, dict) and row.get("event_id") == event.event_id:
+                        return False
             written = os.write(fd, encoded)
             if written != len(encoded):
                 raise OSError("short write while appending AMV usage event")
