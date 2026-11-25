@@ -225,3 +225,36 @@ def sync_review_comments(
             _post_comment(repo, pr_number, commit_id, finding.file, finding.line, embed_marker(finding.body, fp))
             posted += 1
     return {"posted": posted, "updated": updated, "skipped": skipped, "total": len(findings)}
+
+
+def run_review(
+    repo: str, pr_number: int, objective: str = "", incremental: bool = True,
+    dry_run: bool = False, findings: Optional[list[Finding]] = None,
+    commit_id: Optional[str] = None,
+) -> dict:
+    """Entry point for `ngs pr review`. Finding generation lives in the
+    separate reviewer lane (Bun pr_reviewer); this wires the dedup half: it
+    reads the live comment state off the PR and, when `findings` are handed
+    in, posts them exactly once (or only counts them under `dry_run`).
+    Always returns the dict the CLI prints (`status`, `comments_count`)."""
+    base = {"repo": repo, "pr": pr_number, "objective": objective,
+            "incremental": incremental, "dry_run": dry_run}
+    try:
+        existing = list_review_comments(repo, pr_number)
+    except RuntimeError as exc:
+        return {**base, "status": "error", "error": str(exc), "comments_count": 0}
+    known = {c["fingerprint"] for c in existing if c["fingerprint"]}
+    base["existing_comments"] = len(existing)
+    if not findings:
+        return {**base, "status": "no_findings", "comments_count": 0}
+    if dry_run:
+        fresh = [f for f in findings if f.fp not in known]
+        return {**base, "status": "dry_run", "comments_count": len(fresh),
+                "skipped": len(findings) - len(fresh)}
+    try:
+        if not commit_id:
+            commit_id = _gh_json(["api", f"repos/{repo}/pulls/{pr_number}"])[0]["head"]["sha"]
+        counts = sync_review_comments(repo, pr_number, commit_id, findings)
+    except (RuntimeError, KeyError, IndexError) as exc:
+        return {**base, "status": "error", "error": str(exc), "comments_count": 0}
+    return {**base, "status": "posted", "comments_count": counts["posted"] + counts["updated"], **counts}
