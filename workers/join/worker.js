@@ -125,8 +125,19 @@ export const shell = (title, body) => new Response(`<!doctype html><html lang="e
 // Official multi-color Google "G" (Google sign-in branding guidelines).
 const GOOGLE_G = `<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/></svg>`;
 
-const step = (n, title, text) => `<li class="join-step"><span class="join-step-num">${n}</span><span><strong>${title}</strong> — ${text}</span></li>`;
+const step = (n, title, text) => `<li class="join-step"><span class="join-step-num">${n}</span><span><strong>${title}:</strong> ${text}</span></li>`;
 
+// Offers a visitor can arrive from (nougenai.com/shards links /?offer=<name>).
+// The name rides inside the signed Google state, so it is recorded on the
+// tenant only when it came through this page; unknown names are ignored.
+export const OFFERS = {
+  founders: { eyebrow: "Founders offer", note: "You came from the NouGenShards founders offer. Your node is set up the same way, and your account is marked as a founder so your locked price is honoured when billing opens." },
+};
+export const offerOf = (name) => (Object.prototype.hasOwnProperty.call(OFFERS, name) ? name : "");
+const landing = (offer = "") => LANDING
+  .replace('<p class="join-eyebrow">Provision node</p>', `<p class="join-eyebrow">${offer ? OFFERS[offer].eyebrow : "Provision node"}</p>`)
+  .replace('href="/google/start"', `href="/google/start${offer ? "?offer=" + offer : ""}"`)
+  .replace('<section class="join-panel">', `${offer ? `<p class="join-hint join-offer">${esc(OFFERS[offer].note)}</p>\n` : ""}<section class="join-panel">`);
 const LANDING = `<p class="join-eyebrow">Provision node</p>
 <h1>Join NouGen</h1>
 <p class="join-lead">Sign in with Google and your computer becomes your own NouGen node: a private memory your AI assistants can use. No passwords to create, nothing to set up by hand.</p>
@@ -764,12 +775,13 @@ async function hmacB64(secret, msg) {
 async function makeState(env, purpose = "join") {
   const body = `${rand(16)}.${Date.now()}`;
   const sig = await hmacB64(env.GOOGLE_CLIENT_SECRET || "", `${purpose}-state:` + body);
-  return `${purpose === "open" ? "open." : ""}${body}.${sig}`;
+  return `${purpose === "join" ? "" : purpose + "."}${body}.${sig}`;
 }
-// The purpose ("join" or "open") of a valid state, or "" for an invalid one.
+// The purpose of a valid state ("join", "open", or a join that came from a named
+// offer), or "" for an invalid one. The purpose is inside the signature.
 async function stateValid(env, state) {
   let parts = String(state || "").split("."), purpose = "join";
-  if (parts.length === 4 && parts[0] === "open") { purpose = "open"; parts = parts.slice(1); }
+  if (parts.length === 4 && (parts[0] === "open" || offerOf(parts[0]))) { purpose = parts[0]; parts = parts.slice(1); }
   if (parts.length !== 3 || !env.GOOGLE_CLIENT_SECRET) return "";
   const [nonce, issued, sig] = parts;
   const age = Date.now() - Number(issued);
@@ -783,7 +795,19 @@ async function stateValid(env, state) {
 
 // purpose "open" signs a tenant into the node they already have. No account
 // picker: a person signed in to one Google account goes straight through.
+// Record, once, which offer a tenant joined from. The first offer wins, so a
+// later click on another offer page cannot move a founder off their price.
+// offer:<name>:<email> lets the owner count signups per offer with a KV list.
+export async function markOffer(env, email, offer) {
+  const kv = env.TENANTS, t = await kv.get("tenant:" + email, "json");
+  if (!t || t.offer) return;
+  const at = new Date().toISOString();
+  await kv.put("tenant:" + email, JSON.stringify({ ...t, offer, offer_at: at }));
+  await kv.put(`offer:${offer}:${email}`, at);
+}
+
 async function googleStart(env, url, purpose = "join") {
+  if (purpose === "join") purpose = offerOf(url.searchParams.get("offer") || "") || "join";
   const state = await makeState(env, purpose);
   const q = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`,
     response_type: "code", scope: "openid email", state, ...(purpose === "open" ? {} : { prompt: "select_account" }) });
@@ -871,7 +895,7 @@ export default {
     const url = new URL(req.url), path = url.pathname;
     try {
       if (path === "/health") return new Response("ok");
-      if (path === "/") return shell("Join NouGen", LANDING);
+      if (path === "/") return shell("Join NouGen", landing(offerOf(url.searchParams.get("offer") || "")));
       if (path === "/privacy") return shell("Privacy", PRIVACY);
       if (path === "/terms") return shell("Terms", TERMS);
       if (path === "/google/start") return googleStart(env, url);
@@ -883,6 +907,7 @@ export default {
         if (!known && !(await underIpLimit(env, req.headers.get("cf-connecting-ip") || "?")))
           return shell("Try later", "<h1>Too many sign-ups</h1><p>This network has created several nodes today. Try again tomorrow.</p>");
         await provision(env, email);
+        if (offerOf(purpose)) await markOffer(env, email, purpose);
         return Response.redirect(`${url.origin}/j/${await mintLink(env, email)}`, 302);
       }
       const r = path.match(/^\/j\/([A-Za-z0-9_-]{24,})\/(report|state)$/);
