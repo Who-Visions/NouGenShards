@@ -2145,6 +2145,42 @@ class NouGenMsgBus:
         return count
 
     @classmethod
+    def ack_message(cls, message_id: str, target: str = "antigravity") -> int:
+        """Archive only the inbox file(s) with this exact message_id."""
+        if not message_id or target not in ("antigravity", "codex"):
+            raise ValueError("message_id is required and target must be antigravity or codex")
+
+        inbox_dirs = (
+            [
+                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
+                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
+            ] if target == "antigravity"
+            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
+        )
+
+        archived = 0
+        for inbox_dir in inbox_dirs:
+            if not os.path.isdir(inbox_dir):
+                continue
+            archive_dir = os.path.join(inbox_dir, "archive")
+            for path in glob.glob(os.path.join(inbox_dir, "*.json")):
+                try:
+                    with open(path, "r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(data, dict) or data.get("message_id") != message_id:
+                    continue
+
+                os.makedirs(archive_dir, exist_ok=True)
+                destination = os.path.join(archive_dir, os.path.basename(path))
+                if os.path.exists(destination):
+                    raise FileExistsError(f"archive already contains {os.path.basename(path)}")
+                shutil.move(path, destination)
+                archived += 1
+        return archived
+
+    @classmethod
     def _get_msg_index_db(cls) -> str:
         base = _home()
         cache_dir = os.path.join(base, "cache")

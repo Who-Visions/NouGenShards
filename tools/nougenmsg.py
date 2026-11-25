@@ -72,7 +72,8 @@ Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
   agy msg --capacity                          Inspect lane capacity, usage & status before pushing tasks
   agy msg --inbox [--target <antigravity|codex>] Read recent unread messages in inbox
-  agy msg --clear-inbox                       Archive and clear read inbox messages
+  agy msg --ack-message <id> [--target <antigravity|codex>] Archive one exact message
+  agy msg --clear-inbox --confirm-clear [--target <antigravity|codex>] Archive the full inbox
   agy msg --wake [--timeout <seconds>]        Run autonomous wake sentry (monitors inbox & relay legs)
   agy msg --help                              Show this help menu
 """)
@@ -578,8 +579,28 @@ def main():
         print(f"{border}\n")
         return
 
-    # Clear inbox
+    # Acknowledge one exact inbox message without disturbing other files.
+    if "--ack-message" in sys.argv:
+        idx = sys.argv.index("--ack-message")
+        if idx + 1 >= len(sys.argv) or sys.argv[idx + 1].startswith("--"):
+            raise SystemExit("--ack-message requires a message id")
+        message_id = sys.argv[idx + 1]
+        target = "antigravity"
+        if "--target" in sys.argv:
+            target_idx = sys.argv.index("--target")
+            if target_idx + 1 < len(sys.argv):
+                target = sys.argv[target_idx + 1]
+        archived = NouGenMsgBus.ack_message(message_id=message_id, target=target)
+        if archived:
+            print(f"[OK] Archived {archived} file(s) for message {message_id} from {target} inbox.")
+        else:
+            print(f"[i] No inbox file found for message {message_id} in {target}.")
+        return
+
+    # Clear inbox (the explicit confirmation is required because this archives every file).
     if "--clear-inbox" in sys.argv:
+        if "--confirm-clear" not in sys.argv:
+            raise SystemExit("Refusing bulk archive: pass --confirm-clear, or use --ack-message <id>.")
         target = "antigravity"
         if "--target" in sys.argv:
             idx = sys.argv.index("--target")
