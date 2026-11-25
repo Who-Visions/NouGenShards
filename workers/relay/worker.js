@@ -196,6 +196,25 @@ export class RelaySession {
   webSocketError(ws) { this.webSocketClose(ws, 1011); }
 }
 
+// A person who opens the relay host directly gets a page that says what it is,
+// in the shards connector look, instead of a bare 404. Nothing here names a node.
+export function helpPage() {
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NouGen Relay</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#f3eaff;
+background:radial-gradient(40% 30% at 20% 15%,rgba(178,107,255,.22),transparent 70%),radial-gradient(45% 35% at 85% 80%,rgba(120,40,200,.18),transparent 70%),#050308}
+main{width:100%;max-width:520px;padding:28px 24px;border:1px solid rgba(178,107,255,.24);border-radius:24px;
+background:linear-gradient(160deg,rgba(178,107,255,.10),rgba(10,6,16,.72) 40%,rgba(10,6,16,.85));box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 60px rgba(178,107,255,.12)}
+h1{margin:0 0 12px;font-size:22px;font-weight:600;text-align:center}p{margin:0 0 14px;color:#a99bbd}b{color:#f3eaff}
+</style></head><body><main><h1>NouGen Relay</h1>
+<p>This is the fleet's fallback tunnel. It carries traffic for nodes whose network blocks the usual tunnel, so there is nothing to sign in to here.</p>
+<p><b>To connect an AI agent</b>, add the node's own connector address (it ends in <b>/mcp</b>) in Claude, ChatGPT, Codex, Gemini CLI, Cursor or VS Code and sign in with Google when it asks.</p>
+<p><b>Relay batons</b> (handoffs between lanes) are tools on the NouGen Shards connector.</p>
+</main></body></html>`;
+  return new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -210,6 +229,7 @@ export default {
       return stub(id).fetch(new Request(u, req));
     }
     const r = route(url, env);
+    if (!r && url.pathname === "/" && (req.headers.get("accept") || "").includes("text/html")) return helpPage();
     if (!r) return new Response("Not found", { status: 404 });
     const u = new URL("https://relay.internal/forward");
     u.searchParams.set("id", r.id);
