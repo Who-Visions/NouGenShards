@@ -32,7 +32,7 @@ def client():
     saved = node.NODE_TOKEN
     node.NODE_TOKEN = NODE_TOKEN
     try:
-        yield TestClient(node.app)
+        yield TestClient(node.app, base_url="https://testserver")
     finally:
         node.NODE_TOKEN = saved
         os.environ.pop("NGS_PUBLIC_URL", None)
@@ -62,6 +62,14 @@ def _token(client, client_id, verifier, code):
         "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT_URI,
         "client_id": client_id, "code_verifier": verifier,
     })
+
+
+def _allow(client, cb):
+    """Press Allow on the consent page a sign-in callback returns."""
+    assert cb.status_code == 200 and "/oauth/consent" in cb.text
+    grant = cb.text.split('name="grant" value="')[1].split('"')[0]
+    csrf = cb.text.split('name="csrf" value="')[1].split('"')[0]
+    return client.post("/oauth/consent", data={"grant": grant, "csrf": csrf}, follow_redirects=False)
 
 
 def _code_from(location):
@@ -158,6 +166,8 @@ GOOD = {"aud": GOOGLE_ENV["NGS_GOOGLE_CLIENT_ID"], "iss": "https://accounts.goog
 
 def test_google_allowed_email_gets_a_working_token(client, google):
     cid, verifier, cb = _google_round_trip(client, google, GOOD)
+    assert "location" not in cb.headers  # no code before Allow
+    cb = _allow(client, cb)
     assert cb.status_code == 303
     assert cb.headers["location"].startswith(REDIRECT_URI) and "state=s1" in cb.headers["location"]
     tok = _token(client, cid, verifier, _code_from(cb.headers["location"])).json()
@@ -179,7 +189,7 @@ def test_google_refuses_wrong_account(client, google, bad):
 
 def test_google_request_is_single_use(client, google):
     _, _, cb = _google_round_trip(client, google, GOOD)
-    assert cb.status_code == 303
+    assert cb.status_code == 200
     req_state = cb.request.url.params["state"]
     again = client.get("/oauth/google/callback", params={"code": "g-code", "state": req_state}, follow_redirects=False)
     assert again.status_code == 400
@@ -239,6 +249,8 @@ def _fleet_round_trip(client, fleet, payload):
 def test_fleet_google_owner_reaches_a_working_token(client, fleet):
     import time
     cid, verifier, cb = _fleet_round_trip(client, fleet, {"typ": "access", "eml": "Operator@Example.test", "exp": time.time() + 600})
+    assert "location" not in cb.headers  # no code before Allow
+    cb = _allow(client, cb)
     assert cb.status_code == 303 and "state=s9" in cb.headers["location"]
     tok = _token(client, cid, verifier, _code_from(cb.headers["location"])).json()
     assert mcp_oauth.issued_token_tenant(tok["access_token"]) == "owner"
@@ -268,3 +280,39 @@ def test_token_path_still_works_beside_google(client, fleet):
     verifier, challenge = _pkce()
     code = _code_from(_authorize(client, cid, challenge).headers["location"])
     assert _token(client, cid, verifier, code).status_code == 200
+
+
+def test_allow_needs_the_signed_in_browser(client, google):
+    """A stranger holding the grant cannot redeem it without the sign-in cookie."""
+    _, _, cb = _google_round_trip(client, google, GOOD)
+    grant = cb.text.split('name="grant" value="')[1].split('"')[0]
+    csrf = cb.text.split('name="csrf" value="')[1].split('"')[0]
+    client.cookies.clear()
+    r = client.post("/oauth/consent", data={"grant": grant, "csrf": csrf}, follow_redirects=False)
+    assert r.status_code == 400 and "location" not in r.headers
+
+
+def test_allow_needs_the_page_token(client, google):
+    _, _, cb = _google_round_trip(client, google, GOOD)
+    grant = cb.text.split('name="grant" value="')[1].split('"')[0]
+    r = client.post("/oauth/consent", data={"grant": grant, "csrf": "forged"}, follow_redirects=False)
+    assert r.status_code == 400 and "location" not in r.headers
+
+
+def test_allow_page_names_client_and_destination(client, google):
+    _, _, cb = _google_round_trip(client, google, GOOD)
+    from urllib.parse import urlparse
+    assert "Allow" in cb.text and urlparse(REDIRECT_URI).netloc in cb.text
+    assert "samesite=strict" in cb.headers.get("set-cookie", "").lower()
+    assert "httponly" in cb.headers.get("set-cookie", "").lower()
+
+
+def test_allow_is_single_use(client, google):
+    _, _, cb = _google_round_trip(client, google, GOOD)
+    grant = cb.text.split('name="grant" value="')[1].split('"')[0]
+    csrf = cb.text.split('name="csrf" value="')[1].split('"')[0]
+    first = client.post("/oauth/consent", data={"grant": grant, "csrf": csrf}, follow_redirects=False)
+    assert first.status_code == 303
+    client.cookies.set("ngs_consent", grant, path="/oauth/consent")
+    again = client.post("/oauth/consent", data={"grant": grant, "csrf": csrf}, follow_redirects=False)
+    assert again.status_code == 400

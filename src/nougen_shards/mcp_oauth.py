@@ -78,6 +78,14 @@ _REFRESH_TTL_SECONDS = 90 * 24 * 3600
 _pending: dict[str, dict] = {}
 _PENDING_TTL_SECONDS = 600
 
+# Signed-in requests waiting on the operator's Allow: grant -> {pending fields,
+# tenant_id, csrf, exp}. Google proves who signed in, not which app they meant
+# to link, so a code is only issued after an Allow that names the client, from
+# the browser that signed in (HttpOnly SameSite=Strict cookie + form token).
+_consents: dict[str, dict] = {}
+_CONSENT_TTL_SECONDS = 300
+_CONSENT_COOKIE = "ngs_consent"
+
 # Redirect schemes the IDE clients register with, the same list shards uses.
 _APP_SCHEMES = ("vscode", "vscode-insiders", "cursor", "windsurf", "cursor-url")
 _SCOPES = ["fleet"]
@@ -91,7 +99,7 @@ def _prune() -> None:
     """Drop expired codes. Called on the paths that write new state, so the
     dicts cannot grow without bound on a long-lived node."""
     cutoff = _now()
-    for table in (_codes, _refresh, _pending):
+    for table in (_codes, _refresh, _pending, _consents):
         for key in [k for k, v in table.items() if v["exp"] < cutoff]:
             table.pop(key, None)
 
@@ -373,6 +381,21 @@ _HELP_PAGE = _HEAD + """
 """
 
 
+_ALLOW_PAGE = _HEAD + """
+<title>Allow {client}?</title><style>""" + _style("420px") + """</style></head>
+<body><main><div class="mark">""" + _BRAIN + """</div>
+  <h1>Allow {client} to use {brand}?</h1>
+  <p class="c">Signed in. <b>{client}</b> will get access to this memory node and send you back to <b>{dest}</b>.</p>
+  <p class="c">If you did not start this from your own app, close this page.</p>
+  <form method="post" action="/oauth/consent" style="margin:0">
+  <input type="hidden" name="grant" value="{grant}">
+  <input type="hidden" name="csrf" value="{csrf}">
+  <button class="btn primary" type="submit">Allow</button>
+  </form>
+</main></body></html>
+"""
+
+
 def _help(request: Request, status: int, title: str = "", body: str = "") -> HTMLResponse:
     return HTMLResponse(_HELP_PAGE.format(
         title=title or f"Connect {_brand()}",
@@ -586,8 +609,7 @@ def install(
         if _fleet_token_email(token) not in cfg["owners"]:
             return _help(request, 403, title=f"That account can't use {_brand()}",
                          body="Sign in with a Google account this node knows, or use a node token. The connector address is:")
-        return _issue_code(pending["client_id"], pending["redirect_uri"], pending["state"],
-                           pending["code_challenge"], "owner")
+        return _ask_consent(request, pending, "owner")
 
     @app.get("/oauth/google/start")
     def google_start(req: str = ""):
@@ -620,8 +642,37 @@ def install(
             return _help(request, 403, title=f"That account can't use {_brand()}",
                          body="Sign in with a Google account this node knows, or use a node token. The connector address is:")
         # An enrolled Google account is the owner, the same tenant the node token maps to.
-        return _issue_code(pending["client_id"], pending["redirect_uri"], pending["state"],
-                           pending["code_challenge"], "owner")
+        return _ask_consent(request, pending, "owner")
+
+    def _ask_consent(request: Request, pending: dict, tenant_id: str) -> HTMLResponse:
+        _prune()
+        client = _clients.get(pending["client_id"])
+        if not client:
+            raise HTTPException(status_code=400, detail="Sign-in request expired; start again from your app.")
+        grant, csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+        _consents[grant] = {**{k: pending[k] for k in ("client_id", "redirect_uri", "state", "code_challenge")},
+                            "tenant_id": tenant_id, "csrf": csrf, "exp": _now() + _CONSENT_TTL_SECONDS}
+        dest = urlparse(pending["redirect_uri"])
+        resp = HTMLResponse(_ALLOW_PAGE.format(
+            brand=_brand(), client=html.escape(client["client_name"]),
+            dest=html.escape(dest.netloc or (dest.scheme + ":")), grant=html.escape(grant), csrf=html.escape(csrf),
+        ))
+        resp.set_cookie(_CONSENT_COOKIE, grant, max_age=_CONSENT_TTL_SECONDS, path="/oauth/consent",
+                        httponly=True, secure=public_base_url(request).startswith("https://"), samesite="strict")
+        return resp
+
+    @app.post("/oauth/consent")
+    def consent_submit(request: Request, grant: str = Form(""), csrf: str = Form("")):
+        cookie = request.cookies.get(_CONSENT_COOKIE, "")
+        entry = _consents.get(grant) if grant else None
+        if (not entry or not cookie or not hmac.compare_digest(cookie, grant)
+                or not hmac.compare_digest(entry["csrf"], csrf) or entry["exp"] < _now()):
+            raise HTTPException(status_code=400, detail="Sign-in request expired; start again from your app.")
+        _consents.pop(grant, None)
+        resp = _issue_code(entry["client_id"], entry["redirect_uri"], entry["state"],
+                           entry["code_challenge"], entry["tenant_id"])
+        resp.delete_cookie(_CONSENT_COOKIE, path="/oauth/consent")
+        return resp
 
     @app.post("/authorize")
     def authorize_submit(
