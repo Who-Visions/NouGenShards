@@ -236,6 +236,38 @@ class CodexPipeTests(unittest.TestCase):
         self.assertEqual(rejected["status"], "invalid_args")
         self.assertTrue(Path(path).exists())
 
+    def _write_junk(self, folder, name, body):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text(body, encoding="utf-8")
+
+    def test_non_object_ping_files_do_not_break_claim_or_ack(self):
+        inbox = Path(self.temp.name)
+        for i, body in enumerate(["[]", "null", "42", '"text"']):
+            self._write_junk(inbox, f"ping_000junk{i}.json", body)
+            self._write_junk(inbox / "archive", f"ping_000junk{i}.json", body)
+        mid = "77777777-7777-4777-8777-777777777777"
+        codex_pipe.save({"message_id": mid, "thread": "thread-1", "text": "real"})
+        claimed = codex_pipe.claim(mid, consumer="codex", thread="thread-1", inbox=self.temp.name)
+        self.assertTrue(claimed["claimed"])
+        acked = codex_pipe.acknowledge(mid, consumer="codex", thread="thread-1", inbox=self.temp.name)
+        self.assertTrue(acked["acknowledged"])
+        missing = "88888888-8888-4888-8888-888888888888"
+        self.assertEqual(codex_pipe.claim(missing, consumer="codex", inbox=self.temp.name)["status"],
+                         "not_found")
+        self.assertEqual(codex_pipe.acknowledge(missing, consumer="codex", inbox=self.temp.name)["status"],
+                         "not_found")
+
+    def test_non_object_ack_receipts_are_skipped(self):
+        archive = Path(self.temp.name) / "archive"
+        for i, body in enumerate(["[]", "null", "7"]):
+            self._write_junk(archive, f"ping_000junk{i}.json.ack.json", body)
+        mid = "99999999-9999-4999-8999-999999999999"
+        codex_pipe.save({"message_id": mid, "thread": "thread-1", "text": "real"})
+        self.assertTrue(codex_pipe.acknowledge(mid, consumer="codex", inbox=self.temp.name)["acknowledged"])
+        self.assertEqual(codex_pipe.claim(mid, consumer="codex", inbox=self.temp.name)["status"],
+                         "already_acknowledged")
+        self.assertTrue(codex_pipe.acknowledge(mid, consumer="codex", inbox=self.temp.name)["idempotent"])
+
     def test_claim_message_marks_in_progress(self):
         message_id = "55555555-5555-4555-8555-555555555555"
         path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "to claim"})

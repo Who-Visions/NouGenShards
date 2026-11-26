@@ -320,6 +320,15 @@ def _candidate_inbox_dirs(inbox=None, consumer=None):
     return unique
 
 
+def _load_json_obj(path):
+    """Read a JSON object from path; None if unreadable, malformed or not an object."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def claim(message_id, consumer=None, thread=None, inbox=None):
     """Mark a stored message as actively claimed / in progress across agent inboxes without archiving it."""
     message_id = str(message_id or "").strip()
@@ -333,9 +342,8 @@ def claim(message_id, consumer=None, thread=None, inbox=None):
         if not root.exists():
             continue
         for path in root.glob("ping_*.json"):
-            try:
-                candidate = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            candidate = _load_json_obj(path)
+            if candidate is None:
                 continue
             if candidate.get("message_id") == message_id:
                 match, payload = path, candidate
@@ -347,13 +355,10 @@ def claim(message_id, consumer=None, thread=None, inbox=None):
             archive = root / "archive"
             if archive.exists():
                 for receipt_path in archive.glob("*.ack.json"):
-                    try:
-                        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                        if receipt.get("message_id") == message_id:
-                            return {"status": "already_acknowledged", "message_id": message_id,
-                                    "claimed": False, "acknowledged": True}
-                    except (OSError, ValueError):
-                        continue
+                    receipt = _load_json_obj(receipt_path)
+                    if receipt is not None and receipt.get("message_id") == message_id:
+                        return {"status": "already_acknowledged", "message_id": message_id,
+                                "claimed": False, "acknowledged": True}
         return {"status": "not_found", "message_id": message_id, "claimed": False}
     payload_thread = str(payload.get("thread") or "")
     if thread and payload_thread and str(thread) != payload_thread:
@@ -394,9 +399,8 @@ def acknowledge(message_id, consumer=None, thread=None, inbox=None):
         archive = root / "archive"
         if archive.exists():
             for receipt_path in archive.glob("*.ack.json"):
-                try:
-                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
+                receipt = _load_json_obj(receipt_path)
+                if receipt is None:
                     continue
                 if receipt.get("message_id") == message_id:
                     # Legacy receipts may contain an unverified --work string.
@@ -421,9 +425,8 @@ def acknowledge(message_id, consumer=None, thread=None, inbox=None):
         if not root.exists():
             continue
         for path in root.glob("ping_*.json"):
-            try:
-                candidate = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            candidate = _load_json_obj(path)
+            if candidate is None:
                 continue
             if candidate.get("message_id") == message_id:
                 match, payload, found_root = path, candidate, root
@@ -437,9 +440,8 @@ def acknowledge(message_id, consumer=None, thread=None, inbox=None):
             if not archive.exists():
                 continue
             for path in archive.glob("ping_*.json"):
-                try:
-                    candidate = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
+                candidate = _load_json_obj(path)
+                if candidate is None:
                     continue
                 if candidate.get("message_id") == message_id:
                     match, payload, found_root = path, candidate, root
