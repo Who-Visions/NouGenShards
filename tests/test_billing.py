@@ -81,3 +81,32 @@ def test_timestamp_is_clean_rfc3339():
     ts = billing._now_iso()
     assert ts.endswith("Z")
     assert "+00:00" not in ts
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "[]",
+        "null",
+        '"oops"',
+        '{"models": ["gpt-4o"]}',
+        '{"models": {"gpt-4o": "cheap"}}',
+        '{"models": {"gpt-4o": {"input": 1, "schedule": {"2000-01-01": 5}}}}',
+    ],
+    ids=lambda d: d[:40],
+)
+def test_wrong_shape_pricing_table_keeps_defaults(tmp_path, monkeypatch, doc):
+    pdir = tmp_path / "pricing"
+    pdir.mkdir()
+    (pdir / "bad.json").write_text(doc, encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_PRICING_DIR", str(pdir))
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cached_tokens": 0}
+    assert billing.compute_cost("anthropic/claude-3.5-sonnet", usage) == pytest.approx(18.0)
+
+
+@pytest.mark.parametrize("raw", ["[]", "null", "5", '"x"'])
+def test_wrong_shape_pricing_env_is_ignored(tmp_path, monkeypatch, raw):
+    monkeypatch.setenv("NOUGEN_PRICING_DIR", str(tmp_path / "none"))
+    monkeypatch.setenv("NOUGEN_PRICING_JSON", raw)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cached_tokens": 0}
+    assert billing.compute_cost("anthropic/claude-3.5-sonnet", usage) == pytest.approx(18.0)

@@ -64,8 +64,10 @@ def _load_pricing(on_date: str | None = None) -> dict:
                 doc = json.loads(path.read_text(encoding="utf-8"))
                 for key, entry in (doc.get("models") or {}).items():
                     pricing[key.lower()] = _resolve_scheduled(entry, on_date)
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError):
                 # A malformed table must not take the meter down; defaults stand.
+                # AttributeError covers valid JSON of the wrong shape (a list
+                # document, a non-object "models"/entry/schedule step).
                 continue
 
     raw = os.environ.get("NOUGEN_PRICING_JSON")
@@ -73,7 +75,7 @@ def _load_pricing(on_date: str | None = None) -> dict:
         try:
             for key, val in json.loads(raw).items():
                 pricing[key.lower()] = (float(val[0]), float(val[1]))
-        except (ValueError, TypeError, KeyError, IndexError):
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
             pass
     return pricing
 
