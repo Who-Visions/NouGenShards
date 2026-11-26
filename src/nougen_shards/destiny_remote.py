@@ -274,8 +274,13 @@ def _flush_locked(remote: RemoteDestiny) -> Dict[str, Any]:
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     sent = skipped = 0
     remaining: List[str] = []
+    rejected: List[str] = []
     for i, line in enumerate(lines):
-        rec = json.loads(line)
+        rec = _load_outbox_record(line)
+        if rec is None:
+            # A torn or hand-edited line must not block every later write: set it aside.
+            rejected.append(line)
+            continue
         try:
             if rec.get("idem", "") and str(rec["idem"]).startswith("create:") \
                     and remote._find_by_title(rec["arguments"].get("title", "")):
@@ -293,7 +298,24 @@ def _flush_locked(remote: RemoteDestiny) -> Dict[str, Any]:
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(r + "\n" for r in remaining), encoding="utf-8")
     tmp.replace(path)
-    return {"sent": sent, "skipped": skipped, "left": len(remaining)}
+    out = {"sent": sent, "skipped": skipped, "left": len(remaining)}
+    if rejected:
+        with path.with_suffix(".rejected").open("a", encoding="utf-8") as fh:
+            fh.write("".join(r + "\n" for r in rejected))
+        out["rejected"] = len(rejected)
+    return out
+
+
+def _load_outbox_record(line: str) -> Optional[Dict[str, Any]]:
+    """Parse one outbox line; None when it is not a replayable record."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict) or not isinstance(rec.get("tool"), str) \
+            or not isinstance(rec.get("arguments"), dict):
+        return None
+    return rec
 
 
 def backend():

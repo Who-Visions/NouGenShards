@@ -163,3 +163,19 @@ def test_tool_error_from_the_authority_is_returned_not_raised():
     gw = FakeGateway()
     r = dr.RemoteDestiny("u", transport=gw)
     assert "error" in r.call("no_such_tool", {})
+
+
+@pytest.mark.parametrize("bad", ['{"tool": "link_destiny", "argu', '[1, 2]', '"text"',
+                                 '{"arguments": {}}', '{"tool": "x", "arguments": "nope"}'])
+def test_a_bad_outbox_line_is_set_aside_not_blocking_the_rest(outbox, bad):
+    gw = FakeGateway()
+    r = dr.RemoteDestiny("u", transport=gw)
+    dr.queue("create_destiny", {"title": "Before", "goal": "g"}, "create:before")
+    with outbox.open("a", encoding="utf-8") as fh:
+        fh.write(bad + "\n")
+    dr.queue("create_destiny", {"title": "After", "goal": "g"}, "create:after")
+    assert dr.flush_outbox(r) == {"sent": 2, "skipped": 0, "left": 0, "rejected": 1}
+    assert sorted(row["title"] for row in gw.rows.values()) == ["After", "Before"]
+    assert outbox.read_text() == ""
+    assert outbox.with_suffix(".rejected").read_text() == bad + "\n"
+    assert dr.flush_outbox(r) == {"sent": 0, "skipped": 0, "left": 0}
