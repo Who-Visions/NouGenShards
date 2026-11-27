@@ -156,6 +156,28 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _load_stored_snapshot(text: Any) -> Optional[dict]:
+    """Parse a stored snapshot_json row; None when it lacks the resolver's shape.
+
+    Rows are written validated, but a torn write or hand edit must surface as a
+    rejected candidate, not crash resolution for every scope of the key.
+    """
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        temporal = data.get("temporal")
+        if (not isinstance(data.get("scope"), dict) or not isinstance(temporal, dict)
+                or not isinstance(data.get("completeness"), dict)
+                or not isinstance(data.get("version"), int) or isinstance(data["version"], bool)):
+            return None
+        _time_key(temporal["as_of"])
+        _time_key(temporal["event_at"])
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+    return data
+
+
 def _terms(value: str) -> set[str]:
     terms = set(re.findall(r"[a-z0-9]+", value.casefold()))
     return {term[:-1] if term.endswith("s") and len(term) > 3 else term for term in terms}
@@ -391,7 +413,10 @@ class CanonicalFactIndex:
 
         candidates, rejected = [], []
         for row in rows:
-            data = json.loads(row["snapshot_json"])
+            data = _load_stored_snapshot(row["snapshot_json"])
+            if data is None:
+                rejected.append({"snapshot_id": row["snapshot_id"], "reason": "corrupt_snapshot"})
+                continue
             why = None
             if sorted(data["scope"].get("expected_machines", [])) != expected:
                 why = "scope_mismatch:expected_machines"

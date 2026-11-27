@@ -297,3 +297,23 @@ def test_query_filters_scope_before_ambiguity_resolution(tmp_path):
     assert result["status"] == "complete"
     assert result["snapshot"]["canonical_key"] == "token_usage:fleet:YTD:2026"
     assert any(item["reason"] == "scope_mismatch:expected_machines" for item in result["rejected"])
+
+
+@pytest.mark.parametrize("body", [
+    "{torn", "[]", "null", '"text"', '{"scope": [], "temporal": {}, "completeness": {}, "version": 1}',
+    json.dumps({**snapshot(machines=("blade1tb",)), "temporal": {"as_of": "not-a-date", "event_at": "x"}}),
+    json.dumps({**snapshot(machines=("blade1tb",)), "version": "1"}),
+], ids=["torn", "list", "null", "string", "scope-list", "bad-as-of", "string-version"])
+@pytest.mark.parametrize("filtered", [False, True], ids=["current", "history"])
+def test_corrupt_stored_snapshot_is_rejected_not_raised(tmp_path, body, filtered):
+    index = CanonicalFactIndex(tmp_path / "facts.sqlite")
+    good_id = index.put(snapshot())
+    bad_id = index.put(snapshot(machines=("blade1tb",)))
+    with index._connect() as conn:
+        conn.execute("UPDATE fact_snapshots SET snapshot_json=? WHERE snapshot_id=?", (body, bad_id))
+
+    result = index.resolve("token_usage:fleet:YTD:2026", expected_machines=["blade1tb", "phoebus", "whoart"],
+                           temporal_scope={"period": "YTD"} if filtered else None)
+    assert result["status"] == "complete"
+    assert result["snapshot"]["snapshot_id"] == good_id
+    assert {"snapshot_id": bad_id, "reason": "corrupt_snapshot"} in result["rejected"]
