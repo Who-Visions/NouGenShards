@@ -772,7 +772,10 @@ class AgentPinger:
         sessions = {}
         raw_sessions = registry.get("sessions")
         if isinstance(raw_sessions, dict):
-            sessions.update(raw_sessions)
+            # Skip non-object entries: one bad value used to raise AttributeError
+            # on .get() before the inbox fallback, losing the message.
+            sessions.update((sock, entry) for sock, entry in raw_sessions.items()
+                            if isinstance(entry, dict))
         for sid, entry in registry.items():
             if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
                 sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
