@@ -84,8 +84,8 @@ class JensenHuang:
         ``status`` is ``"ok"`` or ``"error"``.
         """
         started = time.perf_counter()
-        model = task.get("model") or "auto"
         try:
+            model = task.get("model") or "auto"
             messages = _task_messages(task)
         except (ValueError, AttributeError, TypeError) as exc:
             return {
