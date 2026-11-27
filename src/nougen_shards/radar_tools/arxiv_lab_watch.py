@@ -142,6 +142,9 @@ def backfill_recent(channel: str) -> list[dict]:
     ids = list(dict.fromkeys(re.findall(r'href\s*=\s*"/abs/(\d{4}\.\d{4,5})"', html)))
     ns, out = {"a": "http://www.w3.org/2005/Atom"}, []
     for i in range(0, len(ids), 60):
+        # arXiv API etiquette: at most one legacy-API request every 3 s. Wait BEFORE each
+        # call (run() fetched the RSS feed just before this), never after the last one.
+        time.sleep(3)
         chunk = ids[i:i + 60]
         url = f"http://export.arxiv.org/api/query?max_results={len(chunk)}&id_list={','.join(chunk)}"
         xml = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=40).read()
@@ -150,7 +153,6 @@ def backfill_recent(channel: str) -> list[dict]:
             out.append(_entry(aid, " ".join(e.findtext("a:title", namespaces=ns).split()),
                               " ".join(e.findtext("a:summary", namespaces=ns).split()),
                               {"published": e.findtext("a:published", namespaces=ns)[:10]}))
-        time.sleep(3)  # arXiv API etiquette
     return out
 
 
