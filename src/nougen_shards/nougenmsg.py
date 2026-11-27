@@ -809,7 +809,8 @@ class AgentPinger:
                 continue
             raw = AgentPinger.cc_wire_lines(token, text)
             last_exc = None
-            for attempt in range(AgentPinger._pipe_retries()):
+            attempts = AgentPinger._pipe_retries()
+            for attempt in range(attempts):
                 try:
                     if os.name == "nt":
                         count = AgentPinger._write_windows_named_pipe(sock, raw)
@@ -817,10 +818,10 @@ class AgentPinger:
                             raise OSError(f"short pipe write: {count}/{len(raw)} bytes")
                     else:
                         import socket
-                        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        s.connect(sock)
-                        s.sendall(raw)
-                        s.close()
+                        # with-block: a failed connect/sendall must not leak the socket
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                            s.connect(sock)
+                            s.sendall(raw)
                     delivered.append({"socket": sock, "session_id": (entry or {}).get("session_id"), "cwd": (entry or {}).get("cwd"), "attempt": attempt + 1})
                     last_exc = None
                     break
@@ -828,7 +829,8 @@ class AgentPinger:
                     last_exc = exc
                     if AgentPinger._endpoint_gone(exc):
                         break  # no pipe/socket at all: retrying cannot help
-                    time.sleep(AgentPinger._pipe_retry_wait_s())
+                    if attempt + 1 < attempts:  # no dead wait after the final attempt
+                        time.sleep(AgentPinger._pipe_retry_wait_s())
             if last_exc is not None:
                 is_gone = AgentPinger._endpoint_gone(last_exc)
                 errors.append({"socket": sock, "error": str(last_exc), "winerror": getattr(last_exc, "winerror", None),
