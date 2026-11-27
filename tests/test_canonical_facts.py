@@ -205,6 +205,50 @@ def test_v1_migration_backfills_current_pointer_and_query_postings(tmp_path):
         assert conn.execute("SELECT as_of_ms FROM fact_snapshots").fetchone()[0] is not None
 
 
+def _bad_scope(data):
+    data["scope"] = ["blade1tb"]
+    return json.dumps(data)
+
+
+@pytest.mark.parametrize("corrupt_body", [
+    lambda data: '{"canonical_key": ',
+    lambda data: "[]",
+    lambda data: "null",
+    lambda data: json.dumps({"temporal": "2025-11-30"}),
+    lambda data: json.dumps({**data, "temporal": {"as_of": 20251130, "event_at": 20251130}}),
+    lambda data: json.dumps({**data, "temporal": {"as_of": "not-a-date", "event_at": "x"}}),
+    lambda data: json.dumps({k: v for k, v in data.items() if k != "version"}),
+    _bad_scope,
+], ids=["torn", "array", "null", "temporal-string", "numeric-dates", "bad-dates", "no-version", "list-scope"])
+def test_v1_migration_skips_corrupt_rows_instead_of_locking_index(tmp_path, corrupt_body):
+    import copy
+    import hashlib
+    path = tmp_path / "legacy.sqlite"
+    good = snapshot(as_of="2025-11-30")
+    body = json.dumps(good, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    bad = corrupt_body(copy.deepcopy(good))
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE fact_snapshots (
+            snapshot_id TEXT PRIMARY KEY, canonical_key TEXT NOT NULL, as_of TEXT NOT NULL,
+            event_at TEXT NOT NULL, captured_at TEXT NOT NULL, version INTEGER NOT NULL,
+            scope_json TEXT NOT NULL, snapshot_json TEXT NOT NULL)""")
+        scope_json = json.dumps(good["scope"], sort_keys=True, separators=(",", ":"))
+        for row_body in (bad, body):
+            conn.execute("INSERT INTO fact_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
+                hashlib.sha256(row_body.encode("utf-8")).hexdigest(), good["canonical_key"],
+                "2025-11-29", "2025-11-29", "2025-11-29T10:00:00-04:00", 1, scope_json, row_body,
+            ))
+        conn.execute("PRAGMA user_version = 1")
+
+    index = CanonicalFactIndex(path)
+    with index._connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM canonical_current").fetchone()[0] == 1
+    receipt = index.resolve_query("all machine tokens ytd", expected_machines=["blade1tb", "phoebus", "whoart"])
+    assert receipt["status"] == "complete"
+    assert receipt["snapshot"]["temporal"]["as_of"] == "2025-11-30"
+
+
 def test_historical_lookup_uses_index_and_does_not_return_entire_history(tmp_path):
     index = CanonicalFactIndex(tmp_path / "history.sqlite")
     old = snapshot(as_of="2025-11-30", version=1)

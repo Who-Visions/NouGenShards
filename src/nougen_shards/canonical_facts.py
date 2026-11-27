@@ -268,19 +268,29 @@ class CanonicalFactIndex:
 
     @staticmethod
     def _backfill_v2(conn: sqlite3.Connection) -> None:
-        """Build current pointers and query postings once for a v1 index."""
+        """Build current pointers and query postings once for a v1 index.
+
+        A torn or wrong-shape v1 row is skipped (left without a pointer or postings)
+        instead of raising: the migration runs in one transaction, so a single bad
+        row would otherwise roll it back on every open and lock the index out.
+        """
         rows = conn.execute("SELECT snapshot_id, canonical_key, snapshot_json FROM fact_snapshots").fetchall()
         for row in rows:
-            data = json.loads(row["snapshot_json"])
-            temporal = data["temporal"]
-            as_of_ts = _time_key(temporal["as_of"])
-            event_at_ts = _time_key(temporal["event_at"])
-            scope_json = _canonical_json(data["scope"])
+            try:
+                data = json.loads(row["snapshot_json"])
+                temporal = data["temporal"]
+                as_of_ts = _time_key(temporal["as_of"])
+                event_at_ts = _time_key(temporal["event_at"])
+                scope_json = _canonical_json(data["scope"])
+                version = data["version"]
+                term_groups = _term_groups(data)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
             conn.execute("UPDATE fact_snapshots SET as_of_ts=?, event_at_ts=? WHERE snapshot_id=?",
                          (as_of_ts, event_at_ts, row["snapshot_id"]))
             current = conn.execute("""SELECT as_of_ts, version, event_at_ts FROM canonical_current
                 WHERE canonical_key=? AND scope_json=?""", (row["canonical_key"], scope_json)).fetchone()
-            rank = (as_of_ts, data["version"], event_at_ts)
+            rank = (as_of_ts, version, event_at_ts)
             if current is None or rank > (current["as_of_ts"], current["version"], current["event_at_ts"]):
                 conn.execute("""INSERT INTO canonical_current
                     (canonical_key, scope_json, snapshot_id, as_of_ts, version, event_at_ts)
@@ -289,8 +299,8 @@ class CanonicalFactIndex:
                     snapshot_id=excluded.snapshot_id, as_of_ts=excluded.as_of_ts,
                     version=excluded.version, event_at_ts=excluded.event_at_ts""",
                     (row["canonical_key"], scope_json, row["snapshot_id"], as_of_ts,
-                     data["version"], event_at_ts))
-            for group, terms in _term_groups(data).items():
+                     version, event_at_ts))
+            for group, terms in term_groups.items():
                 conn.executemany("INSERT OR IGNORE INTO fact_query_terms VALUES (?, ?, ?)",
                                  [(row["canonical_key"], group, term) for term in terms])
 
