@@ -163,12 +163,19 @@ class EvidenceLedger:
         try:
             with open(self.checkpoint_path, "r") as fp:
                 data = json.load(fp)
-            count = 0
-            for item in data.get("entries", []):
-                domain = CapabilityDomain(item["domain"])
+        except Exception:
+            return 0
+        items = data.get("entries") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return 0
+        count = 0
+        # Guard per entry: one record this build cannot read (a domain added by a
+        # newer node, a missing field, a non-object) must not drop every later one.
+        for item in items:
+            try:
                 entry = EvidenceEntry(
                     entry_id=item["entry_id"],
-                    domain=domain,
+                    domain=CapabilityDomain(item["domain"]),
                     key=item["key"],
                     value=item["value"],
                     confidence=item["confidence"],
@@ -177,11 +184,11 @@ class EvidenceLedger:
                     discovered_utc=item["discovered_utc"],
                     ttl_seconds=item["ttl_seconds"],
                 )
-                self._entries[entry.entry_id] = entry
-                count += 1
-            return count
-        except Exception:
-            return 0
+            except (KeyError, TypeError, ValueError):
+                continue
+            self._entries[entry.entry_id] = entry
+            count += 1
+        return count
 
     @staticmethod
     def _scrub_sensitive(value: Any) -> Any:
