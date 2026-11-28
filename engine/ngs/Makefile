@@ -8,6 +8,7 @@
 #   make test       build + run the M1 unit suite
 #   make crash      build + run the crash/tamper harness
 #   make standalone prove the amalgamation compiles on its own
+#   make cli        build build/ngs_cli, the JSON CLI the NGS console spawns
 #   make sanitize   unit suite + crash harness under ASan + UBSan
 #   make bench      build + run the 50K scorecard (BENCH_N=50000)
 #
@@ -28,7 +29,7 @@ HDR      = include/ngs.h
 
 TESTCFLAGS = $(CFLAGS) $(WARN) -std=c11 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 
-.PHONY: all lib check test crash standalone sanitize bench clean
+.PHONY: all lib check test crash standalone cli sanitize bench clean
 all: lib check test crash standalone
 
 $(BUILD):
@@ -54,6 +55,10 @@ test: $(BUILD)/test_m1
 	$(BUILD)/test_m1
 $(BUILD)/test_m1: test/test_m1.c test/kat_shim.c $(SRC) $(HDR) | $(BUILD)
 	$(CC) $(TESTCFLAGS) $(INC) test/test_m1.c test/kat_shim.c -pthread -o $@
+
+cli: $(BUILD)/ngs_cli
+$(BUILD)/ngs_cli: tools/ngs_cli.c $(BUILD)/libnougenshards.a $(HDR) | $(BUILD)
+	$(CC) $(STD) $(WARN) $(CFLAGS) $(INC) tools/ngs_cli.c $(BUILD)/libnougenshards.a -o $@
 
 crash: $(BUILD)/crash_harness
 	$(BUILD)/crash_harness
