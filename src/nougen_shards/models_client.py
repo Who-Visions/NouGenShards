@@ -555,12 +555,19 @@ class OpenRouterClient(OpenAIClient):
             req.add_header("X-OpenRouter-Title", "NouGenShards")
             with urllib.request.urlopen(req, timeout=15) as res:
                 data = json.loads(res.read().decode())
+            catalogue = data.get("data") if isinstance(data, dict) else None
             free = []
-            for model in data.get("data", []):
-                mid = model.get("id", "")
-                if not mid:
+            # Skip malformed entries one by one: a single bad row must not
+            # discard the whole live roster and drop back to the seed.
+            for model in catalogue if isinstance(catalogue, list) else []:
+                if not isinstance(model, dict):
                     continue
-                pricing = model.get("pricing", {}) or {}
+                mid = model.get("id")
+                if not isinstance(mid, str) or not mid:
+                    continue
+                pricing = model.get("pricing")
+                if not isinstance(pricing, dict):
+                    pricing = {}
                 if mid.endswith(":free") or (_is_zero(pricing.get("prompt")) and _is_zero(pricing.get("completion"))):
                     free.append(mid)
             if free:
