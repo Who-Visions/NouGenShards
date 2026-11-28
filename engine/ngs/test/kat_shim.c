@@ -34,8 +34,11 @@ void ngs_test_ed_keypair(const uint8_t seed[32], uint8_t pub[32]) {
 }
 void ngs_test_ed_sign(const uint8_t seed[32], const uint8_t *msg, size_t n, uint8_t sig[64]) {
   ngs_ed_ctx ed;
+  uint8_t a[32], prefix[32], pub[32];
   ngs_ed_ctx_init(&ed);
-  ngs_ed25519_sign(&ed, seed, msg, n, sig);
+  ngs_ed25519_pubkey(&ed, seed, pub);
+  ngs_ed25519_expand(seed, a, prefix);
+  ngs_ed25519_sign_expanded(&ed, a, prefix, pub, msg, n, sig);
 }
 int ngs_test_ed_verify(const uint8_t pub[32], const uint8_t *msg, size_t n, const uint8_t sig[64]) {
   ngs_ed_ctx ed;

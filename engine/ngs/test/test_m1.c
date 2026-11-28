@@ -16,6 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 static int g_pass = 0, g_fail = 0;
 #define CHECK(cond, name) do { \
@@ -321,7 +322,10 @@ static void test_misuse_and_validation(void) {
     CHECK(ngs_heads(db, &heads, &nh) == NGS_MISUSE, "heads -> MISUSE");
     CHECK(ngs_sync_export(db, NULL, 0, &seg, &seglen) == NGS_MISUSE, "sync_export -> MISUSE");
     CHECK(ngs_sync_import(db, (const uint8_t *)"x", 1, &rep) == NGS_MISUSE && rep == NULL, "sync_import -> MISUSE");
-    CHECK(ngs_stats(db, &st) == NGS_MISUSE, "stats -> MISUSE");
+    CHECK(ngs_stats(db, &st) == NGS_OK && st.size == sizeof st, "stats -> OK (M1 counters)");
+    CHECK(ngs_stats(db, NULL) == NGS_MISUSE, "stats NULL -> MISUSE");
+    st.size = 1;
+    CHECK(ngs_stats(db, &st) == NGS_MISUSE, "stats short size -> MISUSE");
   }
 
   /* validation */
@@ -465,6 +469,78 @@ static void test_checkpoint_mismatch(void) {
   wipe_dir();
 }
 
+/* Group commit: 8 threads of durable singles on 2 shared namespaces, then a
+** batch that straddles a segment rollover. Everything must land gapless,
+** chained and signed, and survive reopen. segment_bytes = 1 MiB forces
+** several rollovers while writers are in flight. */
+#define GC_THREADS 8
+#define GC_PER 300
+#define GC_BATCH 500
+typedef struct { ngs *db; int tid; int fails; } gc_arg;
+static char gc_body[1200];
+static void *gc_writer(void *vp) {
+  gc_arg *a = (gc_arg *)vp;
+  int i;
+  for (i = 0; i < GC_PER; i++) {
+    char title[64];
+    ngs_fact_in in;
+    ngs_id id;
+    snprintf(title, sizeof title, "t%d-%d", a->tid, i);
+    in = mk_input((a->tid & 1) ? "gc-a" : "gc-b", title, gc_body);
+    if (ngs_remember(a->db, &in, 0, &id) != NGS_OK) a->fails++;
+  }
+  return NULL;
+}
+static void test_group_commit(void) {
+  ngs *db = NULL;
+  ngs_open_opts oo = NGS_OPEN_OPTS_INIT;
+  pthread_t th[GC_THREADS];
+  gc_arg args[GC_THREADS];
+  ngs_stats_t st = NGS_STATS_INIT;
+  static ngs_fact_in batch[GC_BATCH];
+  static ngs_id ids[GC_BATCH];
+  static char bbody[2048];
+  int k, fails = 0;
+  uint8_t *ckpt = NULL;
+  size_t cklen = 0;
+  char seg3[400];
+  struct stat sb;
+  memset(gc_body, 'g', sizeof gc_body - 1);
+  memset(bbody, 'b', sizeof bbody - 1);
+  fresh_dir();
+  oo.flags = NGS_OPEN_READWRITE | NGS_OPEN_CREATE;
+  oo.segment_bytes = 1024 * 1024;
+  CHECK(ngs_open(g_dir, &oo, &db) == NGS_OK, "gc: open (1 MiB segments)");
+  for (k = 0; k < GC_THREADS; k++) {
+    args[k].db = db; args[k].tid = k; args[k].fails = 0;
+    pthread_create(&th[k], NULL, gc_writer, &args[k]);
+  }
+  for (k = 0; k < GC_THREADS; k++) { pthread_join(th[k], NULL); fails += args[k].fails; }
+  CHECK(fails == 0, "gc: 8 concurrent durable writers, 0 failures");
+  for (k = 0; k < GC_BATCH; k++) batch[k] = mk_input("gc-a", "batch", bbody);
+  CHECK(ngs_remember_many(db, batch, GC_BATCH, 0, ids) == NGS_OK, "gc: 500-fact batch across a rollover");
+  CHECK(ngs_stats(db, &st) == NGS_OK && st.facts == GC_THREADS * GC_PER + GC_BATCH, "gc: every fact indexed");
+  CHECK(ngs_verify(db, NULL, 0) == NGS_OK, "gc: verify chain + signatures");
+  CHECK(ngs_checkpoint(db, &ckpt, &cklen) == NGS_OK, "gc: checkpoint");
+  CHECK(ngs_flush(db) == NGS_OK, "gc: flush");
+  CHECK(ngs_close(db) == NGS_OK, "gc: close");
+  snprintf(seg3, sizeof seg3, "%s/log/000003.seg", g_dir);
+  CHECK(stat(seg3, &sb) == 0, "gc: rolled over at least twice");
+  db = NULL;
+  CHECK(ngs_open(g_dir, NULL, &db) == NGS_OK, "gc: reopen");
+  st.facts = 0;
+  CHECK(ngs_stats(db, &st) == NGS_OK && st.facts == GC_THREADS * GC_PER + GC_BATCH, "gc: every fact survives reopen");
+  CHECK(ngs_verify(db, ckpt, cklen) == NGS_OK, "gc: verify against checkpoint after reopen");
+  {
+    ngs_fact *f = NULL;
+    CHECK(ngs_get(db, &ids[GC_BATCH - 1], &f) == NGS_OK && f != NULL, "gc: last batch fact readable");
+    ngs_free(f);
+  }
+  CHECK(ngs_close(db) == NGS_OK, "gc: close 2");
+  ngs_free(ckpt);
+  wipe_dir();
+}
+
 int main(void) {
   test_kats();
   test_basic_roundtrip();
@@ -472,6 +548,7 @@ int main(void) {
   test_misuse_and_validation();
   test_writer_lock_and_readonly();
   test_checkpoint_mismatch();
+  test_group_commit();
   printf("TESTS: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

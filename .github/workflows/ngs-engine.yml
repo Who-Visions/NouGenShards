@@ -1,0 +1,39 @@
+name: ngs-engine
+
+# Builds and gates the NGS C engine (engine/ngs). Until this workflow existed,
+# no CI job compiled engine/ngs, so a green PR said nothing about the engine.
+
+on:
+  push:
+    branches: [main]
+    paths: ["engine/ngs/**", ".github/workflows/ngs-engine.yml"]
+  pull_request:
+    paths: ["engine/ngs/**", ".github/workflows/ngs-engine.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine/ngs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: make all (header gate C11 + C++11, unit suite, crash harness, standalone)
+        run: make all CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}
+      - name: make sanitize (ASan + UBSan)
+        run: make clean sanitize CC=${{ matrix.cc }}
+      - name: make bench (smoke, 2,000 facts)
+        run: make clean bench CC=${{ matrix.cc }} BENCH_N=2000
